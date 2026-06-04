@@ -876,7 +876,8 @@ input{font-family:inherit;border:none;outline:none}
 #s-auth{align-items:center;justify-content:center;background:radial-gradient(ellipse 120% 60% at 50% -10%,rgba(0,212,170,.14),transparent)}
 .auth-card{width:min(340px,90vw);padding:40px 28px;background:var(--card);border-radius:24px;border:1px solid var(--border)}
 .logo-row{text-align:center;margin-bottom:28px}
-.logo-icon{font-size:48px}
+.logo-icon{display:flex;align-items:center;justify-content:center;margin-bottom:2px}
+.logo-icon svg{filter:drop-shadow(0 4px 16px rgba(255,45,45,.5))}
 .logo-name{color:var(--accent);font-size:26px;font-weight:800;letter-spacing:-1px;margin-top:6px}
 .logo-sub{color:var(--sub);font-size:13px;margin-top:6px;min-height:18px}
 .field-label{color:var(--sub);font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-bottom:7px;display:block}
@@ -1113,7 +1114,12 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 <div class="screen" id="s-auth">
   <div class="auth-card">
     <div class="logo-row">
-      <div class="logo-icon">💬</div>
+      <div class="logo-icon">
+        <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="64" height="64" rx="18" fill="#ff2d2d"/>
+          <path d="M10 18C10 14.686 12.686 12 16 12H48C51.314 12 54 14.686 54 18V38C54 41.314 51.314 44 48 44H36L26 54V44H16C12.686 44 10 41.314 10 38V18Z" fill="#00d4aa"/>
+        </svg>
+      </div>
       <div class="logo-name">Sonia</div>
       <div class="logo-sub" id="auth-sub">Entrez votre numero pour continuer</div>
     </div>
