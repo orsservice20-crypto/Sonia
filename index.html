@@ -79,6 +79,32 @@ function showScreen(id){
   document.querySelectorAll(".screen").forEach(s => s.classList.add("off"));
   $(id).classList.remove("off");
 }
+
+// Fonction globale pour le bouton langue sur l'écran auth
+window.openLangFromAuth = function(){
+  const lo = document.getElementById("lang-overlay");
+  if(lo){
+    // Construire la liste si vide
+    const list = document.getElementById("lang-list");
+    if(list && list.innerHTML === "") {
+      // buildLangList sera disponible après initApp — on force ici
+      Object.entries(window._LANGS||{}).forEach(([code, lang])=>{
+        const item=document.createElement("div");
+        item.className="lang-item"+(code===(window._currentLang||"fr")?" selected":"");
+        item.innerHTML='<div class="lang-flag">'+lang.flag+'</div><div class="lang-info"><div class="lang-name">'+lang.name+'</div><div class="lang-country">'+lang.country+'</div></div>'+(code===(window._currentLang||"fr")?'<div class="lang-check">✓</div>':'');
+        item.onclick=()=>{
+          window._currentLang=code;
+          localStorage.setItem("sonia_lang",code);
+          if(window._applyLang) window._applyLang();
+          if(window._buildLangList) window._buildLangList();
+          lo.style.display="none";
+        };
+        list.appendChild(item);
+      });
+    }
+    lo.style.display="flex";
+  }
+};
 function toast(msg, type){
   const t = document.createElement("div");
   t.className = "toast" + (type === "err" ? " toast-err" : "");
@@ -112,7 +138,70 @@ async function sendSms(phone, code){
 
 // ---- AUTH OTP ----
 const otpBoxes = [];
+
+// Fonctions globales auth (appelables depuis HTML)
+window.sendCode = async function(){
+  const raw = document.getElementById("ph-input").value.trim();
+  if(raw.replace(/\D/g,"").length < 8){ document.getElementById("auth-err").textContent = "Numero invalide"; return; }
+  document.getElementById("auth-err").textContent = "";
+  const btn = document.getElementById("send-code-btn"); btn.textContent = "Envoi..."; btn.disabled = true;
+  let phone = raw.replace(/\s/g,"");
+  if(!phone.startsWith("+")) phone = "+" + phone.replace(/\D/g,"");
+  S.pendingPhone = phone;
+  const code = String(Math.floor(100000 + Math.random()*900000));
+  S.pendingCode = code;
+  const key = phone.replace(/\+/g,"00").replace(/\D/g,"");
+  try{
+    const { ref: dbRef, set: dbSet } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
+    await dbSet(dbRef(db, "otpCodes/" + key), { code: code, expires: Date.now() + 5*60*1000 });
+  }catch(e){ console.warn("DB err:", e); }
+  const sent = await sendSms(phone, code);
+  if(sent){
+    document.getElementById("auth-sub").textContent = "SMS envoye au " + phone;
+    document.getElementById("otp-hint-el").textContent = "";
+  } else {
+    document.getElementById("auth-sub").textContent = "Code genere pour " + phone;
+    document.getElementById("otp-hint-el").textContent = "Code de test : " + code;
+    console.info("OTP:", code);
+  }
+  document.getElementById("step-phone").style.display = "none";
+  document.getElementById("step-otp").style.display   = "block";
+  otpBoxes[0] && otpBoxes[0].focus();
+  btn.textContent = (window._LANGS&&window._LANGS[window._currentLang||"fr"]) ? window._LANGS[window._currentLang||"fr"].t.recevoirCode : "Recevoir le code SMS";
+  btn.disabled = false;
+};
+
+window.verifyCode = async function(){
+  const entered = otpBoxes.map(b => b.value).join("");
+  if(entered.length < 6){ document.getElementById("auth-err").textContent = "Code incomplet"; return; }
+  document.getElementById("auth-err").textContent = "";
+  const btn = document.getElementById("verify-btn"); btn.textContent = "Verification..."; btn.disabled = true;
+  try {
+    const { ref: dbRef, get: dbGet } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
+    const key  = S.pendingPhone.replace(/\+/g,"00").replace(/\D/g,"");
+    const snap = await dbGet(dbRef(db, "otpCodes/" + key));
+    const data = snap.val();
+    if(!data)             throw new Error("Code expire, recommencez");
+    if(Date.now() > data.expires) throw new Error("Code expire, recommencez");
+    if(entered !== data.code)     throw new Error("Code incorrect");
+    await signInAnonymously(auth);
+  } catch(e) {
+    document.getElementById("auth-err").textContent = e.message;
+    btn.textContent = "Confirmer"; btn.disabled = false;
+  }
+};
+
+window.goBackToPhone = function(){
+  document.getElementById("step-otp").style.display   = "none";
+  document.getElementById("step-phone").style.display = "block";
+  otpBoxes.forEach(b => { b.value = ""; b.classList.remove("ok"); });
+  document.getElementById("auth-err").textContent = "";
+};
+
+// ---- TOUT DANS DOMContentLoaded ----
 window.addEventListener("DOMContentLoaded", () => {
+
+  // Lier les boîtes OTP
   document.querySelectorAll(".otp-box").forEach((b, i) => {
     otpBoxes.push(b);
     b.oninput = () => {
@@ -122,12 +211,14 @@ window.addEventListener("DOMContentLoaded", () => {
     };
     b.onkeydown = e => { if(e.key === "Backspace" && !b.value && i > 0) otpBoxes[i-1].focus(); };
   });
+
+  // Entrée clavier sur champ téléphone
+  const phInput = document.getElementById("ph-input");
+  if(phInput) phInput.onkeydown = e => { if(e.key==="Enter") window.sendCode(); };
+
+  // Lancer l'app
+  initApp();
 });
-
-$("ph-input") && ($("ph-input").onkeydown = e => { if(e.key==="Enter") $("send-code-btn").click(); });
-
-// Attendre que le DOM soit chargé avant de lier les boutons
-window.addEventListener("DOMContentLoaded", initApp);
 
 function initApp(){
 
@@ -1118,6 +1209,8 @@ function initApp(){
   };
 
   let currentLang = localStorage.getItem("sonia_lang") || "fr";
+  window._LANGS = LANGS;
+  window._currentLang = currentLang;
 
   function t(key){ return (LANGS[currentLang]||LANGS.fr).t[key] || key; }
 
@@ -1160,6 +1253,7 @@ function initApp(){
   }
 
   function buildLangList(){
+    window._currentLang = currentLang;
     const list=$("lang-list"); list.innerHTML="";
     Object.entries(LANGS).forEach(([code, lang])=>{
       const item=document.createElement("div");
@@ -1173,6 +1267,7 @@ function initApp(){
         (code===currentLang?'<div class="lang-check">✓</div>':'');
       item.onclick=()=>{
         currentLang=code;
+        window._currentLang=code;
         applyLang();
         buildLangList();
         $("lang-overlay").style.display="none";
@@ -1182,8 +1277,10 @@ function initApp(){
     });
   }
 
+  window._applyLang = applyLang;
+  window._buildLangList = buildLangList;
+
   $("lang-btn").onclick=()=>{ buildLangList(); $("lang-overlay").style.display="flex"; };
-  $("auth-lang-btn").onclick=()=>{ buildLangList(); $("lang-overlay").style.display="flex"; };
   $("lang-close").onclick=()=>$("lang-overlay").style.display="none";
   $("lang-overlay").onclick=e=>{ if(e.target===$("lang-overlay"))$("lang-overlay").style.display="none"; };
 
@@ -1294,7 +1391,6 @@ function initApp(){
     else { const vid=document.createElement("video"); vid.src=src; vid.controls=true; vid.style.maxHeight="45vh"; prev.appendChild(vid); }
     prev.style.display="flex";
   }
-
   // Publier statut
   $("sc-publish-btn").onclick = async () => {
     if(scPendingType==="text"){
@@ -1381,6 +1477,7 @@ function initApp(){
     });
     if(!hasAny){ $("no-contacts-status").style.display="block"; $("contacts-statuses-section").style.display="none"; }
   }
+
   function timeSince(ts){
     const diff=Date.now()-ts;
     if(diff<60000) return "a l instant";
@@ -1762,7 +1859,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 <div class="screen" id="s-auth">
   <!-- Barre langue en haut -->
   <div style="display:flex;justify-content:flex-end;padding:12px 16px 0;position:absolute;top:0;right:0;z-index:10">
-    <button id="auth-lang-btn" style="display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.12);border-radius:20px;padding:7px 14px;color:#e8f0fe;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">
+    <button onclick="openLangFromAuth()" style="display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.12);border-radius:20px;padding:7px 14px;color:#e8f0fe;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">
       <span id="auth-lang-flag">🇫🇷</span>
       <span id="auth-lang-name">Français</span>
       <span style="font-size:10px;opacity:.7">▼</span>
@@ -1785,7 +1882,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
         <div class="flag-box">🌍 +</div>
         <input class="ph-input" id="ph-input" type="tel" placeholder="224 600 000 000"/>
       </div>
-      <button class="big-btn" id="send-code-btn">Recevoir le code SMS</button>
+      <button class="big-btn" id="send-code-btn" onclick="sendCode()">Recevoir le code SMS</button>
     </div>
     <div id="step-otp" style="display:none">
       <label class="field-label" id="lbl-otp">Code SMS reçu</label>
@@ -1798,8 +1895,8 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
         <input class="otp-box" maxlength="1" inputmode="numeric"/>
       </div>
       <p class="otp-hint" id="otp-hint-el"></p>
-      <button class="big-btn" id="verify-btn" style="margin-top:10px">Confirmer</button>
-      <button class="ghost-btn" id="back-btn">← Modifier le numéro</button>
+      <button class="big-btn" id="verify-btn" style="margin-top:10px" onclick="verifyCode()">Confirmer</button>
+      <button class="ghost-btn" id="back-btn" onclick="goBackToPhone()">← Modifier le numéro</button>
     </div>
     <div class="err-msg" id="auth-err"></div>
   </div>
@@ -1840,7 +1937,8 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       <button class="modal-close" id="share-close">✕</button>
     </div>
     <div style="padding:0 20px 28px">
-<!-- App info -->
+
+      <!-- App info -->
       <div style="display:flex;align-items:center;gap:14px;background:var(--surface);border-radius:16px;padding:16px;margin-bottom:20px;border:1px solid var(--border)">
         <div style="width:56px;height:56px;border-radius:14px;overflow:hidden;flex-shrink:0">
           <svg width="56" height="56" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
