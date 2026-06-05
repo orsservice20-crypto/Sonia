@@ -601,7 +601,564 @@ function initApp(){
     else sav.textContent=S.profile.emoji||"🧑🏾";
   }
 
-  // ---- BOTTOM NAV ----
+  // ---- SYSTEME DE LANGUES ----
+  const LANGS = {
+    fr: {
+      flag:"🇫🇷", name:"Français", country:"France, Guinée, Sénégal, Côte d'Ivoire...",
+      t:{
+        discussions:"💬 Discussions", archives:"🗄 Archives", statuts:"Statuts",
+        appels:"Appels", rechercher:"Rechercher...", enLigne:"● En ligne",
+        ecrire:"Écrire un message...", envoyer:"Envoyer",
+        monProfil:"Mon profil", enregistrer:"Enregistrer ✓",
+        nomAffichage:"Nom d'affichage", statut:"Statut",
+        galerie:"Galerie", camera:"Caméra", supprimer:"Supprimer",
+        choixAvatar:"Ou choisir un avatar",
+        recEnCours:"En cours...", recPause:"En pause",
+        annuler:"Annuler", pause:"Pause", reprendre:"Reprendre",
+        entrerNumero:"Entrez votre numéro pour continuer",
+        numeroTel:"Numéro de téléphone", recevoirCode:"Recevoir le code SMS",
+        codeSms:"Code SMS reçu", confirmer:"Confirmer",
+        modifierNum:"← Modifier le numéro",
+        choisirLangue:"🌍 Choisir la langue",
+        monStatut:"Mon statut", ajouterStatut:"Appuyez pour ajouter un statut",
+        texte:"✏️ Texte", photo:"📷 Photo", video:"🎥 Vidéo",
+        nouveauStatut:"Nouveau statut", publier:"Publier",
+        statut24h:"Le statut disparaît après 24 heures",
+        recents:"Récents", aucunStatut:"Aucun statut pour le moment",
+        supprimerPourMoi:"🗑 Supprimer pour moi",
+        supprimerPourTous:"🗑 Supprimer pour tous",
+        msgSupprime:"🚫 Message supprimé",
+        vocal:"🎵 Vocal", enLigneStatus:"● En ligne", horsLigne:"⚫ Hors ligne",
+        appAudio:"🎙 Appel audio", appVideo:"📹 Appel vidéo",
+      }
+    },
+    en: {
+      flag:"🇬🇧", name:"English", country:"UK, USA, Nigeria, Ghana, Kenya...",
+      t:{
+        discussions:"💬 Chats", archives:"🗄 Archived", statuts:"Status",
+        appels:"Calls", rechercher:"Search...", enLigne:"● Online",
+        ecrire:"Write a message...", envoyer:"Send",
+        monProfil:"My profile", enregistrer:"Save ✓",
+        nomAffichage:"Display name", statut:"Status",
+        galerie:"Gallery", camera:"Camera", supprimer:"Remove",
+        choixAvatar:"Or choose an avatar",
+        recEnCours:"Recording...", recPause:"Paused",
+        annuler:"Cancel", pause:"Pause", reprendre:"Resume",
+        entrerNumero:"Enter your number to continue",
+        numeroTel:"Phone number", recevoirCode:"Receive SMS code",
+        codeSms:"SMS code received", confirmer:"Confirm",
+        modifierNum:"← Change number",
+        choisirLangue:"🌍 Choose language",
+        monStatut:"My status", ajouterStatut:"Tap to add a status",
+        texte:"✏️ Text", photo:"📷 Photo", video:"🎥 Video",
+        nouveauStatut:"New status", publier:"Publish",
+        statut24h:"Status disappears after 24 hours",
+        recents:"Recent", aucunStatut:"No status yet",
+        supprimerPourMoi:"🗑 Delete for me",
+        supprimerPourTous:"🗑 Delete for everyone",
+        msgSupprime:"🚫 Message deleted",
+        vocal:"🎵 Voice", enLigneStatus:"● Online", horsLigne:"⚫ Offline",
+        appAudio:"🎙 Audio call", appVideo:"📹 Video call",
+      }
+    },
+    es: {
+      flag:"🇪🇸", name:"Español", country:"España, México, Colombia, Argentina...",
+      t:{
+        discussions:"💬 Chats", archives:"🗄 Archivados", statuts:"Estados",
+        appels:"Llamadas", rechercher:"Buscar...", enLigne:"● En línea",
+        ecrire:"Escribe un mensaje...", envoyer:"Enviar",
+        monProfil:"Mi perfil", enregistrer:"Guardar ✓",
+        nomAffichage:"Nombre visible", statut:"Estado",
+        galerie:"Galería", camera:"Cámara", supprimer:"Eliminar",
+        choixAvatar:"O elige un avatar",
+        recEnCours:"Grabando...", recPause:"En pausa",
+        annuler:"Cancelar", pause:"Pausar", reprendre:"Reanudar",
+        entrerNumero:"Ingresa tu número para continuar",
+        numeroTel:"Número de teléfono", recevoirCode:"Recibir código SMS",
+        codeSms:"Código SMS recibido", confirmer:"Confirmar",
+        modifierNum:"← Cambiar número",
+        choisirLangue:"🌍 Elegir idioma",
+        monStatut:"Mi estado", ajouterStatut:"Toca para añadir estado",
+        texte:"✏️ Texto", photo:"📷 Foto", video:"🎥 Video",
+        nouveauStatut:"Nuevo estado", publier:"Publicar",
+        statut24h:"El estado desaparece tras 24 horas",
+        recents:"Recientes", aucunStatut:"Sin estados aún",
+        supprimerPourMoi:"🗑 Eliminar para mí",
+        supprimerPourTous:"🗑 Eliminar para todos",
+        msgSupprime:"🚫 Mensaje eliminado",
+        vocal:"🎵 Audio", enLigneStatus:"● En línea", horsLigne:"⚫ Desconectado",
+        appAudio:"🎙 Llamada de voz", appVideo:"📹 Videollamada",
+      }
+    },
+    ar: {
+      flag:"🇸🇦", name:"العربية", country:"السعودية، مصر، المغرب، الجزائر...",
+      t:{
+        discussions:"💬 المحادثات", archives:"🗄 المحفوظات", statuts:"الحالات",
+        appels:"المكالمات", rechercher:"بحث...", enLigne:"● متصل",
+        ecrire:"اكتب رسالة...", envoyer:"إرسال",
+        monProfil:"ملفي الشخصي", enregistrer:"حفظ ✓",
+        nomAffichage:"اسم العرض", statut:"الحالة",
+        galerie:"المعرض", camera:"الكاميرا", supprimer:"حذف",
+        choixAvatar:"أو اختر صورة رمزية",
+        recEnCours:"جاري التسجيل...", recPause:"متوقف",
+        annuler:"إلغاء", pause:"إيقاف", reprendre:"استئناف",
+        entrerNumero:"أدخل رقمك للمتابعة",
+        numeroTel:"رقم الهاتف", recevoirCode:"استقبال رمز SMS",
+        codeSms:"رمز SMS المستلم", confirmer:"تأكيد",
+        modifierNum:"← تغيير الرقم",
+        choisirLangue:"🌍 اختر اللغة",
+        monStatut:"حالتي", ajouterStatut:"انقر لإضافة حالة",
+        texte:"✏️ نص", photo:"📷 صورة", video:"🎥 فيديو",
+        nouveauStatut:"حالة جديدة", publier:"نشر",
+        statut24h:"تختفي الحالة بعد 24 ساعة",
+        recents:"الأخيرة", aucunStatut:"لا توجد حالات",
+        supprimerPourMoi:"🗑 حذف للي", supprimerPourTous:"🗑 حذف للجميع",
+        msgSupprime:"🚫 تم حذف الرسالة",
+        vocal:"🎵 صوتي", enLigneStatus:"● متصل", horsLigne:"⚫ غير متصل",
+        appAudio:"🎙 مكالمة صوتية", appVideo:"📹 مكالمة فيديو",
+      }
+    },
+    he: {
+      flag:"🇮🇱", name:"עברית", country:"ישראל...",
+      t:{
+        discussions:"💬 שיחות", archives:"🗄 ארכיון", statuts:"סטטוסים",
+        appels:"שיחות", rechercher:"חיפוש...", enLigne:"● מחובר",
+        ecrire:"כתוב הודעה...", envoyer:"שלח",
+        monProfil:"הפרופיל שלי", enregistrer:"שמור ✓",
+        nomAffichage:"שם תצוגה", statut:"סטטוס",
+        galerie:"גלריה", camera:"מצלמה", supprimer:"מחק",
+        choixAvatar:"או בחר אווטאר",
+        recEnCours:"מקליט...", recPause:"מושהה",
+        annuler:"ביטול", pause:"השהה", reprendre:"המשך",
+        entrerNumero:"הכנס את מספרך להמשך",
+        numeroTel:"מספר טלפון", recevoirCode:"קבל קוד SMS",
+        codeSms:"קוד SMS שהתקבל", confirmer:"אשר",
+        modifierNum:"← שנה מספר",
+        choisirLangue:"🌍 בחר שפה",
+        monStatut:"הסטטוס שלי", ajouterStatut:"לחץ להוספת סטטוס",
+        texte:"✏️ טקסט", photo:"📷 תמונה", video:"🎥 וידאו",
+        nouveauStatut:"סטטוס חדש", publier:"פרסם",
+        statut24h:"הסטטוס נעלם לאחר 24 שעות",
+        recents:"אחרונים", aucunStatut:"אין סטטוסים עדיין",
+        supprimerPourMoi:"🗑 מחק עבורי", supprimerPourTous:"🗑 מחק לכולם",
+        msgSupprime:"🚫 ההודעה נמחקה",
+        vocal:"🎵 קולי", enLigneStatus:"● מחובר", horsLigne:"⚫ לא מחובר",
+        appAudio:"🎙 שיחת קול", appVideo:"📹 שיחת וידאו",
+      }
+    },
+    ru: {
+      flag:"🇷🇺", name:"Русский", country:"Россия, Украина, Казахстан...",
+      t:{
+        discussions:"💬 Чаты", archives:"🗄 Архив", statuts:"Статусы",
+        appels:"Звонки", rechercher:"Поиск...", enLigne:"● В сети",
+        ecrire:"Написать сообщение...", envoyer:"Отправить",
+        monProfil:"Мой профиль", enregistrer:"Сохранить ✓",
+        nomAffichage:"Отображаемое имя", statut:"Статус",
+        galerie:"Галерея", camera:"Камера", supprimer:"Удалить",
+        choixAvatar:"Или выберите аватар",
+        recEnCours:"Запись...", recPause:"Пауза",
+        annuler:"Отмена", pause:"Пауза", reprendre:"Продолжить",
+        entrerNumero:"Введите номер для продолжения",
+        numeroTel:"Номер телефона", recevoirCode:"Получить SMS-код",
+        codeSms:"Полученный SMS-код", confirmer:"Подтвердить",
+        modifierNum:"← Изменить номер",
+        choisirLangue:"🌍 Выбрать язык",
+        monStatut:"Мой статус", ajouterStatut:"Нажмите чтобы добавить статус",
+        texte:"✏️ Текст", photo:"📷 Фото", video:"🎥 Видео",
+        nouveauStatut:"Новый статус", publier:"Опубликовать",
+        statut24h:"Статус исчезает через 24 часа",
+        recents:"Недавние", aucunStatut:"Нет статусов",
+        supprimerPourMoi:"🗑 Удалить для меня",
+        supprimerPourTous:"🗑 Удалить для всех",
+        msgSupprime:"🚫 Сообщение удалено",
+        vocal:"🎵 Голос", enLigneStatus:"● В сети", horsLigne:"⚫ Не в сети",
+        appAudio:"🎙 Аудиозвонок", appVideo:"📹 Видеозвонок",
+      }
+    },
+    de: {
+      flag:"🇩🇪", name:"Deutsch", country:"Deutschland, Österreich, Schweiz...",
+      t:{
+        discussions:"💬 Chats", archives:"🗄 Archiv", statuts:"Status",
+        appels:"Anrufe", rechercher:"Suchen...", enLigne:"● Online",
+        ecrire:"Nachricht schreiben...", envoyer:"Senden",
+        monProfil:"Mein Profil", enregistrer:"Speichern ✓",
+        nomAffichage:"Anzeigename", statut:"Status",
+        galerie:"Galerie", camera:"Kamera", supprimer:"Löschen",
+        choixAvatar:"Oder Avatar wählen",
+        recEnCours:"Aufnahme...", recPause:"Pausiert",
+        annuler:"Abbrechen", pause:"Pause", reprendre:"Fortsetzen",
+        entrerNumero:"Nummer eingeben um fortzufahren",
+        numeroTel:"Telefonnummer", recevoirCode:"SMS-Code empfangen",
+        codeSms:"Empfangener SMS-Code", confirmer:"Bestätigen",
+        modifierNum:"← Nummer ändern",
+        choisirLangue:"🌍 Sprache wählen",
+        monStatut:"Mein Status", ajouterStatut:"Tippen um Status hinzuzufügen",
+        texte:"✏️ Text", photo:"📷 Foto", video:"🎥 Video",
+        nouveauStatut:"Neuer Status", publier:"Veröffentlichen",
+        statut24h:"Status verschwindet nach 24 Stunden",
+        recents:"Kürzlich", aucunStatut:"Noch keine Status",
+        supprimerPourMoi:"🗑 Für mich löschen",
+        supprimerPourTous:"🗑 Für alle löschen",
+        msgSupprime:"🚫 Nachricht gelöscht",
+        vocal:"🎵 Sprachnachricht", enLigneStatus:"● Online", horsLigne:"⚫ Offline",
+        appAudio:"🎙 Sprachanruf", appVideo:"📹 Videoanruf",
+      }
+    },
+    ht: {
+      flag:"🇭🇹", name:"Kreyòl Ayisyen", country:"Haïti...",
+      t:{
+        discussions:"💬 Konvèsasyon", archives:"🗄 Achiv", statuts:"Estati",
+        appels:"Rele", rechercher:"Chèche...", enLigne:"● Konekte",
+        ecrire:"Ekri yon mesaj...", envoyer:"Voye",
+        monProfil:"Pwofil mwen", enregistrer:"Anrejistre ✓",
+        nomAffichage:"Non afichaj", statut:"Estati",
+        galerie:"Galri", camera:"Kamera", supprimer:"Efase",
+        choixAvatar:"Oswa chwazi yon avatar",
+        recEnCours:"Anrejistreman...", recPause:"Kanpe",
+        annuler:"Anile", pause:"Kanpe", reprendre:"Kontinye",
+        entrerNumero:"Antre nimewo ou pou kontinye",
+        numeroTel:"Nimewo telefòn", recevoirCode:"Resevwa kòd SMS",
+        codeSms:"Kòd SMS resevwa", confirmer:"Konfime",
+        modifierNum:"← Chanje nimewo",
+        choisirLangue:"🌍 Chwazi lang",
+        monStatut:"Estati mwen", ajouterStatut:"Klike pou ajoute estati",
+        texte:"✏️ Tèks", photo:"📷 Foto", video:"🎥 Videyo",
+        nouveauStatut:"Nouvo estati", publier:"Pibliye",
+        statut24h:"Estati disparèt apre 24 è",
+        recents:"Resan", aucunStatut:"Pa gen estati",
+        supprimerPourMoi:"🗑 Efase pou mwen",
+        supprimerPourTous:"🗑 Efase pou tout moun",
+        msgSupprime:"🚫 Mesaj efase",
+        vocal:"🎵 Vokal", enLigneStatus:"● Konekte", horsLigne:"⚫ Dekonekte",
+        appAudio:"🎙 Apèl audio", appVideo:"📹 Apèl videyo",
+      }
+    },
+    zh: { 
+      flag:"🇨🇳", name:"中文", country:"中国、台湾、新加坡...",
+      t:{
+        discussions:"💬 聊天", archives:"🗄 归档", statuts:"状态",
+        appels:"通话", rechercher:"搜索...", enLigne:"● 在线",
+        ecrire:"输入消息...", envoyer:"发送",
+        monProfil:"我的资料", enregistrer:"保存 ✓",
+        nomAffichage:"显示名称", statut:"状态",
+        galerie:"相册", camera:"相机", supprimer:"删除",
+        choixAvatar:"或选择头像",
+        recEnCours:"录音中...", recPause:"已暂停",
+        annuler:"取消", pause:"暂停", reprendre:"继续",
+        entrerNumero:"输入手机号继续",
+        numeroTel:"手机号码", recevoirCode:"接收短信验证码",
+        codeSms:"收到的短信验证码", confirmer:"确认",
+        modifierNum:"← 更改号码",
+        choisirLangue:"🌍 选择语言",
+        monStatut:"我的状态", ajouterStatut:"点击添加状态",
+        texte:"✏️ 文字", photo:"📷 图片", video:"🎥 视频",
+        nouveauStatut:"新状态", publier:"发布",
+        statut24h:"状态24小时后消失",
+        recents:"最近", aucunStatut:"暂无状态",
+        supprimerPourMoi:"🗑 为我删除",
+        supprimerPourTous:"🗑 为所有人删除",
+        msgSupprime:"🚫 消息已删除",
+        vocal:"🎵 语音", enLigneStatus:"● 在线", horsLigne:"⚫ 离线",
+        appAudio:"🎙 语音通话", appVideo:"📹 视频通话",
+      }
+    },
+    pt: {
+      flag:"🇧🇷", name:"Português", country:"Brésil, Portugal, Angola, Mozambique...",
+      t:{
+        discussions:"💬 Conversas", archives:"🗄 Arquivadas", statuts:"Status",
+        appels:"Chamadas", rechercher:"Pesquisar...", enLigne:"● Online",
+        ecrire:"Escrever mensagem...", envoyer:"Enviar",
+        monProfil:"Meu perfil", enregistrer:"Salvar ✓",
+        nomAffichage:"Nome de exibição", statut:"Status",
+        galerie:"Galeria", camera:"Câmera", supprimer:"Remover",
+        choixAvatar:"Ou escolha um avatar",
+        recEnCours:"Gravando...", recPause:"Pausado",
+        annuler:"Cancelar", pause:"Pausar", reprendre:"Retomar",
+        entrerNumero:"Digite seu número para continuar",
+        numeroTel:"Número de telefone", recevoirCode:"Receber código SMS",
+        codeSms:"Código SMS recebido", confirmer:"Confirmar",
+        modifierNum:"← Alterar número",
+        choisirLangue:"🌍 Escolher idioma",
+        monStatut:"Meu status", ajouterStatut:"Toque para adicionar status",
+        texte:"✏️ Texto", photo:"📷 Foto", video:"🎥 Vídeo",
+        nouveauStatut:"Novo status", publier:"Publicar",
+        statut24h:"O status desaparece após 24 horas",
+        recents:"Recentes", aucunStatut:"Nenhum status ainda",
+        supprimerPourMoi:"🗑 Apagar para mim",
+        supprimerPourTous:"🗑 Apagar para todos",
+        msgSupprime:"🚫 Mensagem apagada",
+        vocal:"🎵 Áudio", enLigneStatus:"● Online", horsLigne:"⚫ Offline",
+        appAudio:"🎙 Chamada de voz", appVideo:"📹 Chamada de vídeo",
+      }
+    },
+    wo: {
+      flag:"🇸🇳", name:"Wolof", country:"Sénégal, Gambie...",
+      t:{
+        discussions:"💬 Waxtu", archives:"🗄 Dëkkante", statuts:"Yéwwi",
+        appels:"Wóor", rechercher:"Seet...", enLigne:"● Connecté",
+        ecrire:"Bind sa xabaar...", envoyer:"Yónnee",
+        monProfil:"Sa profil", enregistrer:"Dëkk ✓",
+        nomAffichage:"Sa tuur", statut:"Yéwwi",
+        galerie:"Nattu", camera:"Jamonoy", supprimer:"Fey",
+        choixAvatar:"Tann sa avatar",
+        recEnCours:"Dagg rekk...", recPause:"Tëdd",
+        annuler:"Bàyyi", pause:"Tëdd", reprendre:"Tukki",
+        entrerNumero:"Bind sa nimero ci kanam",
+        numeroTel:"Nimero telefon", recevoirCode:"Jël code SMS bi",
+        codeSms:"Code SMS ji jëkk", confirmer:"Sëtu",
+        modifierNum:"← Soppi nimero",
+        choisirLangue:"🌍 Tann lakk",
+        monStatut:"Sa yéwwi", ajouterStatut:"Topp ngir yëgël yéwwi",
+        texte:"✏️ Bindkat", photo:"📷 Nattu", video:"🎥 Vidéo",
+        nouveauStatut:"Yéwwi bu bees", publier:"Yónnee",
+        statut24h:"Yéwwi bi dafay dem ci 24 waxtu",
+        recents:"Bu mujj", aucunStatut:"Amul yéwwi",
+        supprimerPourMoi:"🗑 Fey ci sama bopp",
+        supprimerPourTous:"🗑 Fey ci yépp",
+        msgSupprime:"🚫 Xabaar bi feye",
+        vocal:"🎵 Dagg", enLigneStatus:"● Connecté", horsLigne:"⚫ Déconnecté",
+        appAudio:"🎙 Wóor", appVideo:"📹 Wóor nattu",
+      }
+    },
+    ha: {
+      flag:"🇳🇬", name:"Hausa", country:"Nigéria, Niger, Ghana...",
+      t:{
+        discussions:"💬 Tattaunawa", archives:"🗄 Ajiye", statuts:"Yanayi",
+        appels:"Kira", rechercher:"Bincika...", enLigne:"● Kan layi",
+        ecrire:"Rubuta sako...", envoyer:"Aika",
+        monProfil:"Bayanan na", enregistrer:"Ajiye ✓",
+        nomAffichage:"Sunan nuna", statut:"Yanayi",
+        galerie:"Hotuna", camera:"Kyamara", supprimer:"Share",
+        choixAvatar:"Ko zaɓi avatar",
+        recEnCours:"Ana yin rikodin...", recPause:"An tsaya",
+        annuler:"Soke", pause:"Tsaya", reprendre:"Ci gaba",
+        entrerNumero:"Shigar da lambar ka don ci gaba",
+        numeroTel:"Lambar waya", recevoirCode:"Karɓi code SMS",
+        codeSms:"Code SMS da aka karɓa", confirmer:"Tabbatar",
+        modifierNum:"← Canza lamba",
+        choisirLangue:"🌍 Zaɓi harshe",
+        monStatut:"Yanayin na", ajouterStatut:"Danna don ƙara yanayi",
+        texte:"✏️ Rubutu", photo:"📷 Hoto", video:"🎥 Bidiyo",
+        nouveauStatut:"Sabon yanayi", publier:"Wallafa",
+        statut24h:"Yanayi ya ɓace bayan awanni 24",
+        recents:"Na kwanan nan", aucunStatut:"Babu yanayi tukuna",
+        supprimerPourMoi:"🗑 Share dominan",
+        supprimerPourTous:"🗑 Share don kowa",
+        msgSupprime:"🚫 An share sako",
+        vocal:"🎵 Murya", enLigneStatus:"● Kan layi", horsLigne:"⚫ Ba kan layi ba",
+        appAudio:"🎙 Kiran murya", appVideo:"📹 Kiran bidiyo",
+      }
+    },
+    ja: {
+      flag:"🇯🇵", name:"日本語", country:"日本...",
+      t:{
+        discussions:"💬 チャット", archives:"🗄 アーカイブ", statuts:"ステータス",
+        appels:"通話", rechercher:"検索...", enLigne:"● オンライン",
+        ecrire:"メッセージを入力...", envoyer:"送信",
+        monProfil:"マイプロフィール", enregistrer:"保存 ✓",
+        nomAffichage:"表示名", statut:"ステータス",
+        galerie:"ギャラリー", camera:"カメラ", supprimer:"削除",
+        choixAvatar:"またはアバターを選択",
+        recEnCours:"録音中...", recPause:"一時停止",
+        annuler:"キャンセル", pause:"一時停止", reprendre:"再開",
+        entrerNumero:"続けるには番号を入力してください",
+        numeroTel:"電話番号", recevoirCode:"SMS コードを受信",
+        codeSms:"受信した SMS コード", confirmer:"確認",
+        modifierNum:"← 番号を変更",
+        choisirLangue:"🌍 言語を選択",
+        monStatut:"マイステータス", ajouterStatut:"タップしてステータスを追加",
+        texte:"✏️ テキスト", photo:"📷 写真", video:"🎥 動画",
+        nouveauStatut:"新しいステータス", publier:"公開",
+        statut24h:"ステータスは24時間後に消えます",
+        recents:"最近", aucunStatut:"ステータスなし",
+        supprimerPourMoi:"🗑 自分のみ削除",
+        supprimerPourTous:"🗑 全員から削除",
+        msgSupprime:"🚫 メッセージが削除されました",
+        vocal:"🎵 音声", enLigneStatus:"● オンライン", horsLigne:"⚫ オフライン",
+        appAudio:"🎙 音声通話", appVideo:"📹 ビデオ通話",
+      }
+    },
+    tr: {
+      flag:"🇹🇷", name:"Türkçe", country:"Türkiye...",
+      t:{
+        discussions:"💬 Sohbetler", archives:"🗄 Arşiv", statuts:"Durumlar",
+        appels:"Aramalar", rechercher:"Ara...", enLigne:"● Çevrimiçi",
+        ecrire:"Mesaj yaz...", envoyer:"Gönder",
+        monProfil:"Profilim", enregistrer:"Kaydet ✓",
+        nomAffichage:"Görünen ad", statut:"Durum",
+        galerie:"Galeri", camera:"Kamera", supprimer:"Sil",
+        choixAvatar:"Veya avatar seç",
+        recEnCours:"Kaydediliyor...", recPause:"Duraklatıldı",
+        annuler:"İptal", pause:"Duraklat", reprendre:"Devam et",
+        entrerNumero:"Devam etmek için numaranı gir",
+        numeroTel:"Telefon numarası", recevoirCode:"SMS kodu al",
+        codeSms:"Alınan SMS kodu", confirmer:"Onayla",
+        modifierNum:"← Numarayı değiştir",
+        choisirLangue:"🌍 Dil seç",
+        monStatut:"Durumum", ajouterStatut:"Durum eklemek için dokun",
+        texte:"✏️ Metin", photo:"📷 Fotoğraf", video:"🎥 Video",
+        nouveauStatut:"Yeni durum", publier:"Yayımla",
+        statut24h:"Durum 24 saat sonra kaybolur",
+        recents:"Son", aucunStatut:"Henüz durum yok",
+        supprimerPourMoi:"🗑 Benim için sil",
+        supprimerPourTous:"🗑 Herkes için sil",
+        msgSupprime:"🚫 Mesaj silindi",
+        vocal:"🎵 Ses", enLigneStatus:"● Çevrimiçi", horsLigne:"⚫ Çevrimdışı",
+        appAudio:"🎙 Sesli arama", appVideo:"📹 Görüntülü arama",
+      }
+    },
+    sw: {
+      flag:"🇰🇪", name:"Kiswahili", country:"Kenya, Tanzanie, Ouganda...",
+      t:{
+        discussions:"💬 Mazungumzo", archives:"🗄 Kumbukumbu", statuts:"Hali",
+        appels:"Simu", rechercher:"Tafuta...", enLigne:"● Mtandaoni",
+        ecrire:"Andika ujumbe...", envoyer:"Tuma",
+        monProfil:"Wasifu wangu", enregistrer:"Hifadhi ✓",
+        nomAffichage:"Jina la kuonyesha", statut:"Hali",
+        galerie:"Matunzio", camera:"Kamera", supprimer:"Futa",
+        choixAvatar:"Au chagua picha ya wasifu",
+        recEnCours:"Inaandika...", recPause:"Imesimamishwa",
+        annuler:"Ghairi", pause:"Simamisha", reprendre:"Endelea",
+        entrerNumero:"Ingiza nambari yako kuendelea",
+        numeroTel:"Nambari ya simu", recevoirCode:"Pokea msimbo wa SMS",
+        codeSms:"Msimbo wa SMS uliopokelewa", confirmer:"Thibitisha",
+        modifierNum:"← Badilisha nambari",
+        choisirLangue:"🌍 Chagua lugha",
+        monStatut:"Hali yangu", ajouterStatut:"Gonga kuongeza hali",
+        texte:"✏️ Maandishi", photo:"📷 Picha", video:"🎥 Video",
+        nouveauStatut:"Hali mpya", publier:"Chapisha",
+        statut24h:"Hali inatoweka baada ya masaa 24",
+        recents:"Za hivi karibuni", aucunStatut:"Hakuna hali bado",
+        supprimerPourMoi:"🗑 Futa kwangu",
+        supprimerPourTous:"🗑 Futa kwa wote",
+        msgSupprime:"🚫 Ujumbe umefutwa",
+        vocal:"🎵 Sauti", enLigneStatus:"● Mtandaoni", horsLigne:"⚫ Nje ya mtandao",
+        appAudio:"🎙 Simu ya sauti", appVideo:"📹 Simu ya video",
+      }
+    },
+  };
+
+  let currentLang = localStorage.getItem("sonia_lang") || "fr";
+
+  function t(key){ return (LANGS[currentLang]||LANGS.fr).t[key] || key; }
+
+  function applyLang(){
+    const L = LANGS[currentLang]||LANGS.fr;
+    // Auth screen button
+    const af=$("auth-lang-flag"); if(af) af.textContent=L.flag;
+    const an=$("auth-lang-name"); if(an) an.textContent=L.name;
+    // Auth screen texts
+    const as=$("auth-sub"); if(as) as.textContent=t("entrerNumero");
+    const lp=$("lbl-phone"); if(lp) lp.textContent=t("numeroTel");
+    const lo=$("lbl-otp"); if(lo) lo.textContent=t("codeSms");
+    const sc=$("send-code-btn"); if(sc) sc.textContent=t("recevoirCode");
+    const vb=$("verify-btn"); if(vb) vb.textContent=t("confirmer");
+    const bb=$("back-btn"); if(bb) bb.textContent=t("modifierNum");
+    // Tabs
+    const tc=$("tab-chats"); if(tc) tc.textContent=t("discussions");
+    const ta=$("tab-archived"); if(ta) ta.textContent=t("archives");
+    // Search
+    const si=$("search-input"); if(si) si.placeholder=t("rechercher");
+    // Nav
+    const nc=$("nav-chats-lbl"); if(nc) nc.textContent=t("discussions").replace("💬 ","");
+    const ns=$("nav-status-lbl"); if(ns) ns.textContent=t("statuts");
+    const na=$("nav-calls-lbl"); if(na) na.textContent=t("appels");
+    // Input
+    const ti=$("txt-in"); if(ti) ti.placeholder=t("ecrire");
+    // Profile modal
+    const fn=$("f-name"); if(fn) fn.placeholder=t("nomAffichage");
+    const fs=$("f-status"); if(fs) fs.placeholder=t("statut");
+    const spb=$("save-prof-btn"); if(spb) spb.textContent=t("enregistrer");
+    // Rec buttons
+    const rd=document.querySelector("#r-delete span:last-child"); if(rd) rd.textContent=t("annuler");
+    const rp=document.querySelector("#r-pause span:last-child"); if(rp) rp.textContent=t("pause");
+    const rr=document.querySelector("#r-resume span:last-child"); if(rr) rr.textContent=t("reprendre");
+    // RTL for Arabic and Hebrew
+    document.body.dir=(currentLang==="ar"||currentLang==="he")?"rtl":"ltr";
+    // Update topbar lang button flag
+    const lb=$("lang-btn"); if(lb) lb.textContent=L.flag;
+    localStorage.setItem("sonia_lang", currentLang);
+  }
+
+  function buildLangList(){
+    const list=$("lang-list"); list.innerHTML="";
+    Object.entries(LANGS).forEach(([code, lang])=>{
+      const item=document.createElement("div");
+      item.className="lang-item"+(code===currentLang?" selected":"");
+      item.innerHTML=
+        '<div class="lang-flag">'+lang.flag+'</div>'+
+        '<div class="lang-info">'+
+          '<div class="lang-name">'+lang.name+'</div>'+
+          '<div class="lang-country">'+lang.country+'</div>'+
+        '</div>'+
+        (code===currentLang?'<div class="lang-check">✓</div>':'');
+      item.onclick=()=>{
+        currentLang=code;
+        applyLang();
+        buildLangList();
+        $("lang-overlay").style.display="none";
+        toast((LANGS[code]||LANGS.fr).name+" ✓");
+      };
+      list.appendChild(item);
+    });
+  }
+
+  $("lang-btn").onclick=()=>{ buildLangList(); $("lang-overlay").style.display="flex"; };
+  $("auth-lang-btn").onclick=()=>{ buildLangList(); $("lang-overlay").style.display="flex"; };
+  $("lang-close").onclick=()=>$("lang-overlay").style.display="none";
+  $("lang-overlay").onclick=e=>{ if(e.target===$("lang-overlay"))$("lang-overlay").style.display="none"; };
+
+  // Appliquer la langue au démarrage
+  applyLang();
+
+  // ---- PARTAGE APP ----
+  const APP_URL = "https://orsservice20-crypto.github.io/Sonia";
+  const APP_MSG = "💬 Rejoins-moi sur Sonia !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
+
+  $("share-app-btn").onclick=()=>{ $("share-overlay").style.display="flex"; };
+  $("share-close").onclick=()=>{ $("share-overlay").style.display="none"; };
+  $("share-overlay").onclick=e=>{ if(e.target===$("share-overlay"))$("share-overlay").style.display="none"; };
+
+  async function copyText(txt){
+    try{ await navigator.clipboard.writeText(txt); return true; }
+    catch(e){
+      const el=document.createElement("textarea");
+      el.value=txt; document.body.appendChild(el);
+      el.select(); document.execCommand("copy"); el.remove();
+      return true;
+    }
+  }
+
+  $("copy-link-btn").onclick=async()=>{
+    await copyText(APP_URL);
+    $("copy-link-btn").textContent="✅";
+    setTimeout(()=>{ $("copy-link-btn").textContent="📋"; },2000);
+    toast("Lien copié ✓");
+  };
+
+  $("copy-msg-btn").onclick=async()=>{
+    await copyText(APP_MSG);
+    toast("Message copié ✓");
+  };
+
+  $("share-native-btn").onclick=async()=>{
+    if(navigator.share){
+      try{ await navigator.share({title:"Sonia – Messagerie",text:APP_MSG,url:APP_URL}); }catch(e){}
+    } else { await copyText(APP_URL); toast("Lien copié ✓"); }
+  };
+
+  const enc=encodeURIComponent;
+  $("share-whatsapp").onclick=()=>  window.open("https://wa.me/?text="+enc(APP_MSG),"_blank");
+  $("share-facebook").onclick=()=>  window.open("https://www.facebook.com/sharer/sharer.php?u="+enc(APP_URL),"_blank");
+  $("share-twitter").onclick=()=>   window.open("https://twitter.com/intent/tweet?text="+enc(APP_MSG),"_blank");
+  $("share-telegram").onclick=()=>  window.open("https://t.me/share/url?url="+enc(APP_URL)+"&text="+enc("Rejoins-moi sur Sonia 🚀"),"_blank");
+  $("share-instagram").onclick=async()=>{
+    await copyText(APP_MSG);
+    toast("Message copié — colle-le dans Instagram !");
+    setTimeout(()=>window.open("https://www.instagram.com","_blank"),800);
+  };
+  $("share-sms").onclick=()=> window.open("sms:?body="+enc(APP_MSG),"_blank");
+
   $("nav-chats").onclick  = () => { showScreen("s-list"); setNav("nav-chats"); };
   $("nav-status").onclick = () => { showScreen("s-status"); setNav("nav-status"); loadStatuses(); };
   $("nav-calls").onclick  = () => toast("Appels recents — bientot disponible");
@@ -1040,13 +1597,25 @@ input{font-family:inherit;border:none;outline:none}
 .c-btn.hangup{background:var(--danger)}
 .c-btn.muted{background:var(--warn)}
 
-/* ---- BOTTOM NAV ---- */
+/* ---- SHARE ---- */
+.share-net-btn{display:flex;align-items:center;gap:8px;padding:12px 14px;border-radius:14px;background:var(--surface);border:1.5px solid var(--border);color:var(--text);font-size:13px;font-weight:700;font-family:inherit;cursor:pointer;transition:all .15s}
+.share-net-btn:active{background:var(--glow);border-color:var(--accent)}
+.share-net-btn span:last-child{flex:1;text-align:left}
+
+/* ---- LANGUAGE SELECTOR ---- */
+.lang-item{display:flex;align-items:center;gap:14px;padding:14px 12px;border-radius:14px;border:1.5px solid var(--border);margin-bottom:8px;cursor:pointer;transition:all .15s;background:var(--surface)}
+.lang-item:active{background:var(--glow);border-color:var(--accent)}
+.lang-item.selected{background:var(--glow);border-color:var(--accent)}
+.lang-flag{font-size:28px;flex-shrink:0;width:40px;text-align:center}
+.lang-info{flex:1}
+.lang-name{color:var(--text);font-weight:700;font-size:15px}
+.lang-country{color:var(--sub);font-size:12px;margin-top:2px}
+.lang-check{color:var(--accent);font-size:20px;font-weight:900}
 .bottom-nav{display:flex;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0}
 .nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:10px 4px;font-size:20px;color:var(--sub);transition:color .2s;position:relative}
 .nav-btn.active{color:var(--accent)}
 .nav-btn span{font-size:11px;font-weight:700}
 .nav-badge{position:absolute;top:6px;right:calc(50% - 18px);background:var(--danger);color:#fff;font-size:10px;font-weight:800;min-width:16px;height:16px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 4px}
-
 /* ---- STATUS SCREEN ---- */
 #s-status{display:flex;flex-direction:column}
 .status-topbar{display:flex;align-items:center;padding:12px 16px;gap:12px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
@@ -1112,6 +1681,14 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 
 <!-- AUTH -->
 <div class="screen" id="s-auth">
+  <!-- Barre langue en haut -->
+  <div style="display:flex;justify-content:flex-end;padding:12px 16px 0;position:absolute;top:0;right:0;z-index:10">
+    <button id="auth-lang-btn" style="display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.12);border-radius:20px;padding:7px 14px;color:#e8f0fe;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">
+      <span id="auth-lang-flag">🇫🇷</span>
+      <span id="auth-lang-name">Français</span>
+      <span style="font-size:10px;opacity:.7">▼</span>
+    </button>
+  </div>
   <div class="auth-card">
     <div class="logo-row">
       <div class="logo-icon">
@@ -1121,10 +1698,10 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
         </svg>
       </div>
       <div class="logo-name">Sonia</div>
-      <div class="logo-sub" id="auth-sub">Entrez votre numero pour continuer</div>
+      <div class="logo-sub" id="auth-sub">Entrez votre numéro pour continuer</div>
     </div>
     <div id="step-phone">
-      <label class="field-label">Numero de telephone</label>
+      <label class="field-label" id="lbl-phone">Numéro de téléphone</label>
       <div class="phone-row">
         <div class="flag-box">🌍 +</div>
         <input class="ph-input" id="ph-input" type="tel" placeholder="224 600 000 000"/>
@@ -1132,7 +1709,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       <button class="big-btn" id="send-code-btn">Recevoir le code SMS</button>
     </div>
     <div id="step-otp" style="display:none">
-      <label class="field-label">Code SMS recu</label>
+      <label class="field-label" id="lbl-otp">Code SMS reçu</label>
       <div class="otp-row">
         <input class="otp-box" maxlength="1" inputmode="numeric"/>
         <input class="otp-box" maxlength="1" inputmode="numeric"/>
@@ -1143,7 +1720,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       </div>
       <p class="otp-hint" id="otp-hint-el"></p>
       <button class="big-btn" id="verify-btn" style="margin-top:10px">Confirmer</button>
-      <button class="ghost-btn" id="back-btn">← Modifier le numero</button>
+      <button class="ghost-btn" id="back-btn">← Modifier le numéro</button>
     </div>
     <div class="err-msg" id="auth-err"></div>
   </div>
@@ -1154,11 +1731,13 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
   <div class="topbar">
     <button id="open-prof-btn"><div class="my-av" id="my-av-el"><span>🧑🏾</span></div></button>
     <div class="topbar-title"><span id="my-name-el">Sonia</span><span id="my-status-el">● En ligne</span></div>
+    <button class="icon-circle" id="share-app-btn" title="Partager l'application" style="font-size:18px">🔗</button>
+    <button class="icon-circle" id="lang-btn" title="Changer la langue" style="font-size:20px">🌍</button>
     <button class="icon-circle" id="settings-btn">⚙</button>
   </div>
   <div class="tabs-wrap"><div class="tabs">
-    <button class="tab on" data-tab="chats">💬 Discussions</button>
-    <button class="tab" data-tab="archived">🗄 Archives</button>
+    <button class="tab on" data-tab="chats" id="tab-chats">💬 Discussions</button>
+    <button class="tab" data-tab="archived" id="tab-archived">🗄 Archives</button>
   </div></div>
   <div class="search-wrap"><div class="search-box">
     <span style="color:var(--dim);font-size:16px">🔍</span>
@@ -1167,9 +1746,100 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
   <div class="list-body" id="contact-list"></div>
   <!-- Barre navigation bas -->
   <div class="bottom-nav">
-    <button class="nav-btn active" id="nav-chats">💬<span>Discussions</span></button>
-    <button class="nav-btn" id="nav-status">🔵<span>Statuts</span><div class="nav-badge hidden" id="status-badge">0</div></button>
-    <button class="nav-btn" id="nav-calls">📞<span>Appels</span></button>
+    <button class="nav-btn active" id="nav-chats">💬<span id="nav-chats-lbl">Discussions</span></button>
+    <button class="nav-btn" id="nav-status">🔵<span id="nav-status-lbl">Statuts</span><div class="nav-badge hidden" id="status-badge">0</div></button>
+    <button class="nav-btn" id="nav-calls">📞<span id="nav-calls-lbl">Appels</span></button>
+  </div>
+</div>
+
+<!-- SHARE MODAL -->
+<div class="overlay" id="share-overlay" style="display:none">
+  <div class="modal">
+    <div class="modal-drag"></div>
+    <div class="modal-head">
+      <span class="modal-title">🔗 Partager Sonia</span>
+      <button class="modal-close" id="share-close">✕</button>
+    </div>
+    <div style="padding:0 20px 28px">
+
+      <!-- App info -->
+      <div style="display:flex;align-items:center;gap:14px;background:var(--surface);border-radius:16px;padding:16px;margin-bottom:20px;border:1px solid var(--border)">
+        <div style="width:56px;height:56px;border-radius:14px;overflow:hidden;flex-shrink:0">
+          <svg width="56" height="56" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect width="64" height="64" rx="18" fill="#ff2d2d"/>
+            <path d="M10 18C10 14.686 12.686 12 16 12H48C51.314 12 54 14.686 54 18V38C54 41.314 51.314 44 48 44H36L26 54V44H16C12.686 44 10 41.314 10 38V18Z" fill="#00d4aa"/>
+          </svg>
+        </div>
+        <div>
+          <div style="color:var(--text);font-weight:800;font-size:17px">Sonia</div>
+          <div style="color:var(--sub);font-size:12px;margin-top:2px">Application de messagerie gratuite</div>
+          <div style="color:var(--accent);font-size:11px;font-weight:700;margin-top:4px">● Disponible maintenant</div>
+        </div>
+      </div>
+
+      <!-- Lien à copier -->
+      <p style="color:var(--sub);font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-bottom:8px">Lien de l'application</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:20px">
+        <div style="flex:1;background:var(--surface);border:1.5px solid var(--border);border-radius:12px;padding:12px 14px;font-size:13px;color:var(--accent);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="share-link-display">https://orsservice20-crypto.github.io/Sonia</div>
+        <button id="copy-link-btn" style="flex-shrink:0;width:44px;height:44px;border-radius:12px;background:var(--accent);font-size:18px;display:flex;align-items:center;justify-content:center">📋</button>
+      </div>
+
+      <!-- Texte prêt à partager -->
+      <p style="color:var(--sub);font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-bottom:8px">Message prêt à envoyer</p>
+      <div id="share-msg-box" style="background:var(--surface);border:1.5px solid var(--border);border-radius:14px;padding:14px;font-size:13px;color:var(--text);line-height:1.6;margin-bottom:16px">
+        💬 <b>Rejoins-moi sur Sonia !</b><br/>
+        L'app de messagerie gratuite 🚀<br/>
+        ✅ Messages, photos, vidéos, vocaux<br/>
+        📞 Appels audio & vidéo<br/>
+        🔵 Statuts 24h<br/><br/>
+        👉 Clique ici pour accéder : <span style="color:var(--accent)">https://orsservice20-crypto.github.io/Sonia</span>
+      </div>
+      <button id="copy-msg-btn" style="width:100%;padding:13px;border-radius:14px;background:var(--surface);border:1.5px solid var(--border);color:var(--text);font-size:14px;font-weight:700;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:12px">
+        📋 Copier le message complet
+      </button>
+
+      <!-- Boutons réseaux sociaux -->
+      <p style="color:var(--sub);font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">Partager sur</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <button class="share-net-btn" id="share-whatsapp">
+          <span style="font-size:22px">💬</span><span>WhatsApp</span>
+        </button>
+        <button class="share-net-btn" id="share-facebook">
+          <span style="font-size:22px">📘</span><span>Facebook</span>
+        </button>
+        <button class="share-net-btn" id="share-twitter">
+          <span style="font-size:22px">🐦</span><span>Twitter / X</span>
+        </button>
+        <button class="share-net-btn" id="share-telegram">
+          <span style="font-size:22px">✈️</span><span>Telegram</span>
+        </button>
+        <button class="share-net-btn" id="share-instagram">
+          <span style="font-size:22px">📸</span><span>Instagram</span>
+        </button>
+        <button class="share-net-btn" id="share-sms">
+          <span style="font-size:22px">📱</span><span>SMS</span>
+        </button>
+      </div>
+
+      <!-- Bouton natif partage -->
+      <button id="share-native-btn" style="width:100%;margin-top:12px;padding:14px;border-radius:14px;background:var(--accent);border:none;color:#000;font-size:15px;font-weight:800;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">
+        📤 Partager via...
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- LANGUE MODAL -->
+<div class="overlay" id="lang-overlay" style="display:none">
+  <div class="modal">
+    <div class="modal-drag"></div>
+    <div class="modal-head">
+      <span class="modal-title">🌍 Choisir la langue</span>
+      <button class="modal-close" id="lang-close">✕</button>
+    </div>
+    <div style="padding:0 16px 24px">
+      <div id="lang-list"></div>
+    </div>
   </div>
 </div>
 
