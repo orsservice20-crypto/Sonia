@@ -9,7 +9,7 @@
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import { getDatabase, ref, push, onValue, update, serverTimestamp, get, set, onDisconnect } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import { getDatabase, ref, push, onValue, update, serverTimestamp, get, set, onDisconnect, enableNetwork, disableNetwork } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
 // ---- FIREBASE CONFIG ----
 const firebaseConfig = {
@@ -26,6 +26,31 @@ const firebaseConfig = {
 const app  = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db   = getDatabase(app);
+
+// ---- CACHE LOCAL (hors ligne) ----
+const CACHE = {
+  save(key, data){ try{ localStorage.setItem("sonia_"+key, JSON.stringify(data)); }catch(e){} },
+  load(key){ try{ const d=localStorage.getItem("sonia_"+key); return d?JSON.parse(d):null; }catch(e){return null;} },
+  del(key){ try{ localStorage.removeItem("sonia_"+key); }catch(e){} }
+};
+
+// ---- DETECTEUR CONNEXION (silencieux) ----
+let isOnline = navigator.onLine;
+
+window.addEventListener("online",  () => {
+  isOnline = true;
+  // Relancer les listeners Firebase silencieusement
+  if(S.myUid){
+    listenContacts();
+    if(S.activeId) listenMessages();
+  }
+});
+window.addEventListener("offline", () => { isOnline = false; });
+
+// Enregistrement Service Worker pour cache des ressources
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.register("sw.js").catch(()=>{});
+}
 
 // ---- SMS API KEY (Seven.io) ----
 const SMS_API_KEY = "6IMieB6iuVzvA8Exbi9KBQChlqhFt1TGhxClLBlosuZ7zbimeowQk0BMXj8cJTbG";
@@ -172,27 +197,61 @@ function initApp(){
   onAuthStateChanged(auth, async user => {
     if(user){
       S.myUid   = user.uid;
-      S.myPhone = S.pendingPhone || "utilisateur";
-      const snap = await get(ref(db, "users/" + S.myUid));
-      if(snap.exists()){
-        Object.assign(S.profile, snap.val());
+      S.myPhone = S.pendingPhone || CACHE.load("myPhone") || "utilisateur";
+      CACHE.save("myUid",   S.myUid);
+      CACHE.save("myPhone", S.myPhone);
+
+      if(isOnline){
+        try{
+          const snap = await get(ref(db, "users/" + S.myUid));
+          if(snap.exists()){
+            Object.assign(S.profile, snap.val());
+            CACHE.save("profile", S.profile);
+          } else {
+            S.profile.name = S.myPhone;
+            await set(ref(db, "users/" + S.myUid), {
+              uid: S.myUid, phone: S.myPhone,
+              name: S.profile.name, status: "En ligne",
+              emoji: "🧑🏾", avType: "emoji", img: null,
+              online: true, lastSeen: serverTimestamp()
+            });
+            CACHE.save("profile", S.profile);
+          }
+          const presRef = ref(db, "users/" + S.myUid + "/online");
+          await set(presRef, true);
+          onDisconnect(presRef).set(false);
+        }catch(e){ console.warn("Offline auth:", e); }
       } else {
-        S.profile.name = S.myPhone;
-        await set(ref(db, "users/" + S.myUid), {
-          uid: S.myUid, phone: S.myPhone,
-          name: S.profile.name, status: "En ligne",
-          emoji: "🧑🏾", avType: "emoji", img: null,
-          online: true, lastSeen: serverTimestamp()
-        });
+        // Charger le profil depuis le cache
+        const cached = CACHE.load("profile");
+        if(cached) Object.assign(S.profile, cached);
       }
-      const presRef = ref(db, "users/" + S.myUid + "/online");
-      await set(presRef, true);
-      onDisconnect(presRef).set(false);
+
+      // Charger contacts depuis cache si hors ligne
+      if(!isOnline){
+        const cachedContacts = CACHE.load("contacts");
+        if(cachedContacts){ S.contacts = cachedContacts; renderList(); }
+      }
+
       updateMyAv();
-      listenContacts();
+      if(isOnline) listenContacts();
       showScreen("s-list");
     } else {
-      showScreen("s-auth");
+      // Vérifier si déjà connecté via cache
+      const cachedUid = CACHE.load("myUid");
+      if(cachedUid && !isOnline){
+        S.myUid   = cachedUid;
+        S.myPhone = CACHE.load("myPhone") || "utilisateur";
+        const cached = CACHE.load("profile");
+        if(cached) Object.assign(S.profile, cached);
+        const cachedContacts = CACHE.load("contacts");
+        if(cachedContacts){ S.contacts = cachedContacts; }
+        updateMyAv();
+        renderList();
+        showScreen("s-list");
+      } else {
+        showScreen("s-auth");
+      }
     }
   });
 
@@ -205,6 +264,7 @@ function initApp(){
         const u = child.val();
         if(u.uid !== S.myUid) S.contacts.push(u);
       });
+      CACHE.save("contacts", S.contacts); // ← Sauvegarde hors ligne
       renderList();
     });
   }
@@ -300,12 +360,31 @@ function initApp(){
   function listenMessages(){
     if(S.unsubMessages){ S.unsubMessages(); S.unsubMessages = null; }
     const key = cid(S.myUid, S.activeId);
+
+    // Afficher d'abord les messages en cache (instantané)
+    const cached = CACHE.load("msgs_"+key);
+    if(cached && cached.length){
+      const box = $("msg-list"); box.innerHTML = "";
+      cached.forEach(m => box.appendChild(makeBubble(m)));
+      box.scrollTop = box.scrollHeight;
+    }
+
+    if(!isOnline){
+      // Hors ligne : afficher seulement le cache, silencieusement
+      return;
+    }
+
+    // En ligne : écouter Firebase et mettre à jour le cache
     S.unsubMessages = onValue(ref(db,"chats/"+key+"/messages"), snap => {
+      const msgs = [];
       const box = $("msg-list"); box.innerHTML = "";
       snap.forEach(child => {
         const m = { id: child.key, ...child.val() };
+        // Ne pas cacher les photos/vidéos (trop lourdes)
+        if(m.type !== "photo" && m.type !== "video") msgs.push(m);
         box.appendChild(makeBubble(m));
       });
+      CACHE.save("msgs_"+key, msgs); // ← Sauvegarde hors ligne
       box.scrollTop = box.scrollHeight;
     });
   }
@@ -833,7 +912,7 @@ function initApp(){
         appAudio:"🎙 Apèl audio", appVideo:"📹 Apèl videyo",
       }
     },
-    zh: { 
+    zh: {
       flag:"🇨🇳", name:"中文", country:"中国、台湾、新加坡...",
       t:{
         discussions:"💬 聊天", archives:"🗄 归档", statuts:"状态",
@@ -1302,7 +1381,6 @@ function initApp(){
     });
     if(!hasAny){ $("no-contacts-status").style.display="block"; $("contacts-statuses-section").style.display="none"; }
   }
-
   function timeSince(ts){
     const diff=Date.now()-ts;
     if(diff<60000) return "a l instant";
@@ -1616,6 +1694,7 @@ input{font-family:inherit;border:none;outline:none}
 .nav-btn.active{color:var(--accent)}
 .nav-btn span{font-size:11px;font-weight:700}
 .nav-badge{position:absolute;top:6px;right:calc(50% - 18px);background:var(--danger);color:#fff;font-size:10px;font-weight:800;min-width:16px;height:16px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 4px}
+
 /* ---- STATUS SCREEN ---- */
 #s-status{display:flex;flex-direction:column}
 .status-topbar{display:flex;align-items:center;padding:12px 16px;gap:12px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
@@ -1761,8 +1840,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       <button class="modal-close" id="share-close">✕</button>
     </div>
     <div style="padding:0 20px 28px">
-
-      <!-- App info -->
+<!-- App info -->
       <div style="display:flex;align-items:center;gap:14px;background:var(--surface);border-radius:16px;padding:16px;margin-bottom:20px;border:1px solid var(--border)">
         <div style="width:56px;height:56px;border-radius:14px;overflow:hidden;flex-shrink:0">
           <svg width="56" height="56" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
