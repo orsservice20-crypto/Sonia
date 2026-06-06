@@ -5,1611 +5,492 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
 <title>Sonia</title>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&display=swap" rel="stylesheet"/>
-<script type="module">
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<script>
+const firebaseConfig={apiKey:"AIzaSyD8TsBNkUQ_ymSbhOxNaOcq_j-w38OHrSg",authDomain:"sonia-a2b62.firebaseapp.com",databaseURL:"https://sonia-a2b62-default-rtdb.firebaseio.com",projectId:"sonia-a2b62",storageBucket:"sonia-a2b62.firebasestorage.app",messagingSenderId:"407732850153",appId:"1:407732850153:web:12fa073ce636a07e484f78"};
+firebase.initializeApp(firebaseConfig);
+const auth=firebase.auth();
+const db=firebase.database();
+const SMS_KEY="6IMieB6iuVzvA8Exbi9KBQChlqhFt1TGhxClLBlosuZ7zbimeowQk0BMXj8cJTbG";
+const APP_URL="https://orsservice20-crypto.github.io/Sonia";
 
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
-import { getDatabase, ref, push, onValue, update, serverTimestamp, get, set, onDisconnect, enableNetwork, disableNetwork } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
-
-// ---- FIREBASE CONFIG ----
-const firebaseConfig = {
-  apiKey:            "AIzaSyD8TsBNkUQ_ymSbhOxNaOcq_j-w38OHrSg",
-  authDomain:        "sonia-a2b62.firebaseapp.com",
-  databaseURL:       "https://sonia-a2b62-default-rtdb.firebaseio.com",
-  projectId:         "sonia-a2b62",
-  storageBucket:     "sonia-a2b62.firebasestorage.app",
-  messagingSenderId: "407732850153",
-  appId:             "1:407732850153:web:12fa073ce636a07e484f78",
-  measurementId:     "G-MY33GSN5Y6"
+const CACHE={
+  save(k,d){try{localStorage.setItem("sonia_"+k,JSON.stringify(d));}catch(e){}},
+  load(k){try{const d=localStorage.getItem("sonia_"+k);return d?JSON.parse(d):null;}catch(e){return null;}},
 };
 
-const app  = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db   = getDatabase(app);
-
-// ---- CACHE LOCAL (hors ligne) ----
-const CACHE = {
-  save(key, data){ try{ localStorage.setItem("sonia_"+key, JSON.stringify(data)); }catch(e){} },
-  load(key){ try{ const d=localStorage.getItem("sonia_"+key); return d?JSON.parse(d):null; }catch(e){return null;} },
-  del(key){ try{ localStorage.removeItem("sonia_"+key); }catch(e){} }
+const S={
+  myUid:null,myPhone:null,
+  profile:{name:"",status:"En ligne",avType:"emoji",emoji:"🧑🏾",img:null},
+  contacts:[],activeId:null,arch:new Set(),tab:"chats",search:"",
+  unsubMsgs:null,unsubContacts:null,
+  recPaused:false,recSecs:0,recTick:null,
+  callSecs:0,callTick:null,callType:null,callMuted:false,
+  pendingPhoto:null,pendingVideo:null,pendingPhone:null,
 };
 
-// ---- DETECTEUR CONNEXION (silencieux) ----
-let isOnline = navigator.onLine;
+let isOnline=navigator.onLine;
+window.addEventListener("online",()=>{isOnline=true;if(S.myUid){listenContacts();if(S.activeId)listenMsgs();}});
+window.addEventListener("offline",()=>{isOnline=false;});
 
-window.addEventListener("online",  () => {
-  isOnline = true;
-  // Relancer les listeners Firebase silencieusement
-  if(S.myUid){
-    listenContacts();
-    if(S.activeId) listenMessages();
-  }
-});
-window.addEventListener("offline", () => { isOnline = false; });
+const $=id=>document.getElementById(id);
+const fmt=s=>String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
+const nowT=()=>new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"});
+const esc=t=>String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const chatKey=(a,b)=>[a,b].sort().join("_");
 
-// Enregistrement Service Worker pour cache des ressources
-if("serviceWorker" in navigator){
-  navigator.serviceWorker.register("sw.js").catch(()=>{});
+function showScreen(id){document.querySelectorAll(".screen").forEach(s=>s.classList.add("off"));$(id).classList.remove("off");}
+function toast(msg,type){const t=document.createElement("div");t.className="toast"+(type==="err"?" toast-err":"");t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.classList.add("show"),10);setTimeout(()=>{t.classList.remove("show");setTimeout(()=>t.remove(),400);},3000);}
+
+// ---- SMS ----
+async function sendSms(phone,code){
+  try{const r=await fetch("https://gateway.seven.io/api/sms",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded","X-Api-Key":SMS_KEY},body:new URLSearchParams({to:phone,from:"Sonia",text:"Votre code Sonia : "+code+". Valable 5 minutes."}).toString()});return r.ok;}catch(e){return false;}
 }
 
-// ---- SMS API KEY (Seven.io) ----
-const SMS_API_KEY = "6IMieB6iuVzvA8Exbi9KBQChlqhFt1TGhxClLBlosuZ7zbimeowQk0BMXj8cJTbG";
-
-// ---- ETAT GLOBAL ----
-const S = {
-  myUid: null, myPhone: null,
-  profile: { name:"", status:"En ligne", avType:"emoji", emoji:"🧑🏾", img:null },
-  contacts: [], activeId: null,
-  arch: new Set(), tab:"chats", search:"",
-  unsubMessages: null, unsubContacts: null,
-  recPaused:false, recSecs:0, recTick:null,
-  callSecs:0, callTick:null, callType:null, callMuted:false,
-  pendingPhoto:null, pendingVideo:null, pendingPhone:null, pendingCode:null,
-  selEmoji:"🧑🏾"
-};
-
-// ---- UTILITAIRES ----
-const $   = id => document.getElementById(id);
-const fmt = s  => String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
-const now = () => new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"});
-const esc = t  => String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-const cid = (a,b) => [a,b].sort().join("_");
-
-function showScreen(id){
-  document.querySelectorAll(".screen").forEach(s => s.classList.add("off"));
-  $(id).classList.remove("off");
-}
-
-// Fonction globale pour le bouton langue sur l'écran auth
-window.openLangFromAuth = function(){
-  const lo = document.getElementById("lang-overlay");
-  if(lo){
-    // Construire la liste si vide
-    const list = document.getElementById("lang-list");
-    if(list && list.innerHTML === "") {
-      // buildLangList sera disponible après initApp — on force ici
-      Object.entries(window._LANGS||{}).forEach(([code, lang])=>{
-        const item=document.createElement("div");
-        item.className="lang-item"+(code===(window._currentLang||"fr")?" selected":"");
-        item.innerHTML='<div class="lang-flag">'+lang.flag+'</div><div class="lang-info"><div class="lang-name">'+lang.name+'</div><div class="lang-country">'+lang.country+'</div></div>'+(code===(window._currentLang||"fr")?'<div class="lang-check">✓</div>':'');
-        item.onclick=()=>{
-          window._currentLang=code;
-          localStorage.setItem("sonia_lang",code);
-          if(window._applyLang) window._applyLang();
-          if(window._buildLangList) window._buildLangList();
-          lo.style.display="none";
-        };
-        list.appendChild(item);
-      });
-    }
-    lo.style.display="flex";
-  }
-};
-function toast(msg, type){
-  const t = document.createElement("div");
-  t.className = "toast" + (type === "err" ? " toast-err" : "");
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(() => t.classList.add("show"), 10);
-  setTimeout(() => { t.classList.remove("show"); setTimeout(() => t.remove(), 400); }, 3000);
-}
-
-// ---- ENVOI SMS via Seven.io ----
-async function sendSms(phone, code){
-  try {
-    const body = new URLSearchParams({
-      to:   phone,
-      from: "Sonia",
-      text: "Votre code Sonia : " + code + ". Valable 5 minutes."
-    });
-    const r = await fetch("https://gateway.seven.io/api/sms", {
-      method:  "POST",
-      headers: { "Content-Type":"application/x-www-form-urlencoded", "X-Api-Key": SMS_API_KEY },
-      body:    body.toString()
-    });
-    const txt = await r.text();
-    console.log("Seven:", txt);
-    return r.ok;
-  } catch(e) {
-    console.warn("SMS error:", e.message);
-    return false;
-  }
-}
-
-// ---- AUTH OTP ----
-const otpBoxes = [];
-
-// Fonctions globales auth (appelables depuis HTML)
-window.sendCode = async function(){
-  const raw = document.getElementById("ph-input").value.trim();
-  if(raw.replace(/\D/g,"").length < 8){ document.getElementById("auth-err").textContent = "Numero invalide"; return; }
-  document.getElementById("auth-err").textContent = "";
-  const btn = document.getElementById("send-code-btn"); btn.textContent = "Envoi..."; btn.disabled = true;
-  let phone = raw.replace(/\s/g,"");
-  if(!phone.startsWith("+")) phone = "+" + phone.replace(/\D/g,"");
-  S.pendingPhone = phone;
-  const code = String(Math.floor(100000 + Math.random()*900000));
-  S.pendingCode = code;
-  const key = phone.replace(/\+/g,"00").replace(/\D/g,"");
-  try{
-    const { ref: dbRef, set: dbSet } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
-    await dbSet(dbRef(db, "otpCodes/" + key), { code: code, expires: Date.now() + 5*60*1000 });
-  }catch(e){ console.warn("DB err:", e); }
-  const sent = await sendSms(phone, code);
-  if(sent){
-    document.getElementById("auth-sub").textContent = "SMS envoye au " + phone;
-    document.getElementById("otp-hint-el").textContent = "";
-  } else {
-    document.getElementById("auth-sub").textContent = "Code genere pour " + phone;
-    document.getElementById("otp-hint-el").textContent = "Code de test : " + code;
-    console.info("OTP:", code);
-  }
-  document.getElementById("step-phone").style.display = "none";
-  document.getElementById("step-otp").style.display   = "block";
-  otpBoxes[0] && otpBoxes[0].focus();
-  btn.textContent = (window._LANGS&&window._LANGS[window._currentLang||"fr"]) ? window._LANGS[window._currentLang||"fr"].t.recevoirCode : "Recevoir le code SMS";
-  btn.disabled = false;
-};
-
-window.verifyCode = async function(){
-  const entered = otpBoxes.map(b => b.value).join("");
-  if(entered.length < 6){ document.getElementById("auth-err").textContent = "Code incomplet"; return; }
-  document.getElementById("auth-err").textContent = "";
-  const btn = document.getElementById("verify-btn"); btn.textContent = "Verification..."; btn.disabled = true;
-  try {
-    const { ref: dbRef, get: dbGet } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
-    const key  = S.pendingPhone.replace(/\+/g,"00").replace(/\D/g,"");
-    const snap = await dbGet(dbRef(db, "otpCodes/" + key));
-    const data = snap.val();
-    if(!data)             throw new Error("Code expire, recommencez");
-    if(Date.now() > data.expires) throw new Error("Code expire, recommencez");
-    if(entered !== data.code)     throw new Error("Code incorrect");
-    await signInAnonymously(auth);
-  } catch(e) {
-    document.getElementById("auth-err").textContent = e.message;
-    btn.textContent = "Confirmer"; btn.disabled = false;
-  }
-};
-
-window.goBackToPhone = function(){
-  document.getElementById("step-otp").style.display   = "none";
-  document.getElementById("step-phone").style.display = "block";
-  otpBoxes.forEach(b => { b.value = ""; b.classList.remove("ok"); });
-  document.getElementById("auth-err").textContent = "";
-};
-
-// ---- TOUT DANS DOMContentLoaded ----
-window.addEventListener("DOMContentLoaded", () => {
-
-  // Lier les boîtes OTP
-  document.querySelectorAll(".otp-box").forEach((b, i) => {
+// ---- OTP BOXES (initialisées au chargement) ----
+const otpBoxes=[];
+window.addEventListener("DOMContentLoaded",()=>{
+  document.querySelectorAll(".otp-box").forEach((b,i)=>{
     otpBoxes.push(b);
-    b.oninput = () => {
-      b.value = b.value.replace(/\D/g,"").slice(-1);
-      b.classList.toggle("ok", b.value !== "");
-      if(b.value && i < 5) otpBoxes[i+1].focus();
-    };
-    b.onkeydown = e => { if(e.key === "Backspace" && !b.value && i > 0) otpBoxes[i-1].focus(); };
+    b.oninput=()=>{b.value=b.value.replace(/\D/g,"").slice(-1);b.classList.toggle("ok",b.value!=="");if(b.value&&i<5)otpBoxes[i+1].focus();};
+    b.onkeydown=e=>{if(e.key==="Backspace"&&!b.value&&i>0)otpBoxes[i-1].focus();};
   });
-
-  // Entrée clavier sur champ téléphone
-  const phInput = document.getElementById("ph-input");
-  if(phInput) phInput.onkeydown = e => { if(e.key==="Enter") window.sendCode(); };
-
-  // Lancer l'app
-  initApp();
+  applyLang();
+  updateOnlineBanner();
 });
 
-function initApp(){
-
-  // ---- BOUTON ENVOYER CODE ----
-  $("send-code-btn").onclick = async () => {
-    const raw = $("ph-input").value.trim();
-    if(raw.replace(/\D/g,"").length < 8){ $("auth-err").textContent = "Numero invalide"; return; }
-    $("auth-err").textContent = "";
-    const btn = $("send-code-btn"); btn.textContent = "Envoi..."; btn.disabled = true;
-
-    let phone = raw.replace(/\s/g,"");
-    if(!phone.startsWith("+")) phone = "+" + phone.replace(/\D/g,"");
-    S.pendingPhone = phone;
-
-    const code = String(Math.floor(100000 + Math.random()*900000));
-    S.pendingCode = code;
-
-    // Stocker dans Firebase (5 min)
-    const key = phone.replace(/\+/g,"00").replace(/\D/g,"");
-    await set(ref(db, "otpCodes/" + key), { code: code, expires: Date.now() + 5*60*1000 });
-
-    // Envoyer SMS
-    const sent = await sendSms(phone, code);
-    if(sent){
-      $("auth-sub").textContent = "SMS envoye au " + phone;
-      $("otp-hint-el").textContent = "";
-    } else {
-      $("auth-sub").textContent = "Code genere pour " + phone;
-      $("otp-hint-el").textContent = "Code de test : " + code;
-      console.info("OTP:", code);
-    }
-
-    $("step-phone").style.display = "none";
-    $("step-otp").style.display   = "block";
-    otpBoxes[0] && otpBoxes[0].focus();
-    btn.textContent = "Recevoir le code SMS"; btn.disabled = false;
-  };
-
-  // ---- BOUTON VERIFIER CODE ----
-  $("verify-btn").onclick = async () => {
-    const entered = otpBoxes.map(b => b.value).join("");
-    if(entered.length < 6){ $("auth-err").textContent = "Code incomplet"; return; }
-    $("auth-err").textContent = "";
-    const btn = $("verify-btn"); btn.textContent = "Verification..."; btn.disabled = true;
-    try {
-      const key  = S.pendingPhone.replace(/\+/g,"00").replace(/\D/g,"");
-      const snap = await get(ref(db, "otpCodes/" + key));
-      const data = snap.val();
-      if(!data)             throw new Error("Code expire, recommencez");
-      if(Date.now() > data.expires) throw new Error("Code expire, recommencez");
-      if(entered !== data.code)     throw new Error("Code incorrect");
-      await signInAnonymously(auth);
-    } catch(e) {
-      $("auth-err").textContent = e.message;
-      btn.textContent = "Confirmer"; btn.disabled = false;
-    }
-  };
-
-  $("back-btn").onclick = () => {
-    $("step-otp").style.display   = "none";
-    $("step-phone").style.display = "block";
-    otpBoxes.forEach(b => { b.value = ""; b.classList.remove("ok"); });
-    $("auth-err").textContent = "";
-  };
-
-  // ---- OBSERVER AUTH ----
-  onAuthStateChanged(auth, async user => {
-    if(user){
-      S.myUid   = user.uid;
-      S.myPhone = S.pendingPhone || CACHE.load("myPhone") || "utilisateur";
-      CACHE.save("myUid",   S.myUid);
-      CACHE.save("myPhone", S.myPhone);
-
-      if(isOnline){
-        try{
-          const snap = await get(ref(db, "users/" + S.myUid));
-          if(snap.exists()){
-            Object.assign(S.profile, snap.val());
-            CACHE.save("profile", S.profile);
-          } else {
-            S.profile.name = S.myPhone;
-            await set(ref(db, "users/" + S.myUid), {
-              uid: S.myUid, phone: S.myPhone,
-              name: S.profile.name, status: "En ligne",
-              emoji: "🧑🏾", avType: "emoji", img: null,
-              online: true, lastSeen: serverTimestamp()
-            });
-            CACHE.save("profile", S.profile);
-          }
-          const presRef = ref(db, "users/" + S.myUid + "/online");
-          await set(presRef, true);
-          onDisconnect(presRef).set(false);
-        }catch(e){ console.warn("Offline auth:", e); }
-      } else {
-        // Charger le profil depuis le cache
-        const cached = CACHE.load("profile");
-        if(cached) Object.assign(S.profile, cached);
-      }
-
-      // Charger contacts depuis cache si hors ligne
-      if(!isOnline){
-        const cachedContacts = CACHE.load("contacts");
-        if(cachedContacts){ S.contacts = cachedContacts; renderList(); }
-      }
-
-      updateMyAv();
-      if(isOnline) listenContacts();
-      showScreen("s-list");
-    } else {
-      // Vérifier si déjà connecté via cache
-      const cachedUid = CACHE.load("myUid");
-      if(cachedUid && !isOnline){
-        S.myUid   = cachedUid;
-        S.myPhone = CACHE.load("myPhone") || "utilisateur";
-        const cached = CACHE.load("profile");
-        if(cached) Object.assign(S.profile, cached);
-        const cachedContacts = CACHE.load("contacts");
-        if(cachedContacts){ S.contacts = cachedContacts; }
-        updateMyAv();
-        renderList();
-        showScreen("s-list");
-      } else {
-        showScreen("s-auth");
-      }
-    }
+// ---- AUTH (fonctions globales appelées depuis onclick HTML) ----
+function sendCode(){
+  const raw=$("ph-input").value.trim();
+  if(raw.replace(/\D/g,"").length<8){$("auth-err").textContent="Numéro invalide";return;}
+  $("auth-err").textContent="";
+  const btn=$("send-code-btn");btn.textContent="Envoi...";btn.disabled=true;
+  let phone=raw.replace(/\s/g,"");
+  if(!phone.startsWith("+"))phone="+"+phone.replace(/\D/g,"");
+  S.pendingPhone=phone;
+  const code=String(Math.floor(100000+Math.random()*900000));
+  const key=phone.replace(/\+/g,"00").replace(/\D/g,"");
+  db.ref("otpCodes/"+key).set({code:code,expires:Date.now()+5*60*1000}).catch(()=>{});
+  sendSms(phone,code).then(sent=>{
+    if(sent){$("auth-sub").textContent="SMS envoyé au "+phone;$("otp-hint-el").textContent="";}
+    else{$("auth-sub").textContent="Code pour "+phone;$("otp-hint-el").textContent="Code test : "+code;}
+    $("step-phone").style.display="none";
+    $("step-otp").style.display="block";
+    if(otpBoxes[0])otpBoxes[0].focus();
+    btn.textContent=t("recevoirCode");btn.disabled=false;
+  }).catch(()=>{
+    $("auth-err").textContent="Erreur, réessayez";
+    btn.textContent=t("recevoirCode");btn.disabled=false;
   });
+}
 
-  // ---- CONTACTS ----
-  function listenContacts(){
-    if(S.unsubContacts) S.unsubContacts();
-    S.unsubContacts = onValue(ref(db,"users"), snap => {
-      S.contacts = [];
-      snap.forEach(child => {
-        const u = child.val();
-        if(u.uid !== S.myUid) S.contacts.push(u);
-      });
-      CACHE.save("contacts", S.contacts); // ← Sauvegarde hors ligne
-      renderList();
-    });
-  }
+function verifyCode(){
+  const entered=otpBoxes.map(b=>b.value).join("");
+  if(entered.length<6){$("auth-err").textContent="Code incomplet";return;}
+  $("auth-err").textContent="";
+  const btn=$("verify-btn");btn.textContent="Vérification...";btn.disabled=true;
+  const key=S.pendingPhone.replace(/\+/g,"00").replace(/\D/g,"");
+  db.ref("otpCodes/"+key).get().then(snap=>{
+    const data=snap.val();
+    if(!data||Date.now()>data.expires)throw new Error("Code expiré");
+    if(entered!==data.code)throw new Error("Code incorrect");
+    return auth.signInAnonymously();
+  }).catch(e=>{
+    $("auth-err").textContent=e.message;
+    btn.textContent=t("confirmer");btn.disabled=false;
+  });
+}
 
-  function renderList(){
-    const box = $("contact-list"); box.innerHTML = "";
-    const term = S.search.toLowerCase();
-    const vis  = S.contacts.filter(c => {
-      const match = (c.name||c.phone||"").toLowerCase().includes(term);
-      const arch  = S.arch.has(c.uid);
-      return match && (S.tab === "archived" ? arch : !arch);
-    });
-    if(!vis.length){
-      box.innerHTML = '<div class="empty-note">' + (S.tab==="archived" ? "Aucune conv. archivee" : "Aucun contact pour l instant") + "</div>";
-      return;
-    }
-    vis.forEach(c => {
-      const chatKey = cid(S.myUid, c.uid);
-      const row = document.createElement("div");
-      row.className = "contact-row" + (S.activeId === c.uid ? " active-row" : "");
-      const avH = (c.avType==="img" && c.img)
-        ? '<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>'
-        : (c.emoji||"🧑🏾");
-      row.innerHTML =
-        '<div class="av-wrap">' +
-          '<div class="av">' + avH + '</div>' +
-          '<div class="dot ' + (c.online?"online":"offline") + '"></div>' +
-        '</div>' +
-        '<div class="row-info">' +
-          '<div class="row-top">' +
-            '<span class="row-name">' + esc(c.name||c.phone||"Inconnu") + '</span>' +
-            '<span class="row-time" id="lt-'+chatKey+'"></span>' +
-          '</div>' +
-          '<div class="row-bot">' +
-            '<span class="row-last" id="ll-'+chatKey+'">...</span>' +
-            '<button class="arch-btn" data-uid="'+c.uid+'">' + (S.arch.has(c.uid)?"📤":"🗄") + '</button>' +
-          '</div>' +
-        '</div>';
-      row.querySelector(".arch-btn").onclick = ev => { ev.stopPropagation(); toggleArch(c.uid); };
-      row.onclick = () => openChat(c.uid);
-      box.appendChild(row);
-      onValue(ref(db,"chats/"+chatKey+"/lastMsg"), snap2 => {
-        const lm = snap2.val();
-        const lt = document.getElementById("lt-"+chatKey);
-        const ll = document.getElementById("ll-"+chatKey);
-        if(lt && lm) lt.textContent = lm.t||"";
-        if(ll && lm) ll.textContent = lm.del ? "🚫 Supprime" : lm.type==="voice" ? "🎵 Vocal" : lm.type==="photo" ? "📷 Photo" : lm.type==="video" ? "🎥 Video" : (lm.text||"");
-      });
-    });
-  }
+function goBackPhone(){
+  $("step-otp").style.display="none";
+  $("step-phone").style.display="block";
+  otpBoxes.forEach(b=>{b.value="";b.classList.remove("ok");});
+  $("auth-err").textContent="";
+}
 
-  document.querySelectorAll(".tab").forEach(btn => {
-    btn.onclick = () => {
-      S.tab = btn.dataset.tab;
-      document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b===btn));
-      renderList();
+// ---- LANGUES ----
+const LANGS={
+  fr:{flag:"🇫🇷",name:"Français",country:"France, Guinée, Sénégal...",t:{discussions:"💬 Discussions",archives:"🗄 Archives",statuts:"Statuts",appels:"Appels",rechercher:"Rechercher...",ecrire:"Écrire un message...",monProfil:"Mon profil",enregistrer:"Enregistrer ✓",nomAffichage:"Nom d'affichage",statut:"Statut",galerie:"Galerie",camera:"Caméra",supprimer:"Supprimer",choixAvatar:"Ou choisir un avatar",recEnCours:"En cours...",recPause:"En pause",annuler:"Annuler",pause:"Pause",reprendre:"Reprendre",entrerNumero:"Entrez votre numéro pour continuer",numeroTel:"Numéro de téléphone",recevoirCode:"Recevoir le code SMS",codeSms:"Code SMS reçu",confirmer:"Confirmer",modifierNum:"← Modifier le numéro",monStatut:"Mon statut",ajouterStatut:"Appuyez pour ajouter un statut",texte:"✏️ Texte",photo:"📷 Photo",video:"🎥 Vidéo",nouveauStatut:"Nouveau statut",publier:"Publier",statut24h:"Le statut disparaît après 24h",recents:"Récents",aucunStatut:"Aucun statut",supprimerPourMoi:"🗑 Supprimer pour moi",supprimerPourTous:"🗑 Supprimer pour tous",msgSupprime:"🚫 Message supprimé",vocal:"🎵 Vocal",choisirLangue:"🌍 Choisir la langue",appAudio:"🎙 Appel audio",appVideo:"📹 Appel vidéo"}},
+  en:{flag:"🇬🇧",name:"English",country:"UK, USA, Nigeria, Ghana...",t:{discussions:"💬 Chats",archives:"🗄 Archived",statuts:"Status",appels:"Calls",rechercher:"Search...",ecrire:"Write a message...",monProfil:"My profile",enregistrer:"Save ✓",nomAffichage:"Display name",statut:"Status",galerie:"Gallery",camera:"Camera",supprimer:"Remove",choixAvatar:"Or choose an avatar",recEnCours:"Recording...",recPause:"Paused",annuler:"Cancel",pause:"Pause",reprendre:"Resume",entrerNumero:"Enter your number to continue",numeroTel:"Phone number",recevoirCode:"Receive SMS code",codeSms:"SMS code received",confirmer:"Confirm",modifierNum:"← Change number",monStatut:"My status",ajouterStatut:"Tap to add a status",texte:"✏️ Text",photo:"📷 Photo",video:"🎥 Video",nouveauStatut:"New status",publier:"Publish",statut24h:"Status disappears after 24h",recents:"Recent",aucunStatut:"No status yet",supprimerPourMoi:"🗑 Delete for me",supprimerPourTous:"🗑 Delete for everyone",msgSupprime:"🚫 Message deleted",vocal:"🎵 Voice",choisirLangue:"🌍 Choose language",appAudio:"🎙 Audio call",appVideo:"📹 Video call"}},
+  es:{flag:"🇪🇸",name:"Español",country:"España, México, Colombia...",t:{discussions:"💬 Chats",archives:"🗄 Archivados",statuts:"Estados",appels:"Llamadas",rechercher:"Buscar...",ecrire:"Escribe un mensaje...",monProfil:"Mi perfil",enregistrer:"Guardar ✓",nomAffichage:"Nombre visible",statut:"Estado",galerie:"Galería",camera:"Cámara",supprimer:"Eliminar",choixAvatar:"O elige un avatar",recEnCours:"Grabando...",recPause:"En pausa",annuler:"Cancelar",pause:"Pausar",reprendre:"Reanudar",entrerNumero:"Ingresa tu número para continuar",numeroTel:"Número de teléfono",recevoirCode:"Recibir código SMS",codeSms:"Código SMS recibido",confirmer:"Confirmar",modifierNum:"← Cambiar número",monStatut:"Mi estado",ajouterStatut:"Toca para añadir estado",texte:"✏️ Texto",photo:"📷 Foto",video:"🎥 Video",nouveauStatut:"Nuevo estado",publier:"Publicar",statut24h:"El estado desaparece tras 24h",recents:"Recientes",aucunStatut:"Sin estados",supprimerPourMoi:"🗑 Eliminar para mí",supprimerPourTous:"🗑 Eliminar para todos",msgSupprime:"🚫 Mensaje eliminado",vocal:"🎵 Audio",choisirLangue:"🌍 Elegir idioma",appAudio:"🎙 Llamada de voz",appVideo:"📹 Videollamada"}},
+  ar:{flag:"🇸🇦",name:"العربية",country:"السعودية، مصر، المغرب...",t:{discussions:"💬 المحادثات",archives:"🗄 المحفوظات",statuts:"الحالات",appels:"المكالمات",rechercher:"بحث...",ecrire:"اكتب رسالة...",monProfil:"ملفي الشخصي",enregistrer:"حفظ ✓",nomAffichage:"اسم العرض",statut:"الحالة",galerie:"المعرض",camera:"الكاميرا",supprimer:"حذف",choixAvatar:"أو اختر صورة رمزية",recEnCours:"جاري التسجيل...",recPause:"متوقف",annuler:"إلغاء",pause:"إيقاف",reprendre:"استئناف",entrerNumero:"أدخل رقمك للمتابعة",numeroTel:"رقم الهاتف",recevoirCode:"استقبال رمز SMS",codeSms:"رمز SMS المستلم",confirmer:"تأكيد",modifierNum:"← تغيير الرقم",monStatut:"حالتي",ajouterStatut:"انقر لإضافة حالة",texte:"✏️ نص",photo:"📷 صورة",video:"🎥 فيديو",nouveauStatut:"حالة جديدة",publier:"نشر",statut24h:"تختفي الحالة بعد 24 ساعة",recents:"الأخيرة",aucunStatut:"لا توجد حالات",supprimerPourMoi:"🗑 حذف للي",supprimerPourTous:"🗑 حذف للجميع",msgSupprime:"🚫 تم حذف الرسالة",vocal:"🎵 صوتي",choisirLangue:"🌍 اختر اللغة",appAudio:"🎙 مكالمة صوتية",appVideo:"📹 مكالمة فيديو"}},
+  he:{flag:"🇮🇱",name:"עברית",country:"ישראל...",t:{discussions:"💬 שיחות",archives:"🗄 ארכיון",statuts:"סטטוסים",appels:"שיחות",rechercher:"חיפוש...",ecrire:"כתוב הודעה...",monProfil:"הפרופיל שלי",enregistrer:"שמור ✓",nomAffichage:"שם תצוגה",statut:"סטטוס",galerie:"גלריה",camera:"מצלמה",supprimer:"מחק",choixAvatar:"או בחר אווטאר",recEnCours:"מקליט...",recPause:"מושהה",annuler:"ביטול",pause:"השהה",reprendre:"המשך",entrerNumero:"הכנס את מספרך להמשך",numeroTel:"מספר טלפון",recevoirCode:"קבל קוד SMS",codeSms:"קוד SMS שהתקבל",confirmer:"אשר",modifierNum:"← שנה מספר",monStatut:"הסטטוס שלי",ajouterStatut:"לחץ להוספת סטטוס",texte:"✏️ טקסט",photo:"📷 תמונה",video:"🎥 וידאו",nouveauStatut:"סטטוס חדש",publier:"פרסם",statut24h:"הסטטוס נעלם לאחר 24 שעות",recents:"אחרונים",aucunStatut:"אין סטטוסים",supprimerPourMoi:"🗑 מחק עבורי",supprimerPourTous:"🗑 מחק לכולם",msgSupprime:"🚫 ההודעה נמחקה",vocal:"🎵 קולי",choisirLangue:"🌍 בחר שפה",appAudio:"🎙 שיחת קול",appVideo:"📹 שיחת וידאו"}},
+  ru:{flag:"🇷🇺",name:"Русский",country:"Россия, Украина...",t:{discussions:"💬 Чаты",archives:"🗄 Архив",statuts:"Статусы",appels:"Звонки",rechercher:"Поиск...",ecrire:"Написать сообщение...",monProfil:"Мой профиль",enregistrer:"Сохранить ✓",nomAffichage:"Отображаемое имя",statut:"Статус",galerie:"Галерея",camera:"Камера",supprimer:"Удалить",choixAvatar:"Или выберите аватар",recEnCours:"Запись...",recPause:"Пауза",annuler:"Отмена",pause:"Пауза",reprendre:"Продолжить",entrerNumero:"Введите номер для продолжения",numeroTel:"Номер телефона",recevoirCode:"Получить SMS-код",codeSms:"Полученный SMS-код",confirmer:"Подтвердить",modifierNum:"← Изменить номер",monStatut:"Мой статус",ajouterStatut:"Нажмите чтобы добавить статус",texte:"✏️ Текст",photo:"📷 Фото",video:"🎥 Видео",nouveauStatut:"Новый статус",publier:"Опубликовать",statut24h:"Статус исчезает через 24 часа",recents:"Недавние",aucunStatut:"Нет статусов",supprimerPourMoi:"🗑 Удалить для меня",supprimerPourTous:"🗑 Удалить для всех",msgSupprime:"🚫 Сообщение удалено",vocal:"🎵 Голос",choisirLangue:"🌍 Выбрать язык",appAudio:"🎙 Аудиозвонок",appVideo:"📹 Видеозвонок"}},
+  de:{flag:"🇩🇪",name:"Deutsch",country:"Deutschland, Österreich...",t:{discussions:"💬 Chats",archives:"🗄 Archiv",statuts:"Status",appels:"Anrufe",rechercher:"Suchen...",ecrire:"Nachricht schreiben...",monProfil:"Mein Profil",enregistrer:"Speichern ✓",nomAffichage:"Anzeigename",statut:"Status",galerie:"Galerie",camera:"Kamera",supprimer:"Löschen",choixAvatar:"Oder Avatar wählen",recEnCours:"Aufnahme...",recPause:"Pausiert",annuler:"Abbrechen",pause:"Pause",reprendre:"Fortsetzen",entrerNumero:"Nummer eingeben um fortzufahren",numeroTel:"Telefonnummer",recevoirCode:"SMS-Code empfangen",codeSms:"Empfangener SMS-Code",confirmer:"Bestätigen",modifierNum:"← Nummer ändern",monStatut:"Mein Status",ajouterStatut:"Tippen um Status hinzuzufügen",texte:"✏️ Text",photo:"📷 Foto",video:"🎥 Video",nouveauStatut:"Neuer Status",publier:"Veröffentlichen",statut24h:"Status verschwindet nach 24 Stunden",recents:"Kürzlich",aucunStatut:"Noch keine Status",supprimerPourMoi:"🗑 Für mich löschen",supprimerPourTous:"🗑 Für alle löschen",msgSupprime:"🚫 Nachricht gelöscht",vocal:"🎵 Sprachnachricht",choisirLangue:"🌍 Sprache wählen",appAudio:"🎙 Sprachanruf",appVideo:"📹 Videoanruf"}},
+  ht:{flag:"🇭🇹",name:"Kreyòl Ayisyen",country:"Haïti...",t:{discussions:"💬 Konvèsasyon",archives:"🗄 Achiv",statuts:"Estati",appels:"Rele",rechercher:"Chèche...",ecrire:"Ekri yon mesaj...",monProfil:"Pwofil mwen",enregistrer:"Anrejistre ✓",nomAffichage:"Non afichaj",statut:"Estati",galerie:"Galri",camera:"Kamera",supprimer:"Efase",choixAvatar:"Oswa chwazi yon avatar",recEnCours:"Anrejistreman...",recPause:"Kanpe",annuler:"Anile",pause:"Kanpe",reprendre:"Kontinye",entrerNumero:"Antre nimewo ou pou kontinye",numeroTel:"Nimewo telefòn",recevoirCode:"Resevwa kòd SMS",codeSms:"Kòd SMS resevwa",confirmer:"Konfime",modifierNum:"← Chanje nimewo",monStatut:"Estati mwen",ajouterStatut:"Klike pou ajoute estati",texte:"✏️ Tèks",photo:"📷 Foto",video:"🎥 Videyo",nouveauStatut:"Nouvo estati",publier:"Pibliye",statut24h:"Estati disparèt apre 24 è",recents:"Resan",aucunStatut:"Pa gen estati",supprimerPourMoi:"🗑 Efase pou mwen",supprimerPourTous:"🗑 Efase pou tout moun",msgSupprime:"🚫 Mesaj efase",vocal:"🎵 Vokal",choisirLangue:"🌍 Chwazi lang",appAudio:"🎙 Apèl audio",appVideo:"📹 Apèl videyo"}},
+  zh:{flag:"🇨🇳",name:"中文",country:"中国、台湾、新加坡...",t:{discussions:"💬 聊天",archives:"🗄 归档",statuts:"状态",appels:"通话",rechercher:"搜索...",ecrire:"输入消息...",monProfil:"我的资料",enregistrer:"保存 ✓",nomAffichage:"显示名称",statut:"状态",galerie:"相册",camera:"相机",supprimer:"删除",choixAvatar:"或选择头像",recEnCours:"录音中...",recPause:"已暂停",annuler:"取消",pause:"暂停",reprendre:"继续",entrerNumero:"输入手机号继续",numeroTel:"手机号码",recevoirCode:"接收短信验证码",codeSms:"收到的短信验证码",confirmer:"确认",modifierNum:"← 更改号码",monStatut:"我的状态",ajouterStatut:"点击添加状态",texte:"✏️ 文字",photo:"📷 图片",video:"🎥 视频",nouveauStatut:"新状态",publier:"发布",statut24h:"状态24小时后消失",recents:"最近",aucunStatut:"暂无状态",supprimerPourMoi:"🗑 为我删除",supprimerPourTous:"🗑 为所有人删除",msgSupprime:"🚫 消息已删除",vocal:"🎵 语音",choisirLangue:"🌍 选择语言",appAudio:"🎙 语音通话",appVideo:"📹 视频通话"}},
+  pt:{flag:"🇧🇷",name:"Português",country:"Brésil, Portugal, Angola...",t:{discussions:"💬 Conversas",archives:"🗄 Arquivadas",statuts:"Status",appels:"Chamadas",rechercher:"Pesquisar...",ecrire:"Escrever mensagem...",monProfil:"Meu perfil",enregistrer:"Salvar ✓",nomAffichage:"Nome de exibição",statut:"Status",galerie:"Galeria",camera:"Câmera",supprimer:"Remover",choixAvatar:"Ou escolha um avatar",recEnCours:"Gravando...",recPause:"Pausado",annuler:"Cancelar",pause:"Pausar",reprendre:"Retomar",entrerNumero:"Digite seu número para continuar",numeroTel:"Número de telefone",recevoirCode:"Receber código SMS",codeSms:"Código SMS recebido",confirmer:"Confirmar",modifierNum:"← Alterar número",monStatut:"Meu status",ajouterStatut:"Toque para adicionar status",texte:"✏️ Texto",photo:"📷 Foto",video:"🎥 Vídeo",nouveauStatut:"Novo status",publier:"Publicar",statut24h:"O status desaparece após 24h",recents:"Recentes",aucunStatut:"Nenhum status",supprimerPourMoi:"🗑 Apagar para mim",supprimerPourTous:"🗑 Apagar para todos",msgSupprime:"🚫 Mensagem apagada",vocal:"🎵 Áudio",choisirLangue:"🌍 Escolher idioma",appAudio:"🎙 Chamada de voz",appVideo:"📹 Chamada de vídeo"}},
+  wo:{flag:"🇸🇳",name:"Wolof",country:"Sénégal, Gambie...",t:{discussions:"💬 Waxtu",archives:"🗄 Dëkkante",statuts:"Yéwwi",appels:"Wóor",rechercher:"Seet...",ecrire:"Bind sa xabaar...",monProfil:"Sa profil",enregistrer:"Dëkk ✓",nomAffichage:"Sa tuur",statut:"Yéwwi",galerie:"Nattu",camera:"Jamonoy",supprimer:"Fey",choixAvatar:"Tann sa avatar",recEnCours:"Dagg rekk...",recPause:"Tëdd",annuler:"Bàyyi",pause:"Tëdd",reprendre:"Tukki",entrerNumero:"Bind sa nimero ci kanam",numeroTel:"Nimero telefon",recevoirCode:"Jël code SMS bi",codeSms:"Code SMS ji jëkk",confirmer:"Sëtu",modifierNum:"← Soppi nimero",monStatut:"Sa yéwwi",ajouterStatut:"Topp ngir yëgël yéwwi",texte:"✏️ Bindkat",photo:"📷 Nattu",video:"🎥 Vidéo",nouveauStatut:"Yéwwi bu bees",publier:"Yónnee",statut24h:"Yéwwi bi dafay dem ci 24 waxtu",recents:"Bu mujj",aucunStatut:"Amul yéwwi",supprimerPourMoi:"🗑 Fey ci sama bopp",supprimerPourTous:"🗑 Fey ci yépp",msgSupprime:"🚫 Xabaar bi feye",vocal:"🎵 Dagg",choisirLangue:"🌍 Tann lakk",appAudio:"🎙 Wóor",appVideo:"📹 Wóor nattu"}},
+  ha:{flag:"🇳🇬",name:"Hausa",country:"Nigéria, Niger...",t:{discussions:"💬 Tattaunawa",archives:"🗄 Ajiye",statuts:"Yanayi",appels:"Kira",rechercher:"Bincika...",ecrire:"Rubuta sako...",monProfil:"Bayanan na",enregistrer:"Ajiye ✓",nomAffichage:"Sunan nuna",statut:"Yanayi",galerie:"Hotuna",camera:"Kyamara",supprimer:"Share",choixAvatar:"Ko zaɓi avatar",recEnCours:"Ana yin rikodin...",recPause:"An tsaya",annuler:"Soke",pause:"Tsaya",reprendre:"Ci gaba",entrerNumero:"Shigar da lambar ka don ci gaba",numeroTel:"Lambar waya",recevoirCode:"Karɓi code SMS",codeSms:"Code SMS da aka karɓa",confirmer:"Tabbatar",modifierNum:"← Canza lamba",monStatut:"Yanayin na",ajouterStatut:"Danna don ƙara yanayi",texte:"✏️ Rubutu",photo:"📷 Hoto",video:"🎥 Bidiyo",nouveauStatut:"Sabon yanayi",publier:"Wallafa",statut24h:"Yanayi ya ɓace bayan awanni 24",recents:"Na kwanan nan",aucunStatut:"Babu yanayi",supprimerPourMoi:"🗑 Share dominan",supprimerPourTous:"🗑 Share don kowa",msgSupprime:"🚫 An share sako",vocal:"🎵 Murya",choisirLangue:"🌍 Zaɓi harshe",appAudio:"🎙 Kiran murya",appVideo:"📹 Kiran bidiyo"}},
+  ja:{flag:"🇯🇵",name:"日本語",country:"日本...",t:{discussions:"💬 チャット",archives:"🗄 アーカイブ",statuts:"ステータス",appels:"通話",rechercher:"検索...",ecrire:"メッセージを入力...",monProfil:"マイプロフィール",enregistrer:"保存 ✓",nomAffichage:"表示名",statut:"ステータス",galerie:"ギャラリー",camera:"カメラ",supprimer:"削除",choixAvatar:"またはアバターを選択",recEnCours:"録音中...",recPause:"一時停止",annuler:"キャンセル",pause:"一時停止",reprendre:"再開",entrerNumero:"続けるには番号を入力",numeroTel:"電話番号",recevoirCode:"SMS コードを受信",codeSms:"受信した SMS コード",confirmer:"確認",modifierNum:"← 番号を変更",monStatut:"マイステータス",ajouterStatut:"タップしてステータスを追加",texte:"✏️ テキスト",photo:"📷 写真",video:"🎥 動画",nouveauStatut:"新しいステータス",publier:"公開",statut24h:"ステータスは24時間後に消えます",recents:"最近",aucunStatut:"ステータスなし",supprimerPourMoi:"🗑 自分のみ削除",supprimerPourTous:"🗑 全員から削除",msgSupprime:"🚫 メッセージが削除されました",vocal:"🎵 音声",choisirLangue:"🌍 言語を選択",appAudio:"🎙 音声通話",appVideo:"📹 ビデオ通話"}},
+  tr:{flag:"🇹🇷",name:"Türkçe",country:"Türkiye...",t:{discussions:"💬 Sohbetler",archives:"🗄 Arşiv",statuts:"Durumlar",appels:"Aramalar",rechercher:"Ara...",ecrire:"Mesaj yaz...",monProfil:"Profilim",enregistrer:"Kaydet ✓",nomAffichage:"Görünen ad",statut:"Durum",galerie:"Galeri",camera:"Kamera",supprimer:"Sil",choixAvatar:"Veya avatar seç",recEnCours:"Kaydediliyor...",recPause:"Duraklatıldı",annuler:"İptal",pause:"Duraklat",reprendre:"Devam et",entrerNumero:"Devam etmek için numaranı gir",numeroTel:"Telefon numarası",recevoirCode:"SMS kodu al",codeSms:"Alınan SMS kodu",confirmer:"Onayla",modifierNum:"← Numarayı değiştir",monStatut:"Durumum",ajouterStatut:"Durum eklemek için dokun",texte:"✏️ Metin",photo:"📷 Fotoğraf",video:"🎥 Video",nouveauStatut:"Yeni durum",publier:"Yayımla",statut24h:"Durum 24 saat sonra kaybolur",recents:"Son",aucunStatut:"Henüz durum yok",supprimerPourMoi:"🗑 Benim için sil",supprimerPourTous:"🗑 Herkes için sil",msgSupprime:"🚫 Mesaj silindi",vocal:"🎵 Ses",choisirLangue:"🌍 Dil seç",appAudio:"🎙 Sesli arama",appVideo:"📹 Görüntülü arama"}},
+  sw:{flag:"🇰🇪",name:"Kiswahili",country:"Kenya, Tanzanie...",t:{discussions:"💬 Mazungumzo",archives:"🗄 Kumbukumbu",statuts:"Hali",appels:"Simu",rechercher:"Tafuta...",ecrire:"Andika ujumbe...",monProfil:"Wasifu wangu",enregistrer:"Hifadhi ✓",nomAffichage:"Jina la kuonyesha",statut:"Hali",galerie:"Matunzio",camera:"Kamera",supprimer:"Futa",choixAvatar:"Au chagua picha ya wasifu",recEnCours:"Inaandika...",recPause:"Imesimamishwa",annuler:"Ghairi",pause:"Simamisha",reprendre:"Endelea",entrerNumero:"Ingiza nambari yako kuendelea",numeroTel:"Nambari ya simu",recevoirCode:"Pokea msimbo wa SMS",codeSms:"Msimbo wa SMS uliopokelewa",confirmer:"Thibitisha",modifierNum:"← Badilisha nambari",monStatut:"Hali yangu",ajouterStatut:"Gonga kuongeza hali",texte:"✏️ Maandishi",photo:"📷 Picha",video:"🎥 Video",nouveauStatut:"Hali mpya",publier:"Chapisha",statut24h:"Hali inatoweka baada ya masaa 24",recents:"Za hivi karibuni",aucunStatut:"Hakuna hali",supprimerPourMoi:"🗑 Futa kwangu",supprimerPourTous:"🗑 Futa kwa wote",msgSupprime:"🚫 Ujumbe umefutwa",vocal:"🎵 Sauti",choisirLangue:"🌍 Chagua lugha",appAudio:"🎙 Simu ya sauti",appVideo:"📹 Simu ya video"}},
+};
+
+let currentLang=localStorage.getItem("sonia_lang")||"fr";
+function t(k){return(LANGS[currentLang]||LANGS.fr).t[k]||k;}
+
+function applyLang(){
+  const L=LANGS[currentLang]||LANGS.fr;
+  // Auth
+  const as=$("auth-sub");if(as)as.textContent=t("entrerNumero");
+  const scb=$("send-code-btn");if(scb)scb.textContent=t("recevoirCode");
+  const vb=$("verify-btn");if(vb)vb.textContent=t("confirmer");
+  const bb=$("back-btn");if(bb)bb.textContent=t("modifierNum");
+  const af=$("auth-lang-flag");if(af)af.textContent=L.flag;
+  const an=$("auth-lang-name");if(an)an.textContent=L.name;
+  // List
+  const tc=$("tab-chats");if(tc)tc.textContent=t("discussions");
+  const ta=$("tab-archived");if(ta)ta.textContent=t("archives");
+  const si=$("search-input");if(si)si.placeholder=t("rechercher");
+  const ncl=$("nav-chats-lbl");if(ncl)ncl.textContent=t("discussions").replace("💬 ","");
+  const nsl=$("nav-status-lbl");if(nsl)nsl.textContent=t("statuts");
+  const nal=$("nav-calls-lbl");if(nal)nal.textContent=t("appels");
+  // Chat
+  const ti=$("txt-in");if(ti)ti.placeholder=t("ecrire");
+  // Profile
+  const fn=$("f-name");if(fn)fn.placeholder=t("nomAffichage");
+  const fs=$("f-status");if(fs)fs.placeholder=t("statut");
+  const sp=$("save-prof-btn");if(sp)sp.textContent=t("enregistrer");
+  // RTL
+  document.body.dir=(currentLang==="ar"||currentLang==="he")?"rtl":"ltr";
+  const lb=$("lang-btn");if(lb)lb.textContent=L.flag;
+  localStorage.setItem("sonia_lang",currentLang);
+}
+
+function openLangModal(){
+  const list=$("lang-list");if(!list)return;
+  list.innerHTML="";
+  Object.entries(LANGS).forEach(([code,lang])=>{
+    const item=document.createElement("div");
+    item.className="lang-item"+(code===currentLang?" selected":"");
+    item.innerHTML='<div class="lang-flag">'+lang.flag+'</div><div class="lang-info"><div class="lang-name">'+lang.name+'</div><div class="lang-country">'+lang.country+'</div></div>'+(code===currentLang?'<div class="lang-check">✓</div>':'');
+    item.onclick=()=>{
+      currentLang=code;
+      applyLang();
+      openLangModal();
+      $("lang-overlay").style.display="none";
+      toast(lang.name+" ✓");
     };
+    list.appendChild(item);
   });
-  $("search-input").oninput = e => { S.search = e.target.value; renderList(); };
-  $("settings-btn").onclick = openProfile;
-  $("open-prof-btn").onclick = openProfile;
+  $("lang-overlay").style.display="flex";
+}
 
-  // ---- ARCHIVE ----
-  function toggleArch(uid){
-    S.arch.has(uid) ? S.arch.delete(uid) : S.arch.add(uid);
-    renderList();
-    if(S.activeId === uid) updateArchBtn();
-  }
-  function updateArchBtn(){ $("arch-btn").textContent = S.arch.has(S.activeId) ? "📤" : "🗄"; }
-  $("arch-btn").onclick = () => { if(S.activeId) toggleArch(S.activeId); };
+function updateOnlineBanner(){
+  // silencieux — pas de bannière
+}
 
-  // ---- CHAT ----
-  $("back-to-list").onclick = () => {
-    S.activeId = null;
-    if(S.unsubMessages){ S.unsubMessages(); S.unsubMessages = null; }
+// ---- AUTH FIREBASE ----
+auth.onAuthStateChanged(async user=>{
+  if(user){
+    S.myUid=user.uid;
+    S.myPhone=S.pendingPhone||CACHE.load("myPhone")||"utilisateur";
+    CACHE.save("myUid",S.myUid);
+    CACHE.save("myPhone",S.myPhone);
+    if(isOnline){
+      try{
+        const snap=await db.ref("users/"+S.myUid).get();
+        if(snap.exists()){Object.assign(S.profile,snap.val());CACHE.save("profile",S.profile);}
+        else{
+          S.profile.name=S.myPhone;
+          await db.ref("users/"+S.myUid).set({uid:S.myUid,phone:S.myPhone,name:S.profile.name,status:"En ligne",emoji:"🧑🏾",avType:"emoji",img:null,online:true});
+          CACHE.save("profile",S.profile);
+        }
+        db.ref("users/"+S.myUid+"/online").set(true);
+        db.ref("users/"+S.myUid+"/online").onDisconnect().set(false);
+      }catch(e){const c=CACHE.load("profile");if(c)Object.assign(S.profile,c);}
+    } else {
+      const c=CACHE.load("profile");if(c)Object.assign(S.profile,c);
+      const cc=CACHE.load("contacts");if(cc)S.contacts=cc;
+    }
+    updateMyAv();
+    if(isOnline)listenContacts();
+    else{const cc=CACHE.load("contacts");if(cc){S.contacts=cc;renderList();}}
     showScreen("s-list");
-  };
-
-  function openChat(uid){
-    S.activeId = uid;
-    const c = S.contacts.find(x => x.uid===uid) || {};
-    $("c-av").innerHTML = (c.avType==="img"&&c.img) ? '<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>' : (c.emoji||"🧑🏾");
-    $("c-dot").className = "dot " + (c.online?"online":"offline");
-    $("c-name").textContent = c.name||c.phone||"Inconnu";
-    const st = $("c-status");
-    st.textContent = c.online ? "● En ligne" : "⚫ Hors ligne";
-    st.style.color  = c.online ? "var(--green)" : "var(--sub)";
-    updateArchBtn();
-    showScreen("s-chat");
-    listenMessages();
+  } else {
+    const cachedUid=CACHE.load("myUid");
+    if(cachedUid&&!isOnline){
+      S.myUid=cachedUid;S.myPhone=CACHE.load("myPhone")||"";
+      const cp=CACHE.load("profile");if(cp)Object.assign(S.profile,cp);
+      const cc=CACHE.load("contacts");if(cc)S.contacts=cc;
+      updateMyAv();renderList();showScreen("s-list");
+    } else {showScreen("s-auth");}
   }
+});
 
-  function listenMessages(){
-    if(S.unsubMessages){ S.unsubMessages(); S.unsubMessages = null; }
-    const key = cid(S.myUid, S.activeId);
-
-    // Afficher d'abord les messages en cache (instantané)
-    const cached = CACHE.load("msgs_"+key);
-    if(cached && cached.length){
-      const box = $("msg-list"); box.innerHTML = "";
-      cached.forEach(m => box.appendChild(makeBubble(m)));
-      box.scrollTop = box.scrollHeight;
-    }
-
-    if(!isOnline){
-      // Hors ligne : afficher seulement le cache, silencieusement
-      return;
-    }
-
-    // En ligne : écouter Firebase et mettre à jour le cache
-    S.unsubMessages = onValue(ref(db,"chats/"+key+"/messages"), snap => {
-      const msgs = [];
-      const box = $("msg-list"); box.innerHTML = "";
-      snap.forEach(child => {
-        const m = { id: child.key, ...child.val() };
-        // Ne pas cacher les photos/vidéos (trop lourdes)
-        if(m.type !== "photo" && m.type !== "video") msgs.push(m);
-        box.appendChild(makeBubble(m));
-      });
-      CACHE.save("msgs_"+key, msgs); // ← Sauvegarde hors ligne
-      box.scrollTop = box.scrollHeight;
-    });
-  }
-
-  function makeBubble(m){
-    const self = m.from === S.myUid;
-    const row  = document.createElement("div");
-    row.className = "bubble-row " + (self?"out":"in");
-    const bub = document.createElement("div");
-    if(m.del){
-      bub.className = "bubble del";
-      bub.textContent = "🚫 Message supprime";
-      row.appendChild(bub); return row;
-    }
-    bub.className = "bubble " + (self?"out":"in");
-    if(m.type === "voice"){
-      let playing=false, playTick=null, playSecs=0;
-      bub.innerHTML =
-        '<div class="vbubble">' +
-          '<button class="vplay" id="vp-'+m.id+'">&#9654;</button>' +
-          '<div class="vbar"><div class="vfill" id="vf-'+m.id+'"></div></div>' +
-          '<span class="vdur" id="vd-'+m.id+'">' + fmt(m.duration||0) + '</span>' +
-        '</div>' +
-        '<div class="b-meta"><span class="b-time">'+m.t+'</span>' + (self?'<span class="b-check">✓✓</span>':"") + '</div>';
-      setTimeout(()=>{
-        const pb=document.getElementById("vp-"+m.id);
-        const fi=document.getElementById("vf-"+m.id);
-        const dv=document.getElementById("vd-"+m.id);
-        if(!pb) return;
-        pb.onclick=()=>{
-          if(playing){ clearInterval(playTick); playing=false; pb.textContent="▶"; }
-          else{
-            if(playSecs>=(m.duration||0)){ playSecs=0; fi.style.width="0%"; }
-            playing=true; pb.textContent="⏸";
-            playTick=setInterval(()=>{
-              playSecs++;
-              fi.style.width=Math.min(100,(playSecs/(m.duration||1))*100)+"%";
-              dv.textContent=fmt((m.duration||0)-playSecs);
-              if(playSecs>=(m.duration||0)){ clearInterval(playTick); playing=false; pb.textContent="▶"; playSecs=0; fi.style.width="0%"; dv.textContent=fmt(m.duration||0); }
-            },1000);
-          }
-        };
-      },0);
-    } else if(m.type === "photo"){
-      bub.innerHTML =
-        '<div class="photo-bub"><img src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;cursor:pointer"/></div>' +
-        '<div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
-      setTimeout(()=>{ const img=bub.querySelector(".photo-bub img"); if(img) img.onclick=()=>openViewer(m.src); },0);
-    } else if(m.type === "video"){
-      bub.innerHTML =
-        '<div class="video-bub">' +
-          '<video src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;display:block;cursor:pointer" preload="metadata" playsinline></video>' +
-          '<div class="vid-play-overlay" id="vpo-'+m.id+'">▶</div>' +
-        '</div>' +
-        '<div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
-      setTimeout(()=>{
-        const vid=bub.querySelector("video");
-        const overlay=document.getElementById("vpo-"+m.id);
-        if(!vid) return;
-        vid.onclick=()=>openVideoViewer(m.src);
-        if(overlay) overlay.onclick=()=>openVideoViewer(m.src);
-      },0);
-    } else {
-      bub.innerHTML = '<div class="b-text">'+esc(m.text||"")+'</div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
-    }
-    if(self){
-      let menuEl=null;
-      const clr=()=>{ if(menuEl){menuEl.remove();menuEl=null;} document.removeEventListener("click",clr); };
-      bub.onclick=e=>{
-        e.stopPropagation();
-        if(menuEl){clr();return;}
-        menuEl=document.createElement("div"); menuEl.className="del-menu";
-        menuEl.innerHTML='<button class="red">🗑 Supprimer pour moi</button><button class="red">🗑 Supprimer pour tous</button><button>Annuler</button>';
-        menuEl.querySelectorAll("button")[0].onclick=ev=>{ev.stopPropagation();delMsg(m.id);clr();};
-        menuEl.querySelectorAll("button")[1].onclick=ev=>{ev.stopPropagation();delMsg(m.id);clr();};
-        menuEl.querySelectorAll("button")[2].onclick=ev=>{ev.stopPropagation();clr();};
-        bub.appendChild(menuEl);
-        setTimeout(()=>document.addEventListener("click",clr,{once:true}),0);
-      };
-    }
-    row.appendChild(bub); return row;
-  }
-
-  async function delMsg(msgId){
-    const key = cid(S.myUid, S.activeId);
-    await update(ref(db,"chats/"+key+"/messages/"+msgId), {del:true,text:"",src:""});
-  }
-
-  async function pushMsg(m){
-    const key = cid(S.myUid, S.activeId);
-    await push(ref(db,"chats/"+key+"/messages"), m);
-    await set(ref(db,"chats/"+key+"/lastMsg"), {text:m.text||"",t:m.t,type:m.type,del:false});
-  }
-
-  // ---- ENVOI TEXTE ----
-  $("send-btn").onclick = doSend;
-  $("txt-in").onkeydown = e => { if(e.key==="Enter") doSend(); };
-  async function doSend(){
-    const v = $("txt-in").value.trim();
-    if(!v || !S.activeId) return;
-    $("txt-in").value = "";
-    await pushMsg({from:S.myUid, text:v, t:now(), type:"text", del:false, ts:serverTimestamp()});
-  }
-
-  // ---- ENVOI PHOTO ----
-  $("photo-btn").onclick = () => $("photo-file-in").click();
-  $("photo-file-in").onchange = e => {
-    const f = e.target.files[0]; if(!f || !S.activeId) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      S.pendingPhoto = {src:ev.target.result, name:f.name, size:(f.size/1024).toFixed(1)+" Ko"};
-      $("ph-prev-img").src = ev.target.result;
-      $("ph-prev-name").textContent = f.name;
-      $("ph-prev-size").textContent = S.pendingPhoto.size;
-      $("normal-row").style.display = "none";
-      $("photo-preview-bar").style.display = "flex";
-    };
-    reader.readAsDataURL(f); e.target.value = "";
-  };
-  $("ph-cancel-btn").onclick = () => { S.pendingPhoto=null; $("photo-preview-bar").style.display="none"; $("normal-row").style.display="flex"; };
-  $("ph-send-btn").onclick = async () => {
-    if(!S.pendingPhoto || !S.activeId) return;
-    await pushMsg({from:S.myUid, type:"photo", src:S.pendingPhoto.src, text:"", t:now(), del:false, ts:serverTimestamp()});
-    S.pendingPhoto=null; $("photo-preview-bar").style.display="none"; $("normal-row").style.display="flex";
-  };
-
-  // ---- PHOTO VIEWER ----
-  function openViewer(src){ $("photo-viewer-img").src=src; $("photo-viewer").style.display="flex"; }
-  $("photo-viewer-close").onclick = () => { $("photo-viewer").style.display="none"; };
-  $("photo-viewer").onclick = e => { if(e.target===$("photo-viewer")) $("photo-viewer").style.display="none"; };
-
-  // ---- ENVOI VIDEO ----
-  $("video-file-btn").onclick = () => $("video-file-in").click();
-  $("video-file-in").onchange = e => {
-    const f = e.target.files[0]; if(!f || !S.activeId) return;
-    const sizeMb = f.size/1024/1024;
-    if(sizeMb > 25){ toast("Video trop lourde (max 25 Mo)", "err"); e.target.value=""; return; }
-    const reader = new FileReader();
-    reader.onload = ev => {
-      S.pendingVideo = {src:ev.target.result, name:f.name, size:sizeMb.toFixed(1)+" Mo"};
-      $("vid-prev-src").src = ev.target.result;
-      $("vid-prev-name").textContent = f.name;
-      $("vid-prev-size").textContent = S.pendingVideo.size;
-      $("normal-row").style.display = "none";
-      $("video-preview-bar").style.display = "flex";
-    };
-    reader.readAsDataURL(f); e.target.value = "";
-  };
-  $("vid-cancel-btn").onclick = () => {
-    S.pendingVideo = null;
-    $("video-preview-bar").style.display = "none";
-    $("normal-row").style.display = "flex";
-  };
-  $("vid-send-btn").onclick = async () => {
-    if(!S.pendingVideo || !S.activeId) return;
-    toast("Envoi en cours...");
-    await pushMsg({from:S.myUid, type:"video", src:S.pendingVideo.src, text:"", t:now(), del:false, ts:serverTimestamp()});
-    S.pendingVideo = null;
-    $("video-preview-bar").style.display = "none";
-    $("normal-row").style.display = "flex";
-    toast("Video envoyee ✓");
-  };
-
-  // ---- VIDEO VIEWER ----
-  function openVideoViewer(src){
-    $("video-viewer-el").src = src;
-    $("video-viewer").style.display = "flex";
-    $("video-viewer-el").play();
-  }
-  $("video-viewer-close").onclick = () => {
-    $("video-viewer-el").pause();
-    $("video-viewer-el").src = "";
-    $("video-viewer").style.display = "none";
-  };
-  $("video-viewer").onclick = e => {
-    if(e.target === $("video-viewer")){
-      $("video-viewer-el").pause();
-      $("video-viewer").style.display = "none";
-    }
-  };
-
-  // ---- ENREGISTREMENT VOCAL ----
-  $("mic-btn").onclick = startRec;
-  $("r-pause").onclick = () => {
-    clearInterval(S.recTick); S.recPaused=true;
-    $("rec-dot").classList.remove("pulse"); $("rec-state").textContent="En pause";
-    $("r-pause").style.display="none"; $("r-resume").style.display="flex";
-  };
-  $("r-resume").onclick = () => {
-    S.recPaused=false; $("rec-dot").classList.add("pulse"); $("rec-state").textContent="En cours...";
-    $("r-resume").style.display="none"; $("r-pause").style.display="flex";
-    S.recTick=setInterval(tickRec,1000);
-  };
-  $("r-delete").onclick = stopRec;
-  $("r-send").onclick = async () => {
-    clearInterval(S.recTick);
-    await pushMsg({from:S.myUid, type:"voice", duration:S.recSecs, text:"", t:now(), del:false, ts:serverTimestamp()});
-    stopRec();
-  };
-  function tickRec(){ if(!S.recPaused){ S.recSecs++; $("rec-time").textContent=fmt(S.recSecs); } }
-  function startRec(){
-    if(!S.activeId) return;
-    S.recPaused=false; S.recSecs=0;
-    $("rec-time").textContent="00:00"; $("rec-state").textContent="En cours...";
-    $("rec-dot").classList.add("pulse");
-    $("r-pause").style.display="flex"; $("r-resume").style.display="none";
-    $("normal-row").style.display="none"; $("rec-bar").style.display="flex";
-    S.recTick=setInterval(tickRec,1000);
-  }
-  function stopRec(){
-    clearInterval(S.recTick); S.recSecs=0; S.recPaused=false;
-    $("rec-bar").style.display="none"; $("normal-row").style.display="flex";
-  }
-
-  // ---- APPELS ----
-  $("audio-btn").onclick = () => { if(S.activeId) openCall("audio"); };
-  $("video-btn").onclick = () => { if(S.activeId) openCall("video"); };
-  $("hangup-btn").onclick = endCall;
-  $("mute-btn").onclick = () => {
-    S.callMuted=!S.callMuted;
-    $("mute-btn").className="c-btn "+(S.callMuted?"muted":"normal");
-    $("mute-btn").textContent=S.callMuted?"🔇":"🎤";
-  };
-  function openCall(type){
-    const c = S.contacts.find(x=>x.uid===S.activeId)||{};
-    S.callType=type; S.callMuted=false; S.callSecs=0;
-    $("call-av-el").textContent=c.emoji||"🧑🏾";
-    $("call-name-el").textContent=c.name||c.phone||"Inconnu";
-    updCallInfo();
-    $("call-vid-box").style.display=type==="video"?"flex":"none";
-    $("cam-call-btn").style.display=type==="video"?"flex":"none";
-    $("mute-btn").className="c-btn normal"; $("mute-btn").textContent="🎤";
-    $("call-overlay").style.display="flex";
-    S.callTick=setInterval(()=>{S.callSecs++;updCallInfo();},1000);
-  }
-  function updCallInfo(){ $("call-info-el").textContent=(S.callType==="video"?"📹 Appel video":"🎙 Appel audio")+" · "+fmt(S.callSecs); }
-  function endCall(){ clearInterval(S.callTick); $("call-overlay").style.display="none"; }
-
-  // ---- PROFIL ----
-  const EMOJIS = ["🧑🏾","👨🏿","👩🏽","🧔🏻","👧🏾","👦🏽","🧕🏾","🧓🏿"];
-  const emojiGrid = $("emoji-grid");
-  EMOJIS.forEach(e => {
-    const b = document.createElement("button");
-    b.className = "em-btn" + (e===S.profile.emoji?" sel":""); b.textContent=e;
-    b.onclick = () => {
-      S.profile.avType="emoji"; S.profile.emoji=e; S.profile.img=null;
-      document.querySelectorAll(".em-btn").forEach(x=>x.classList.toggle("sel",x===b));
-      renderProfAv(); syncRemoveBtn();
-    };
-    emojiGrid.appendChild(b);
+// ---- CONTACTS ----
+function listenContacts(){
+  if(S.unsubContacts){S.unsubContacts();S.unsubContacts=null;}
+  S.unsubContacts=db.ref("users").on("value",snap=>{
+    S.contacts=[];
+    snap.forEach(child=>{const u=child.val();if(u.uid!==S.myUid)S.contacts.push(u);});
+    CACHE.save("contacts",S.contacts);
+    renderList();
   });
-  function openProfile(){
-    $("f-name").value=S.profile.name; $("f-status").value=S.profile.status;
-    renderProfAv();
-    document.querySelectorAll(".em-btn").forEach(b=>b.classList.toggle("sel",b.textContent===S.profile.emoji));
-    syncRemoveBtn(); $("prof-overlay").style.display="flex";
-  }
-  function syncRemoveBtn(){ $("remove-photo-btn").classList.toggle("hidden-btn",!(S.profile.avType==="img"&&S.profile.img)); }
-  function renderProfAv(){
-    const el=$("prof-av-el"); el.innerHTML="";
-    if(S.profile.avType==="img"&&S.profile.img){ const img=document.createElement("img"); img.src=S.profile.img; el.appendChild(img); }
-    else { const sp=document.createElement("span"); sp.textContent=S.profile.emoji; el.appendChild(sp); }
-  }
-  $("prof-av-el").onclick=()=>$("file-in-gallery").click();
-  $("src-gallery-btn").onclick=()=>$("file-in-gallery").click();
-  $("src-camera-btn").onclick=()=>$("file-in-camera").click();
-  function handlePhotoFile(f){
-    if(!f) return;
-    const reader=new FileReader();
-    reader.onload=ev=>{ S.profile.avType="img"; S.profile.img=ev.target.result; renderProfAv(); syncRemoveBtn(); document.querySelectorAll(".em-btn").forEach(b=>b.classList.remove("sel")); };
-    reader.readAsDataURL(f);
-  }
-  $("file-in-gallery").onchange=e=>{handlePhotoFile(e.target.files[0]);e.target.value="";};
-  $("file-in-camera").onchange=e=>{handlePhotoFile(e.target.files[0]);e.target.value="";};
-  $("remove-photo-btn").onclick=()=>{ S.profile.avType="emoji"; S.profile.img=null; renderProfAv(); syncRemoveBtn(); document.querySelectorAll(".em-btn").forEach(b=>b.classList.toggle("sel",b.textContent===S.profile.emoji)); };
-  $("prof-close").onclick=()=>$("prof-overlay").style.display="none";
-  $("prof-overlay").onclick=e=>{if(e.target===$("prof-overlay"))$("prof-overlay").style.display="none";};
-  $("save-prof-btn").onclick=async()=>{
-    S.profile.name=$("f-name").value||S.myPhone||"Moi";
-    S.profile.status=$("f-status").value||"En ligne";
-    if(S.myUid) await update(ref(db,"users/"+S.myUid),{name:S.profile.name,status:S.profile.status,emoji:S.profile.emoji,avType:S.profile.avType,img:S.profile.img||null});
-    updateMyAv(); $("prof-overlay").style.display="none"; toast("Profil sauvegarde ✓");
-  };
-  function updateMyAv(){
-    $("my-name-el").textContent=S.profile.name||S.myPhone||"Sonia";
-    $("my-status-el").textContent="● "+(S.profile.status||"En ligne");
-    const av=$("my-av-el"); av.innerHTML="";
-    if(S.profile.avType==="img"&&S.profile.img){ const img=document.createElement("img"); img.src=S.profile.img; av.appendChild(img); }
-    else av.textContent=S.profile.emoji||"🧑🏾";
-    // Sync avatar dans l ecran statuts
-    const sav=$("my-status-av-el"); sav.innerHTML="";
-    if(S.profile.avType==="img"&&S.profile.img){ const img2=document.createElement("img"); img2.src=S.profile.img; sav.appendChild(img2); }
-    else sav.textContent=S.profile.emoji||"🧑🏾";
-  }
+}
 
-  // ---- SYSTEME DE LANGUES ----
-  const LANGS = {
-    fr: {
-      flag:"🇫🇷", name:"Français", country:"France, Guinée, Sénégal, Côte d'Ivoire...",
-      t:{
-        discussions:"💬 Discussions", archives:"🗄 Archives", statuts:"Statuts",
-        appels:"Appels", rechercher:"Rechercher...", enLigne:"● En ligne",
-        ecrire:"Écrire un message...", envoyer:"Envoyer",
-        monProfil:"Mon profil", enregistrer:"Enregistrer ✓",
-        nomAffichage:"Nom d'affichage", statut:"Statut",
-        galerie:"Galerie", camera:"Caméra", supprimer:"Supprimer",
-        choixAvatar:"Ou choisir un avatar",
-        recEnCours:"En cours...", recPause:"En pause",
-        annuler:"Annuler", pause:"Pause", reprendre:"Reprendre",
-        entrerNumero:"Entrez votre numéro pour continuer",
-        numeroTel:"Numéro de téléphone", recevoirCode:"Recevoir le code SMS",
-        codeSms:"Code SMS reçu", confirmer:"Confirmer",
-        modifierNum:"← Modifier le numéro",
-        choisirLangue:"🌍 Choisir la langue",
-        monStatut:"Mon statut", ajouterStatut:"Appuyez pour ajouter un statut",
-        texte:"✏️ Texte", photo:"📷 Photo", video:"🎥 Vidéo",
-        nouveauStatut:"Nouveau statut", publier:"Publier",
-        statut24h:"Le statut disparaît après 24 heures",
-        recents:"Récents", aucunStatut:"Aucun statut pour le moment",
-        supprimerPourMoi:"🗑 Supprimer pour moi",
-        supprimerPourTous:"🗑 Supprimer pour tous",
-        msgSupprime:"🚫 Message supprimé",
-        vocal:"🎵 Vocal", enLigneStatus:"● En ligne", horsLigne:"⚫ Hors ligne",
-        appAudio:"🎙 Appel audio", appVideo:"📹 Appel vidéo",
-      }
-    },
-    en: {
-      flag:"🇬🇧", name:"English", country:"UK, USA, Nigeria, Ghana, Kenya...",
-      t:{
-        discussions:"💬 Chats", archives:"🗄 Archived", statuts:"Status",
-        appels:"Calls", rechercher:"Search...", enLigne:"● Online",
-        ecrire:"Write a message...", envoyer:"Send",
-        monProfil:"My profile", enregistrer:"Save ✓",
-        nomAffichage:"Display name", statut:"Status",
-        galerie:"Gallery", camera:"Camera", supprimer:"Remove",
-        choixAvatar:"Or choose an avatar",
-        recEnCours:"Recording...", recPause:"Paused",
-        annuler:"Cancel", pause:"Pause", reprendre:"Resume",
-        entrerNumero:"Enter your number to continue",
-        numeroTel:"Phone number", recevoirCode:"Receive SMS code",
-        codeSms:"SMS code received", confirmer:"Confirm",
-        modifierNum:"← Change number",
-        choisirLangue:"🌍 Choose language",
-        monStatut:"My status", ajouterStatut:"Tap to add a status",
-        texte:"✏️ Text", photo:"📷 Photo", video:"🎥 Video",
-        nouveauStatut:"New status", publier:"Publish",
-        statut24h:"Status disappears after 24 hours",
-        recents:"Recent", aucunStatut:"No status yet",
-        supprimerPourMoi:"🗑 Delete for me",
-        supprimerPourTous:"🗑 Delete for everyone",
-        msgSupprime:"🚫 Message deleted",
-        vocal:"🎵 Voice", enLigneStatus:"● Online", horsLigne:"⚫ Offline",
-        appAudio:"🎙 Audio call", appVideo:"📹 Video call",
-      }
-    },
-    es: {
-      flag:"🇪🇸", name:"Español", country:"España, México, Colombia, Argentina...",
-      t:{
-        discussions:"💬 Chats", archives:"🗄 Archivados", statuts:"Estados",
-        appels:"Llamadas", rechercher:"Buscar...", enLigne:"● En línea",
-        ecrire:"Escribe un mensaje...", envoyer:"Enviar",
-        monProfil:"Mi perfil", enregistrer:"Guardar ✓",
-        nomAffichage:"Nombre visible", statut:"Estado",
-        galerie:"Galería", camera:"Cámara", supprimer:"Eliminar",
-        choixAvatar:"O elige un avatar",
-        recEnCours:"Grabando...", recPause:"En pausa",
-        annuler:"Cancelar", pause:"Pausar", reprendre:"Reanudar",
-        entrerNumero:"Ingresa tu número para continuar",
-        numeroTel:"Número de teléfono", recevoirCode:"Recibir código SMS",
-        codeSms:"Código SMS recibido", confirmer:"Confirmar",
-        modifierNum:"← Cambiar número",
-        choisirLangue:"🌍 Elegir idioma",
-        monStatut:"Mi estado", ajouterStatut:"Toca para añadir estado",
-        texte:"✏️ Texto", photo:"📷 Foto", video:"🎥 Video",
-        nouveauStatut:"Nuevo estado", publier:"Publicar",
-        statut24h:"El estado desaparece tras 24 horas",
-        recents:"Recientes", aucunStatut:"Sin estados aún",
-        supprimerPourMoi:"🗑 Eliminar para mí",
-        supprimerPourTous:"🗑 Eliminar para todos",
-        msgSupprime:"🚫 Mensaje eliminado",
-        vocal:"🎵 Audio", enLigneStatus:"● En línea", horsLigne:"⚫ Desconectado",
-        appAudio:"🎙 Llamada de voz", appVideo:"📹 Videollamada",
-      }
-    },
-    ar: {
-      flag:"🇸🇦", name:"العربية", country:"السعودية، مصر، المغرب، الجزائر...",
-      t:{
-        discussions:"💬 المحادثات", archives:"🗄 المحفوظات", statuts:"الحالات",
-        appels:"المكالمات", rechercher:"بحث...", enLigne:"● متصل",
-        ecrire:"اكتب رسالة...", envoyer:"إرسال",
-        monProfil:"ملفي الشخصي", enregistrer:"حفظ ✓",
-        nomAffichage:"اسم العرض", statut:"الحالة",
-        galerie:"المعرض", camera:"الكاميرا", supprimer:"حذف",
-        choixAvatar:"أو اختر صورة رمزية",
-        recEnCours:"جاري التسجيل...", recPause:"متوقف",
-        annuler:"إلغاء", pause:"إيقاف", reprendre:"استئناف",
-        entrerNumero:"أدخل رقمك للمتابعة",
-        numeroTel:"رقم الهاتف", recevoirCode:"استقبال رمز SMS",
-        codeSms:"رمز SMS المستلم", confirmer:"تأكيد",
-        modifierNum:"← تغيير الرقم",
-        choisirLangue:"🌍 اختر اللغة",
-        monStatut:"حالتي", ajouterStatut:"انقر لإضافة حالة",
-        texte:"✏️ نص", photo:"📷 صورة", video:"🎥 فيديو",
-        nouveauStatut:"حالة جديدة", publier:"نشر",
-        statut24h:"تختفي الحالة بعد 24 ساعة",
-        recents:"الأخيرة", aucunStatut:"لا توجد حالات",
-        supprimerPourMoi:"🗑 حذف للي", supprimerPourTous:"🗑 حذف للجميع",
-        msgSupprime:"🚫 تم حذف الرسالة",
-        vocal:"🎵 صوتي", enLigneStatus:"● متصل", horsLigne:"⚫ غير متصل",
-        appAudio:"🎙 مكالمة صوتية", appVideo:"📹 مكالمة فيديو",
-      }
-    },
-    he: {
-      flag:"🇮🇱", name:"עברית", country:"ישראל...",
-      t:{
-        discussions:"💬 שיחות", archives:"🗄 ארכיון", statuts:"סטטוסים",
-        appels:"שיחות", rechercher:"חיפוש...", enLigne:"● מחובר",
-        ecrire:"כתוב הודעה...", envoyer:"שלח",
-        monProfil:"הפרופיל שלי", enregistrer:"שמור ✓",
-        nomAffichage:"שם תצוגה", statut:"סטטוס",
-        galerie:"גלריה", camera:"מצלמה", supprimer:"מחק",
-        choixAvatar:"או בחר אווטאר",
-        recEnCours:"מקליט...", recPause:"מושהה",
-        annuler:"ביטול", pause:"השהה", reprendre:"המשך",
-        entrerNumero:"הכנס את מספרך להמשך",
-        numeroTel:"מספר טלפון", recevoirCode:"קבל קוד SMS",
-        codeSms:"קוד SMS שהתקבל", confirmer:"אשר",
-        modifierNum:"← שנה מספר",
-        choisirLangue:"🌍 בחר שפה",
-        monStatut:"הסטטוס שלי", ajouterStatut:"לחץ להוספת סטטוס",
-        texte:"✏️ טקסט", photo:"📷 תמונה", video:"🎥 וידאו",
-        nouveauStatut:"סטטוס חדש", publier:"פרסם",
-        statut24h:"הסטטוס נעלם לאחר 24 שעות",
-        recents:"אחרונים", aucunStatut:"אין סטטוסים עדיין",
-        supprimerPourMoi:"🗑 מחק עבורי", supprimerPourTous:"🗑 מחק לכולם",
-        msgSupprime:"🚫 ההודעה נמחקה",
-        vocal:"🎵 קולי", enLigneStatus:"● מחובר", horsLigne:"⚫ לא מחובר",
-        appAudio:"🎙 שיחת קול", appVideo:"📹 שיחת וידאו",
-      }
-    },
-    ru: {
-      flag:"🇷🇺", name:"Русский", country:"Россия, Украина, Казахстан...",
-      t:{
-        discussions:"💬 Чаты", archives:"🗄 Архив", statuts:"Статусы",
-        appels:"Звонки", rechercher:"Поиск...", enLigne:"● В сети",
-        ecrire:"Написать сообщение...", envoyer:"Отправить",
-        monProfil:"Мой профиль", enregistrer:"Сохранить ✓",
-        nomAffichage:"Отображаемое имя", statut:"Статус",
-        galerie:"Галерея", camera:"Камера", supprimer:"Удалить",
-        choixAvatar:"Или выберите аватар",
-        recEnCours:"Запись...", recPause:"Пауза",
-        annuler:"Отмена", pause:"Пауза", reprendre:"Продолжить",
-        entrerNumero:"Введите номер для продолжения",
-        numeroTel:"Номер телефона", recevoirCode:"Получить SMS-код",
-        codeSms:"Полученный SMS-код", confirmer:"Подтвердить",
-        modifierNum:"← Изменить номер",
-        choisirLangue:"🌍 Выбрать язык",
-        monStatut:"Мой статус", ajouterStatut:"Нажмите чтобы добавить статус",
-        texte:"✏️ Текст", photo:"📷 Фото", video:"🎥 Видео",
-        nouveauStatut:"Новый статус", publier:"Опубликовать",
-        statut24h:"Статус исчезает через 24 часа",
-        recents:"Недавние", aucunStatut:"Нет статусов",
-        supprimerPourMoi:"🗑 Удалить для меня",
-        supprimerPourTous:"🗑 Удалить для всех",
-        msgSupprime:"🚫 Сообщение удалено",
-        vocal:"🎵 Голос", enLigneStatus:"● В сети", horsLigne:"⚫ Не в сети",
-        appAudio:"🎙 Аудиозвонок", appVideo:"📹 Видеозвонок",
-      }
-    },
-    de: {
-      flag:"🇩🇪", name:"Deutsch", country:"Deutschland, Österreich, Schweiz...",
-      t:{
-        discussions:"💬 Chats", archives:"🗄 Archiv", statuts:"Status",
-        appels:"Anrufe", rechercher:"Suchen...", enLigne:"● Online",
-        ecrire:"Nachricht schreiben...", envoyer:"Senden",
-        monProfil:"Mein Profil", enregistrer:"Speichern ✓",
-        nomAffichage:"Anzeigename", statut:"Status",
-        galerie:"Galerie", camera:"Kamera", supprimer:"Löschen",
-        choixAvatar:"Oder Avatar wählen",
-        recEnCours:"Aufnahme...", recPause:"Pausiert",
-        annuler:"Abbrechen", pause:"Pause", reprendre:"Fortsetzen",
-        entrerNumero:"Nummer eingeben um fortzufahren",
-        numeroTel:"Telefonnummer", recevoirCode:"SMS-Code empfangen",
-        codeSms:"Empfangener SMS-Code", confirmer:"Bestätigen",
-        modifierNum:"← Nummer ändern",
-        choisirLangue:"🌍 Sprache wählen",
-        monStatut:"Mein Status", ajouterStatut:"Tippen um Status hinzuzufügen",
-        texte:"✏️ Text", photo:"📷 Foto", video:"🎥 Video",
-        nouveauStatut:"Neuer Status", publier:"Veröffentlichen",
-        statut24h:"Status verschwindet nach 24 Stunden",
-        recents:"Kürzlich", aucunStatut:"Noch keine Status",
-        supprimerPourMoi:"🗑 Für mich löschen",
-        supprimerPourTous:"🗑 Für alle löschen",
-        msgSupprime:"🚫 Nachricht gelöscht",
-        vocal:"🎵 Sprachnachricht", enLigneStatus:"● Online", horsLigne:"⚫ Offline",
-        appAudio:"🎙 Sprachanruf", appVideo:"📹 Videoanruf",
-      }
-    },
-    ht: {
-      flag:"🇭🇹", name:"Kreyòl Ayisyen", country:"Haïti...",
-      t:{
-        discussions:"💬 Konvèsasyon", archives:"🗄 Achiv", statuts:"Estati",
-        appels:"Rele", rechercher:"Chèche...", enLigne:"● Konekte",
-        ecrire:"Ekri yon mesaj...", envoyer:"Voye",
-        monProfil:"Pwofil mwen", enregistrer:"Anrejistre ✓",
-        nomAffichage:"Non afichaj", statut:"Estati",
-        galerie:"Galri", camera:"Kamera", supprimer:"Efase",
-        choixAvatar:"Oswa chwazi yon avatar",
-        recEnCours:"Anrejistreman...", recPause:"Kanpe",
-        annuler:"Anile", pause:"Kanpe", reprendre:"Kontinye",
-        entrerNumero:"Antre nimewo ou pou kontinye",
-        numeroTel:"Nimewo telefòn", recevoirCode:"Resevwa kòd SMS",
-        codeSms:"Kòd SMS resevwa", confirmer:"Konfime",
-        modifierNum:"← Chanje nimewo",
-        choisirLangue:"🌍 Chwazi lang",
-        monStatut:"Estati mwen", ajouterStatut:"Klike pou ajoute estati",
-        texte:"✏️ Tèks", photo:"📷 Foto", video:"🎥 Videyo",
-        nouveauStatut:"Nouvo estati", publier:"Pibliye",
-        statut24h:"Estati disparèt apre 24 è",
-        recents:"Resan", aucunStatut:"Pa gen estati",
-        supprimerPourMoi:"🗑 Efase pou mwen",
-        supprimerPourTous:"🗑 Efase pou tout moun",
-        msgSupprime:"🚫 Mesaj efase",
-        vocal:"🎵 Vokal", enLigneStatus:"● Konekte", horsLigne:"⚫ Dekonekte",
-        appAudio:"🎙 Apèl audio", appVideo:"📹 Apèl videyo",
-      }
-    },
-    zh: {
-      flag:"🇨🇳", name:"中文", country:"中国、台湾、新加坡...",
-      t:{
-        discussions:"💬 聊天", archives:"🗄 归档", statuts:"状态",
-        appels:"通话", rechercher:"搜索...", enLigne:"● 在线",
-        ecrire:"输入消息...", envoyer:"发送",
-        monProfil:"我的资料", enregistrer:"保存 ✓",
-        nomAffichage:"显示名称", statut:"状态",
-        galerie:"相册", camera:"相机", supprimer:"删除",
-        choixAvatar:"或选择头像",
-        recEnCours:"录音中...", recPause:"已暂停",
-        annuler:"取消", pause:"暂停", reprendre:"继续",
-        entrerNumero:"输入手机号继续",
-        numeroTel:"手机号码", recevoirCode:"接收短信验证码",
-        codeSms:"收到的短信验证码", confirmer:"确认",
-        modifierNum:"← 更改号码",
-        choisirLangue:"🌍 选择语言",
-        monStatut:"我的状态", ajouterStatut:"点击添加状态",
-        texte:"✏️ 文字", photo:"📷 图片", video:"🎥 视频",
-        nouveauStatut:"新状态", publier:"发布",
-        statut24h:"状态24小时后消失",
-        recents:"最近", aucunStatut:"暂无状态",
-        supprimerPourMoi:"🗑 为我删除",
-        supprimerPourTous:"🗑 为所有人删除",
-        msgSupprime:"🚫 消息已删除",
-        vocal:"🎵 语音", enLigneStatus:"● 在线", horsLigne:"⚫ 离线",
-        appAudio:"🎙 语音通话", appVideo:"📹 视频通话",
-      }
-    },
-    pt: {
-      flag:"🇧🇷", name:"Português", country:"Brésil, Portugal, Angola, Mozambique...",
-      t:{
-        discussions:"💬 Conversas", archives:"🗄 Arquivadas", statuts:"Status",
-        appels:"Chamadas", rechercher:"Pesquisar...", enLigne:"● Online",
-        ecrire:"Escrever mensagem...", envoyer:"Enviar",
-        monProfil:"Meu perfil", enregistrer:"Salvar ✓",
-        nomAffichage:"Nome de exibição", statut:"Status",
-        galerie:"Galeria", camera:"Câmera", supprimer:"Remover",
-        choixAvatar:"Ou escolha um avatar",
-        recEnCours:"Gravando...", recPause:"Pausado",
-        annuler:"Cancelar", pause:"Pausar", reprendre:"Retomar",
-        entrerNumero:"Digite seu número para continuar",
-        numeroTel:"Número de telefone", recevoirCode:"Receber código SMS",
-        codeSms:"Código SMS recebido", confirmer:"Confirmar",
-        modifierNum:"← Alterar número",
-        choisirLangue:"🌍 Escolher idioma",
-        monStatut:"Meu status", ajouterStatut:"Toque para adicionar status",
-        texte:"✏️ Texto", photo:"📷 Foto", video:"🎥 Vídeo",
-        nouveauStatut:"Novo status", publier:"Publicar",
-        statut24h:"O status desaparece após 24 horas",
-        recents:"Recentes", aucunStatut:"Nenhum status ainda",
-        supprimerPourMoi:"🗑 Apagar para mim",
-        supprimerPourTous:"🗑 Apagar para todos",
-        msgSupprime:"🚫 Mensagem apagada",
-        vocal:"🎵 Áudio", enLigneStatus:"● Online", horsLigne:"⚫ Offline",
-        appAudio:"🎙 Chamada de voz", appVideo:"📹 Chamada de vídeo",
-      }
-    },
-    wo: {
-      flag:"🇸🇳", name:"Wolof", country:"Sénégal, Gambie...",
-      t:{
-        discussions:"💬 Waxtu", archives:"🗄 Dëkkante", statuts:"Yéwwi",
-        appels:"Wóor", rechercher:"Seet...", enLigne:"● Connecté",
-        ecrire:"Bind sa xabaar...", envoyer:"Yónnee",
-        monProfil:"Sa profil", enregistrer:"Dëkk ✓",
-        nomAffichage:"Sa tuur", statut:"Yéwwi",
-        galerie:"Nattu", camera:"Jamonoy", supprimer:"Fey",
-        choixAvatar:"Tann sa avatar",
-        recEnCours:"Dagg rekk...", recPause:"Tëdd",
-        annuler:"Bàyyi", pause:"Tëdd", reprendre:"Tukki",
-        entrerNumero:"Bind sa nimero ci kanam",
-        numeroTel:"Nimero telefon", recevoirCode:"Jël code SMS bi",
-        codeSms:"Code SMS ji jëkk", confirmer:"Sëtu",
-        modifierNum:"← Soppi nimero",
-        choisirLangue:"🌍 Tann lakk",
-        monStatut:"Sa yéwwi", ajouterStatut:"Topp ngir yëgël yéwwi",
-        texte:"✏️ Bindkat", photo:"📷 Nattu", video:"🎥 Vidéo",
-        nouveauStatut:"Yéwwi bu bees", publier:"Yónnee",
-        statut24h:"Yéwwi bi dafay dem ci 24 waxtu",
-        recents:"Bu mujj", aucunStatut:"Amul yéwwi",
-        supprimerPourMoi:"🗑 Fey ci sama bopp",
-        supprimerPourTous:"🗑 Fey ci yépp",
-        msgSupprime:"🚫 Xabaar bi feye",
-        vocal:"🎵 Dagg", enLigneStatus:"● Connecté", horsLigne:"⚫ Déconnecté",
-        appAudio:"🎙 Wóor", appVideo:"📹 Wóor nattu",
-      }
-    },
-    ha: {
-      flag:"🇳🇬", name:"Hausa", country:"Nigéria, Niger, Ghana...",
-      t:{
-        discussions:"💬 Tattaunawa", archives:"🗄 Ajiye", statuts:"Yanayi",
-        appels:"Kira", rechercher:"Bincika...", enLigne:"● Kan layi",
-        ecrire:"Rubuta sako...", envoyer:"Aika",
-        monProfil:"Bayanan na", enregistrer:"Ajiye ✓",
-        nomAffichage:"Sunan nuna", statut:"Yanayi",
-        galerie:"Hotuna", camera:"Kyamara", supprimer:"Share",
-        choixAvatar:"Ko zaɓi avatar",
-        recEnCours:"Ana yin rikodin...", recPause:"An tsaya",
-        annuler:"Soke", pause:"Tsaya", reprendre:"Ci gaba",
-        entrerNumero:"Shigar da lambar ka don ci gaba",
-        numeroTel:"Lambar waya", recevoirCode:"Karɓi code SMS",
-        codeSms:"Code SMS da aka karɓa", confirmer:"Tabbatar",
-        modifierNum:"← Canza lamba",
-        choisirLangue:"🌍 Zaɓi harshe",
-        monStatut:"Yanayin na", ajouterStatut:"Danna don ƙara yanayi",
-        texte:"✏️ Rubutu", photo:"📷 Hoto", video:"🎥 Bidiyo",
-        nouveauStatut:"Sabon yanayi", publier:"Wallafa",
-        statut24h:"Yanayi ya ɓace bayan awanni 24",
-        recents:"Na kwanan nan", aucunStatut:"Babu yanayi tukuna",
-        supprimerPourMoi:"🗑 Share dominan",
-        supprimerPourTous:"🗑 Share don kowa",
-        msgSupprime:"🚫 An share sako",
-        vocal:"🎵 Murya", enLigneStatus:"● Kan layi", horsLigne:"⚫ Ba kan layi ba",
-        appAudio:"🎙 Kiran murya", appVideo:"📹 Kiran bidiyo",
-      }
-    },
-    ja: {
-      flag:"🇯🇵", name:"日本語", country:"日本...",
-      t:{
-        discussions:"💬 チャット", archives:"🗄 アーカイブ", statuts:"ステータス",
-        appels:"通話", rechercher:"検索...", enLigne:"● オンライン",
-        ecrire:"メッセージを入力...", envoyer:"送信",
-        monProfil:"マイプロフィール", enregistrer:"保存 ✓",
-        nomAffichage:"表示名", statut:"ステータス",
-        galerie:"ギャラリー", camera:"カメラ", supprimer:"削除",
-        choixAvatar:"またはアバターを選択",
-        recEnCours:"録音中...", recPause:"一時停止",
-        annuler:"キャンセル", pause:"一時停止", reprendre:"再開",
-        entrerNumero:"続けるには番号を入力してください",
-        numeroTel:"電話番号", recevoirCode:"SMS コードを受信",
-        codeSms:"受信した SMS コード", confirmer:"確認",
-        modifierNum:"← 番号を変更",
-        choisirLangue:"🌍 言語を選択",
-        monStatut:"マイステータス", ajouterStatut:"タップしてステータスを追加",
-        texte:"✏️ テキスト", photo:"📷 写真", video:"🎥 動画",
-        nouveauStatut:"新しいステータス", publier:"公開",
-        statut24h:"ステータスは24時間後に消えます",
-        recents:"最近", aucunStatut:"ステータスなし",
-        supprimerPourMoi:"🗑 自分のみ削除",
-        supprimerPourTous:"🗑 全員から削除",
-        msgSupprime:"🚫 メッセージが削除されました",
-        vocal:"🎵 音声", enLigneStatus:"● オンライン", horsLigne:"⚫ オフライン",
-        appAudio:"🎙 音声通話", appVideo:"📹 ビデオ通話",
-      }
-    },
-    tr: {
-      flag:"🇹🇷", name:"Türkçe", country:"Türkiye...",
-      t:{
-        discussions:"💬 Sohbetler", archives:"🗄 Arşiv", statuts:"Durumlar",
-        appels:"Aramalar", rechercher:"Ara...", enLigne:"● Çevrimiçi",
-        ecrire:"Mesaj yaz...", envoyer:"Gönder",
-        monProfil:"Profilim", enregistrer:"Kaydet ✓",
-        nomAffichage:"Görünen ad", statut:"Durum",
-        galerie:"Galeri", camera:"Kamera", supprimer:"Sil",
-        choixAvatar:"Veya avatar seç",
-        recEnCours:"Kaydediliyor...", recPause:"Duraklatıldı",
-        annuler:"İptal", pause:"Duraklat", reprendre:"Devam et",
-        entrerNumero:"Devam etmek için numaranı gir",
-        numeroTel:"Telefon numarası", recevoirCode:"SMS kodu al",
-        codeSms:"Alınan SMS kodu", confirmer:"Onayla",
-        modifierNum:"← Numarayı değiştir",
-        choisirLangue:"🌍 Dil seç",
-        monStatut:"Durumum", ajouterStatut:"Durum eklemek için dokun",
-        texte:"✏️ Metin", photo:"📷 Fotoğraf", video:"🎥 Video",
-        nouveauStatut:"Yeni durum", publier:"Yayımla",
-        statut24h:"Durum 24 saat sonra kaybolur",
-        recents:"Son", aucunStatut:"Henüz durum yok",
-        supprimerPourMoi:"🗑 Benim için sil",
-        supprimerPourTous:"🗑 Herkes için sil",
-        msgSupprime:"🚫 Mesaj silindi",
-        vocal:"🎵 Ses", enLigneStatus:"● Çevrimiçi", horsLigne:"⚫ Çevrimdışı",
-        appAudio:"🎙 Sesli arama", appVideo:"📹 Görüntülü arama",
-      }
-    },
-    sw: {
-      flag:"🇰🇪", name:"Kiswahili", country:"Kenya, Tanzanie, Ouganda...",
-      t:{
-        discussions:"💬 Mazungumzo", archives:"🗄 Kumbukumbu", statuts:"Hali",
-        appels:"Simu", rechercher:"Tafuta...", enLigne:"● Mtandaoni",
-        ecrire:"Andika ujumbe...", envoyer:"Tuma",
-        monProfil:"Wasifu wangu", enregistrer:"Hifadhi ✓",
-        nomAffichage:"Jina la kuonyesha", statut:"Hali",
-        galerie:"Matunzio", camera:"Kamera", supprimer:"Futa",
-        choixAvatar:"Au chagua picha ya wasifu",
-        recEnCours:"Inaandika...", recPause:"Imesimamishwa",
-        annuler:"Ghairi", pause:"Simamisha", reprendre:"Endelea",
-        entrerNumero:"Ingiza nambari yako kuendelea",
-        numeroTel:"Nambari ya simu", recevoirCode:"Pokea msimbo wa SMS",
-        codeSms:"Msimbo wa SMS uliopokelewa", confirmer:"Thibitisha",
-        modifierNum:"← Badilisha nambari",
-        choisirLangue:"🌍 Chagua lugha",
-        monStatut:"Hali yangu", ajouterStatut:"Gonga kuongeza hali",
-        texte:"✏️ Maandishi", photo:"📷 Picha", video:"🎥 Video",
-        nouveauStatut:"Hali mpya", publier:"Chapisha",
-        statut24h:"Hali inatoweka baada ya masaa 24",
-        recents:"Za hivi karibuni", aucunStatut:"Hakuna hali bado",
-        supprimerPourMoi:"🗑 Futa kwangu",
-        supprimerPourTous:"🗑 Futa kwa wote",
-        msgSupprime:"🚫 Ujumbe umefutwa",
-        vocal:"🎵 Sauti", enLigneStatus:"● Mtandaoni", horsLigne:"⚫ Nje ya mtandao",
-        appAudio:"🎙 Simu ya sauti", appVideo:"📹 Simu ya video",
-      }
-    },
-  };
-
-  let currentLang = localStorage.getItem("sonia_lang") || "fr";
-  window._LANGS = LANGS;
-  window._currentLang = currentLang;
-
-  function t(key){ return (LANGS[currentLang]||LANGS.fr).t[key] || key; }
-
-  function applyLang(){
-    const L = LANGS[currentLang]||LANGS.fr;
-    // Auth screen button
-    const af=$("auth-lang-flag"); if(af) af.textContent=L.flag;
-    const an=$("auth-lang-name"); if(an) an.textContent=L.name;
-    // Auth screen texts
-    const as=$("auth-sub"); if(as) as.textContent=t("entrerNumero");
-    const lp=$("lbl-phone"); if(lp) lp.textContent=t("numeroTel");
-    const lo=$("lbl-otp"); if(lo) lo.textContent=t("codeSms");
-    const sc=$("send-code-btn"); if(sc) sc.textContent=t("recevoirCode");
-    const vb=$("verify-btn"); if(vb) vb.textContent=t("confirmer");
-    const bb=$("back-btn"); if(bb) bb.textContent=t("modifierNum");
-    // Tabs
-    const tc=$("tab-chats"); if(tc) tc.textContent=t("discussions");
-    const ta=$("tab-archived"); if(ta) ta.textContent=t("archives");
-    // Search
-    const si=$("search-input"); if(si) si.placeholder=t("rechercher");
-    // Nav
-    const nc=$("nav-chats-lbl"); if(nc) nc.textContent=t("discussions").replace("💬 ","");
-    const ns=$("nav-status-lbl"); if(ns) ns.textContent=t("statuts");
-    const na=$("nav-calls-lbl"); if(na) na.textContent=t("appels");
-    // Input
-    const ti=$("txt-in"); if(ti) ti.placeholder=t("ecrire");
-    // Profile modal
-    const fn=$("f-name"); if(fn) fn.placeholder=t("nomAffichage");
-    const fs=$("f-status"); if(fs) fs.placeholder=t("statut");
-    const spb=$("save-prof-btn"); if(spb) spb.textContent=t("enregistrer");
-    // Rec buttons
-    const rd=document.querySelector("#r-delete span:last-child"); if(rd) rd.textContent=t("annuler");
-    const rp=document.querySelector("#r-pause span:last-child"); if(rp) rp.textContent=t("pause");
-    const rr=document.querySelector("#r-resume span:last-child"); if(rr) rr.textContent=t("reprendre");
-    // RTL for Arabic and Hebrew
-    document.body.dir=(currentLang==="ar"||currentLang==="he")?"rtl":"ltr";
-    // Update topbar lang button flag
-    const lb=$("lang-btn"); if(lb) lb.textContent=L.flag;
-    localStorage.setItem("sonia_lang", currentLang);
-  }
-
-  function buildLangList(){
-    window._currentLang = currentLang;
-    const list=$("lang-list"); list.innerHTML="";
-    Object.entries(LANGS).forEach(([code, lang])=>{
-      const item=document.createElement("div");
-      item.className="lang-item"+(code===currentLang?" selected":"");
-      item.innerHTML=
-        '<div class="lang-flag">'+lang.flag+'</div>'+
-        '<div class="lang-info">'+
-          '<div class="lang-name">'+lang.name+'</div>'+
-          '<div class="lang-country">'+lang.country+'</div>'+
-        '</div>'+
-        (code===currentLang?'<div class="lang-check">✓</div>':'');
-      item.onclick=()=>{
-        currentLang=code;
-        window._currentLang=code;
-        applyLang();
-        buildLangList();
-        $("lang-overlay").style.display="none";
-        toast((LANGS[code]||LANGS.fr).name+" ✓");
-      };
-      list.appendChild(item);
+function renderList(){
+  const box=$("contact-list");if(!box)return;
+  box.innerHTML="";
+  const term=S.search.toLowerCase();
+  const vis=S.contacts.filter(c=>{
+    const match=(c.name||c.phone||"").toLowerCase().includes(term);
+    const arch=S.arch.has(c.uid);
+    return match&&(S.tab==="archived"?arch:!arch);
+  });
+  if(!vis.length){box.innerHTML='<div class="empty-note">'+(S.tab==="archived"?"Aucune conv. archivée":"Aucun contact pour l instant")+"</div>";return;}
+  vis.forEach(c=>{
+    const ck=chatKey(S.myUid,c.uid);
+    const row=document.createElement("div");
+    row.className="contact-row"+(S.activeId===c.uid?" active-row":"");
+    const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
+    row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(c.name||c.phone||"Inconnu")+'</span><span class="row-time" id="lt-'+ck+'"></span></div><div class="row-bot"><span class="row-last" id="ll-'+ck+'">...</span><button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button></div></div>';
+    row.querySelector(".arch-btn").onclick=ev=>{ev.stopPropagation();toggleArch(c.uid);};
+    row.onclick=()=>openChat(c.uid);
+    box.appendChild(row);
+    db.ref("chats/"+ck+"/lastMsg").on("value",snap2=>{
+      const lm=snap2.val();
+      const lt=document.getElementById("lt-"+ck);const ll=document.getElementById("ll-"+ck);
+      if(lt&&lm)lt.textContent=lm.t||"";
+      if(ll&&lm)ll.textContent=lm.del?"🚫":lm.type==="voice"?"🎵 Vocal":lm.type==="photo"?"📷 Photo":lm.type==="video"?"🎥 Vidéo":(lm.text||"");
     });
+  });
+}
+
+function toggleArch(uid){S.arch.has(uid)?S.arch.delete(uid):S.arch.add(uid);renderList();if(S.activeId===uid)updateArchBtn();}
+function updateArchBtn(){const b=$("arch-btn");if(b)b.textContent=S.arch.has(S.activeId)?"📤":"🗄";}
+
+// ---- CHAT ----
+function openChat(uid){
+  S.activeId=uid;
+  const c=S.contacts.find(x=>x.uid===uid)||{};
+  const cav=$("c-av");if(cav)cav.innerHTML=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
+  const cd=$("c-dot");if(cd)cd.className="dot "+(c.online?"online":"offline");
+  const cn=$("c-name");if(cn)cn.textContent=c.name||c.phone||"Inconnu";
+  const cs=$("c-status");if(cs){cs.textContent=c.online?"● En ligne":"⚫ Hors ligne";cs.style.color=c.online?"var(--green)":"var(--sub)";}
+  updateArchBtn();
+  showScreen("s-chat");
+  listenMsgs();
+}
+
+function listenMsgs(){
+  if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}
+  const key=chatKey(S.myUid,S.activeId);
+  const cached=CACHE.load("msgs_"+key);
+  if(cached&&cached.length){const box=$("msg-list");box.innerHTML="";cached.forEach(m=>box.appendChild(makeBubble(m)));box.scrollTop=box.scrollHeight;}
+  if(!isOnline)return;
+  S.unsubMsgs=db.ref("chats/"+key+"/messages").on("value",snap=>{
+    const msgs=[];const box=$("msg-list");box.innerHTML="";
+    snap.forEach(child=>{const m={id:child.key,...child.val()};if(m.type!=="photo"&&m.type!=="video")msgs.push(m);box.appendChild(makeBubble(m));});
+    CACHE.save("msgs_"+key,msgs);box.scrollTop=box.scrollHeight;
+  });
+}
+
+function makeBubble(m){
+  const self=m.from===S.myUid;
+  const row=document.createElement("div");
+  row.className="bubble-row "+(self?"out":"in");
+  const bub=document.createElement("div");
+  if(m.del){bub.className="bubble del";bub.textContent=t("msgSupprime");row.appendChild(bub);return row;}
+  bub.className="bubble "+(self?"out":"in");
+  if(m.type==="voice"){
+    let playing=false,playTick=null,playSecs=0;
+    bub.innerHTML='<div class="vbubble"><button class="vplay" id="vp-'+m.id+'">▶</button><div class="vbar"><div class="vfill" id="vf-'+m.id+'"></div></div><span class="vdur" id="vd-'+m.id+'">'+fmt(m.duration||0)+'</span></div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+    setTimeout(()=>{
+      const pb=document.getElementById("vp-"+m.id);const fi=document.getElementById("vf-"+m.id);const dv=document.getElementById("vd-"+m.id);
+      if(!pb)return;
+      pb.onclick=()=>{
+        if(playing){clearInterval(playTick);playing=false;pb.textContent="▶";}
+        else{if(playSecs>=(m.duration||0)){playSecs=0;fi.style.width="0%";}playing=true;pb.textContent="⏸";
+          playTick=setInterval(()=>{playSecs++;fi.style.width=Math.min(100,(playSecs/(m.duration||1))*100)+"%";dv.textContent=fmt((m.duration||0)-playSecs);if(playSecs>=(m.duration||0)){clearInterval(playTick);playing=false;pb.textContent="▶";playSecs=0;fi.style.width="0%";dv.textContent=fmt(m.duration||0);}},1000);}
+      };
+    },0);
+  } else if(m.type==="photo"){
+    bub.innerHTML='<div class="photo-bub"><img src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;cursor:pointer"/></div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+    setTimeout(()=>{const img=bub.querySelector(".photo-bub img");if(img)img.onclick=()=>openViewer(m.src);},0);
+  } else if(m.type==="video"){
+    bub.innerHTML='<div class="video-bub"><video src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;display:block" preload="metadata" playsinline></video><div class="vid-play-overlay">▶</div></div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+    setTimeout(()=>{const vid=bub.querySelector("video");if(vid)vid.onclick=()=>openVideoViewer(m.src);const ov=bub.querySelector(".vid-play-overlay");if(ov)ov.onclick=()=>openVideoViewer(m.src);},0);
+  } else {
+    bub.innerHTML='<div class="b-text">'+esc(m.text||"")+'</div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
   }
-
-  window._applyLang = applyLang;
-  window._buildLangList = buildLangList;
-
-  $("lang-btn").onclick=()=>{ buildLangList(); $("lang-overlay").style.display="flex"; };
-  $("lang-close").onclick=()=>$("lang-overlay").style.display="none";
-  $("lang-overlay").onclick=e=>{ if(e.target===$("lang-overlay"))$("lang-overlay").style.display="none"; };
-
-  // Appliquer la langue au démarrage
-  applyLang();
-
-  // ---- PARTAGE APP ----
-  const APP_URL = "https://orsservice20-crypto.github.io/Sonia";
-  const APP_MSG = "💬 Rejoins-moi sur Sonia !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
-
-  $("share-app-btn").onclick=()=>{ $("share-overlay").style.display="flex"; };
-  $("share-close").onclick=()=>{ $("share-overlay").style.display="none"; };
-  $("share-overlay").onclick=e=>{ if(e.target===$("share-overlay"))$("share-overlay").style.display="none"; };
-
-  async function copyText(txt){
-    try{ await navigator.clipboard.writeText(txt); return true; }
-    catch(e){
-      const el=document.createElement("textarea");
-      el.value=txt; document.body.appendChild(el);
-      el.select(); document.execCommand("copy"); el.remove();
-      return true;
-    }
-  }
-
-  $("copy-link-btn").onclick=async()=>{
-    await copyText(APP_URL);
-    $("copy-link-btn").textContent="✅";
-    setTimeout(()=>{ $("copy-link-btn").textContent="📋"; },2000);
-    toast("Lien copié ✓");
-  };
-
-  $("copy-msg-btn").onclick=async()=>{
-    await copyText(APP_MSG);
-    toast("Message copié ✓");
-  };
-
-  $("share-native-btn").onclick=async()=>{
-    if(navigator.share){
-      try{ await navigator.share({title:"Sonia – Messagerie",text:APP_MSG,url:APP_URL}); }catch(e){}
-    } else { await copyText(APP_URL); toast("Lien copié ✓"); }
-  };
-
-  const enc=encodeURIComponent;
-  $("share-whatsapp").onclick=()=>  window.open("https://wa.me/?text="+enc(APP_MSG),"_blank");
-  $("share-facebook").onclick=()=>  window.open("https://www.facebook.com/sharer/sharer.php?u="+enc(APP_URL),"_blank");
-  $("share-twitter").onclick=()=>   window.open("https://twitter.com/intent/tweet?text="+enc(APP_MSG),"_blank");
-  $("share-telegram").onclick=()=>  window.open("https://t.me/share/url?url="+enc(APP_URL)+"&text="+enc("Rejoins-moi sur Sonia 🚀"),"_blank");
-  $("share-instagram").onclick=async()=>{
-    await copyText(APP_MSG);
-    toast("Message copié — colle-le dans Instagram !");
-    setTimeout(()=>window.open("https://www.instagram.com","_blank"),800);
-  };
-  $("share-sms").onclick=()=> window.open("sms:?body="+enc(APP_MSG),"_blank");
-
-  $("nav-chats").onclick  = () => { showScreen("s-list"); setNav("nav-chats"); };
-  $("nav-status").onclick = () => { showScreen("s-status"); setNav("nav-status"); loadStatuses(); };
-  $("nav-calls").onclick  = () => toast("Appels recents — bientot disponible");
-  $("status-back").onclick= () => { showScreen("s-list"); setNav("nav-chats"); };
-  function setNav(id){ document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.id===id)); }
-
-  // ---- STATUS SYSTEM ----
-  let scPendingType=null, scPendingSrc=null, svItems=[], svIdx=0, svTimer=null;
-
-  // Ouvrir modal creation
-  function openCreateModal(type){
-    scPendingType=null; scPendingSrc=null;
-    $("sc-preview-el").style.display="none"; $("sc-preview-el").innerHTML="";
-    $("sc-text-in").style.display="none"; $("sc-text-in").value="";
-    $("sc-options").style.display="flex";
-    $("status-create-modal").style.display="flex";
-    if(type==="text"){ triggerText(); }
-    else if(type==="photo"){ $("sc-photo-in").click(); }
-    else if(type==="video"){ $("sc-video-in").click(); }
-  }
-  function triggerText(){
-    $("sc-options").style.display="none";
-    $("sc-text-in").style.display="block";
-    $("sc-text-in").focus();
-    scPendingType="text";
-  }
-
-  $("add-status-text-btn").onclick  = () => openCreateModal("text");
-  $("add-status-photo-btn").onclick = () => openCreateModal("photo");
-  $("add-status-video-btn").onclick = () => openCreateModal("video");
-  $("sc-write-text").onclick = triggerText;
-  $("sc-pick-photo").onclick = () => $("sc-photo-in").click();
-  $("sc-pick-video").onclick = () => $("sc-video-in").click();
-  $("sc-close").onclick     = () => { $("status-create-modal").style.display="none"; };
-
-  // Fichier photo pour statut
-  $("sc-photo-in").onchange = e => {
-    const f=e.target.files[0]; if(!f) return;
-    const r=new FileReader(); r.onload=ev=>{ scPendingSrc=ev.target.result; scPendingType="photo"; showScPreview("img",ev.target.result); }; r.readAsDataURL(f); e.target.value="";
-  };
-  $("sc-video-in").onchange = e => {
-    const f=e.target.files[0]; if(!f) return;
-    if(f.size/1024/1024>25){ toast("Video trop lourde (max 25 Mo)","err"); return; }
-    const r=new FileReader(); r.onload=ev=>{ scPendingSrc=ev.target.result; scPendingType="video"; showScPreview("video",ev.target.result); }; r.readAsDataURL(f); e.target.value="";
-  };
-  // Depuis l'ecran statuts
-  $("status-photo-in").onchange=e=>{ const f=e.target.files[0]; if(f){ openCreateModal(""); const r=new FileReader(); r.onload=ev=>{ scPendingSrc=ev.target.result; scPendingType="photo"; showScPreview("img",ev.target.result); }; r.readAsDataURL(f); e.target.value=""; } };
-  $("status-video-in").onchange=e=>{ const f=e.target.files[0]; if(f){ openCreateModal(""); const r=new FileReader(); r.onload=ev=>{ scPendingSrc=ev.target.result; scPendingType="video"; showScPreview("video",ev.target.result); }; r.readAsDataURL(f); e.target.value=""; } };
-
-  function showScPreview(type, src){
-    $("sc-options").style.display="none";
-    const prev=$("sc-preview-el"); prev.innerHTML="";
-    if(type==="img"){ const img=document.createElement("img"); img.src=src; prev.appendChild(img); }
-    else { const vid=document.createElement("video"); vid.src=src; vid.controls=true; vid.style.maxHeight="45vh"; prev.appendChild(vid); }
-    prev.style.display="flex";
-  }
-  // Publier statut
-  $("sc-publish-btn").onclick = async () => {
-    if(scPendingType==="text"){
-      const txt=$("sc-text-in").value.trim();
-      if(!txt){ toast("Ecrivez quelque chose","err"); return; }
-      scPendingSrc=txt;
-    }
-    if(!scPendingType||!scPendingSrc){ toast("Choisissez un contenu","err"); return; }
-    const statusData={
-      uid:S.myUid, name:S.profile.name||S.myPhone,
-      emoji:S.profile.emoji, avType:S.profile.avType, img:S.profile.img||null,
-      type:scPendingType, src:scPendingSrc,
-      ts:Date.now(), viewers:{}
+  if(self){
+    let menuEl=null;
+    const clr=()=>{if(menuEl){menuEl.remove();menuEl=null;}document.removeEventListener("click",clr);};
+    bub.onclick=e=>{
+      e.stopPropagation();if(menuEl){clr();return;}
+      menuEl=document.createElement("div");menuEl.className="del-menu";
+      menuEl.innerHTML='<button class="red">'+t("supprimerPourMoi")+'</button><button class="red">'+t("supprimerPourTous")+'</button><button>Annuler</button>';
+      menuEl.querySelectorAll("button")[0].onclick=ev=>{ev.stopPropagation();delMsg(m.id);clr();};
+      menuEl.querySelectorAll("button")[1].onclick=ev=>{ev.stopPropagation();delMsg(m.id);clr();};
+      menuEl.querySelectorAll("button")[2].onclick=ev=>{ev.stopPropagation();clr();};
+      bub.appendChild(menuEl);setTimeout(()=>document.addEventListener("click",clr,{once:true}),0);
     };
-    await push(ref(db,"statuses/"+S.myUid), statusData);
-    $("status-create-modal").style.display="none";
-    toast("Statut publie ✓");
-    loadStatuses();
-  };
+  }
+  row.appendChild(bub);return row;
+}
 
-  // ---- CHARGER STATUTS ----
-  function loadStatuses(){
-    // Mes statuts
-    onValue(ref(db,"statuses/"+S.myUid), snap => {
-      const now24=Date.now()-24*60*60*1000;
-      const myItems=[]; const strip=$("my-statuses-strip");
-      strip.innerHTML="";
-      snap.forEach(child=>{
-        const s={id:child.key,...child.val()};
-        if(s.ts>=now24) myItems.push(s);
+function delMsg(msgId){
+  const key=chatKey(S.myUid,S.activeId);
+  db.ref("chats/"+key+"/messages/"+msgId).update({del:true,text:"",src:""});
+}
+
+function pushMsg(m){
+  const key=chatKey(S.myUid,S.activeId);
+  db.ref("chats/"+key+"/messages").push(m);
+  db.ref("chats/"+key+"/lastMsg").set({text:m.text||"",t:m.t,type:m.type,del:false});
+}
+
+// ---- ENVOI TEXTE ----
+function doSend(){
+  const ti=$("txt-in");if(!ti)return;
+  const v=ti.value.trim();if(!v||!S.activeId)return;
+  ti.value="";
+  pushMsg({from:S.myUid,text:v,t:nowT(),type:"text",del:false});
+}
+
+// ---- VOCAL ----
+function startRec(){
+  if(!S.activeId)return;
+  S.recPaused=false;S.recSecs=0;
+  $("rec-time").textContent="00:00";$("rec-state").textContent=t("recEnCours");
+  $("rec-dot").classList.add("pulse");
+  $("r-pause").style.display="flex";$("r-resume").style.display="none";
+  $("normal-row").style.display="none";$("rec-bar").style.display="flex";
+  S.recTick=setInterval(()=>{if(!S.recPaused){S.recSecs++;$("rec-time").textContent=fmt(S.recSecs);}},1000);
+}
+function stopRec(){clearInterval(S.recTick);S.recSecs=0;S.recPaused=false;$("rec-bar").style.display="none";$("normal-row").style.display="flex";}
+
+// ---- VIEWERS ----
+function openViewer(src){$("photo-viewer-img").src=src;$("photo-viewer").style.display="flex";}
+function openVideoViewer(src){$("video-viewer-el").src=src;$("video-viewer").style.display="flex";$("video-viewer-el").play();}
+
+// ---- PROFIL ----
+function updateMyAv(){
+  $("my-name-el").textContent=S.profile.name||S.myPhone||"Sonia";
+  $("my-status-el").textContent="● "+(S.profile.status||"En ligne");
+  const av=$("my-av-el");av.innerHTML="";
+  if(S.profile.avType==="img"&&S.profile.img){const img=document.createElement("img");img.src=S.profile.img;av.appendChild(img);}
+  else av.textContent=S.profile.emoji||"🧑🏾";
+  const sav=$("my-status-av-el");if(sav){sav.innerHTML="";if(S.profile.avType==="img"&&S.profile.img){const img2=document.createElement("img");img2.src=S.profile.img;sav.appendChild(img2);}else sav.textContent=S.profile.emoji||"🧑🏾";}
+}
+
+// ---- STATUTS ----
+let svItems=[],svIdx=0,svTimer=null;
+
+function loadStatuses(){
+  db.ref("statuses/"+S.myUid).once("value",snap=>{
+    const now24=Date.now()-24*60*60*1000;const myItems=[];const strip=$("my-statuses-strip");strip.innerHTML="";
+    snap.forEach(child=>{const s={id:child.key,...child.val()};if(s.ts>=now24)myItems.push(s);});
+    if(myItems.length){$("my-status-count-el").textContent=myItems.length+" statut"+(myItems.length>1?"s":"");strip.style.display="flex";
+      myItems.forEach(s=>{
+        if(s.type==="photo"){const el=document.createElement("img");el.src=s.src;el.className="my-status-thumb";el.onclick=()=>openStatusViewer([s],0,true);strip.appendChild(el);}
+        else if(s.type==="video"){const el=document.createElement("video");el.src=s.src;el.className="my-status-thumb";el.onclick=()=>openStatusViewer([s],0,true);strip.appendChild(el);}
+        else{const d=document.createElement("div");d.className="my-status-thumb";d.style.cssText="display:flex;align-items:center;justify-content:center;background:var(--bubble-out);font-size:11px;color:#fff;text-align:center;padding:4px;word-break:break-word;border-radius:10px;cursor:pointer";d.textContent=s.src.slice(0,30);d.onclick=()=>openStatusViewer([s],0,true);strip.appendChild(d);}
       });
-      if(myItems.length>0){
-        $("my-status-count-el").textContent=myItems.length+" statut"+(myItems.length>1?"s":"")+" · Voir";
-        strip.style.display="flex";
-        myItems.forEach(s=>{
-          if(s.type==="photo"||s.type==="video"){
-            const el=document.createElement(s.type==="photo"?"img":"video");
-            el.src=s.src; el.className="my-status-thumb";
-            el.onclick=()=>openStatusViewer([s],0,true);
-            strip.appendChild(el);
-          } else {
-            const d=document.createElement("div");
-            d.className="my-status-thumb";
-            d.style.cssText="display:flex;align-items:center;justify-content:center;background:var(--bubble-out);font-size:11px;color:#fff;text-align:center;padding:4px;word-break:break-word;border-radius:10px;cursor:pointer";
-            d.textContent=s.src.slice(0,30);
-            d.onclick=()=>openStatusViewer([s],0,true);
-            strip.appendChild(d);
-          }
-        });
-        strip.style.display=myItems.length?"flex":"none";
-      } else {
-        $("my-status-count-el").textContent="Appuyez pour ajouter un statut";
-        strip.style.display="none";
-      }
-    },{onlyOnce:true});
-
-    // Statuts des contacts
-    const contactsList=$("contacts-statuses-list"); contactsList.innerHTML="";
-    let hasAny=false;
-    const now24=Date.now()-24*60*60*1000;
-    S.contacts.forEach(c=>{
-      onValue(ref(db,"statuses/"+c.uid), snap=>{
-        const items=[];
-        snap.forEach(child=>{ const s={id:child.key,...child.val()}; if(s.ts>=now24) items.push(s); });
-        if(!items.length) return;
-        hasAny=true;
-        $("contacts-statuses-section").style.display="block";
-        $("no-contacts-status").style.display="none";
-        const seen=items.every(s=>s.viewers&&s.viewers[S.myUid]);
-        const row=document.createElement("div"); row.className="status-contact-row";
-        const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'"/>':'<span style="font-size:24px">'+( c.emoji||"🧑🏾")+'</span>';
-        const lastItem=items[items.length-1];
-        const ago=timeSince(lastItem.ts);
-        row.innerHTML=
-          '<div class="status-ring'+(seen?" seen":"")+'"><div class="status-ring-inner">'+avH+'</div></div>'+
-          '<div class="status-row-info"><div class="status-row-name">'+esc(c.name||c.phone||"Inconnu")+'</div><div class="status-row-time">'+ago+'</div></div>';
-        row.onclick=()=>openStatusViewer(items,0,false,c);
-        // remove old row if exists
-        const old=document.getElementById("sr-"+c.uid);
-        if(old) old.remove();
-        row.id="sr-"+c.uid;
-        contactsList.appendChild(row);
-      },{onlyOnce:true});
+    } else {$("my-status-count-el").textContent=t("ajouterStatut");strip.style.display="none";}
+  });
+  const cl=$("contacts-statuses-list");cl.innerHTML="";let hasAny=false;
+  const now24=Date.now()-24*60*60*1000;
+  S.contacts.forEach(c=>{
+    db.ref("statuses/"+c.uid).once("value",snap=>{
+      const items=[];snap.forEach(child=>{const s={id:child.key,...child.val()};if(s.ts>=now24)items.push(s);});
+      if(!items.length)return;
+      hasAny=true;$("contacts-statuses-section").style.display="block";$("no-contacts-status").style.display="none";
+      const seen=items.every(s=>s.viewers&&s.viewers[S.myUid]);
+      const row=document.createElement("div");row.className="status-contact-row";
+      const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'"/>':'<span style="font-size:24px">'+(c.emoji||"🧑🏾")+'</span>';
+      const ago=timeSince(items[items.length-1].ts);
+      row.innerHTML='<div class="status-ring'+(seen?" seen":"")+'"><div class="status-ring-inner">'+avH+'</div></div><div class="status-row-info"><div class="status-row-name">'+esc(c.name||c.phone||"Inconnu")+'</div><div class="status-row-time">'+ago+'</div></div>';
+      row.onclick=()=>openStatusViewer(items,0,false,c);
+      const old=document.getElementById("sr-"+c.uid);if(old)old.remove();
+      row.id="sr-"+c.uid;cl.appendChild(row);
     });
-    if(!hasAny){ $("no-contacts-status").style.display="block"; $("contacts-statuses-section").style.display="none"; }
+  });
+  if(!hasAny){$("no-contacts-status").style.display="block";$("contacts-statuses-section").style.display="none";}
+}
+
+function timeSince(ts){const d=Date.now()-ts;if(d<60000)return"à l instant";if(d<3600000)return Math.floor(d/60000)+" min";if(d<86400000)return Math.floor(d/3600000)+"h";return"hier";}
+
+function openStatusViewer(items,startIdx,isMine,contact){
+  svItems=items;svIdx=startIdx;
+  $("status-viewer").style.display="flex";
+  const bars=$("sv-bars");bars.innerHTML="";
+  items.forEach((_,i)=>{const bar=document.createElement("div");bar.className="sv-bar";const fill=document.createElement("div");fill.className="sv-bar-fill";fill.id="svbar-"+i;bar.appendChild(fill);bars.appendChild(bar);});
+  const avEl=$("sv-av-el");avEl.innerHTML="";
+  if(isMine){if(S.profile.avType==="img"&&S.profile.img){const img=document.createElement("img");img.src=S.profile.img;avEl.appendChild(img);}else avEl.textContent=S.profile.emoji||"🧑🏾";$("sv-name-el").textContent=S.profile.name||"Moi";}
+  else if(contact){if(contact.avType==="img"&&contact.img){const img=document.createElement("img");img.src=contact.img;avEl.appendChild(img);}else avEl.textContent=contact.emoji||"🧑🏾";$("sv-name-el").textContent=contact.name||contact.phone||"Inconnu";}
+  showStatusItem(svIdx,isMine);
+}
+
+function showStatusItem(idx,isMine){
+  clearTimeout(svTimer);
+  if(idx>=svItems.length){closeStatusViewer();return;}
+  const s=svItems[idx];
+  $("sv-img").style.display="none";$("sv-img").src="";
+  $("sv-vid").style.display="none";$("sv-vid").src="";
+  $("sv-text-el").style.display="none";$("sv-text-el").textContent="";
+  $("sv-time-el").textContent=timeSince(s.ts);
+  if(s.type==="photo"){$("sv-img").src=s.src;$("sv-img").style.display="block";}
+  else if(s.type==="video"){$("sv-vid").src=s.src;$("sv-vid").style.display="block";$("sv-vid").play();}
+  else{$("sv-text-el").textContent=s.src;$("sv-text-el").style.display="block";}
+  const fill=document.getElementById("svbar-"+idx);
+  if(fill&&s.type!=="video"){
+    fill.style.transition="none";fill.style.width="0%";
+    requestAnimationFrame(()=>{fill.style.transition="width 5s linear";fill.style.width="100%";});
+    svTimer=setTimeout(()=>{if(!isMine)markViewed(s);showStatusItem(idx+1,isMine);},5000);
+  } else if(fill&&s.type==="video"){
+    $("sv-vid").onended=()=>{fill.style.width="100%";if(!isMine)markViewed(s);showStatusItem(idx+1,isMine);};
+    $("sv-vid").ontimeupdate=()=>{const pct=($("sv-vid").currentTime/($("sv-vid").duration||1))*100;fill.style.width=pct+"%";};
   }
+  if(isMine){
+    const viewers=s.viewers?Object.values(s.viewers):[];
+    $("sv-viewers-count").textContent=viewers.length+" vue"+(viewers.length>1?"s":"");
+    $("sv-viewers-names").textContent=viewers.map(v=>v.name||"?").join(", ");
+    $("sv-viewers-el").style.display="flex";
+  } else {$("sv-viewers-el").style.display="none";}
+  for(let i=0;i<idx;i++){const f=document.getElementById("svbar-"+i);if(f)f.style.width="100%";}
+}
 
-  function timeSince(ts){
-    const diff=Date.now()-ts;
-    if(diff<60000) return "a l instant";
-    if(diff<3600000) return Math.floor(diff/60000)+" min";
-    if(diff<86400000) return Math.floor(diff/3600000)+"h";
-    return "hier";
-  }
+function markViewed(s){
+  try{db.ref("statuses/"+s.uid+"/"+s.id+"/viewers/"+S.myUid).update({name:S.profile.name||S.myPhone,phone:S.myPhone,ts:Date.now()});}catch(e){}
+}
 
-  // ---- VIEWER STATUTS ----
-  function openStatusViewer(items, startIdx, isMine, contact){
-    svItems=items; svIdx=startIdx;
-    $("status-viewer").style.display="flex";
-    // Barres de progression
-    const bars=$("sv-bars"); bars.innerHTML="";
-    items.forEach((_,i)=>{
-      const bar=document.createElement("div"); bar.className="sv-bar";
-      const fill=document.createElement("div"); fill.className="sv-bar-fill"; fill.id="svbar-"+i;
-      bar.appendChild(fill); bars.appendChild(bar);
-    });
-    // Info auteur
-    if(isMine){
-      const avEl=$("sv-av-el");
-      avEl.innerHTML="";
-      if(S.profile.avType==="img"&&S.profile.img){ const img=document.createElement("img"); img.src=S.profile.img; avEl.appendChild(img); }
-      else avEl.textContent=S.profile.emoji||"🧑🏾";
-      $("sv-name-el").textContent=S.profile.name||"Moi";
-    } else if(contact){
-      const avEl=$("sv-av-el"); avEl.innerHTML="";
-      if(contact.avType==="img"&&contact.img){ const img=document.createElement("img"); img.src=contact.img; avEl.appendChild(img); }
-      else avEl.textContent=contact.emoji||"🧑🏾";
-      $("sv-name-el").textContent=contact.name||contact.phone||"Inconnu";
-    }
-    showStatusItem(svIdx, isMine);
-  }
+function closeStatusViewer(){
+  clearTimeout(svTimer);
+  const vid=$("sv-vid");if(vid){vid.pause();vid.src="";}
+  $("status-viewer").style.display="none";
+  loadStatuses();
+}
 
-  function showStatusItem(idx, isMine){
-    clearTimeout(svTimer);
-    if(idx>=svItems.length){ closeStatusViewer(); return; }
-    const s=svItems[idx];
-    // Reset content
-    $("sv-img").style.display="none"; $("sv-img").src="";
-    $("sv-vid").style.display="none"; $("sv-vid").src="";
-    $("sv-text-el").style.display="none"; $("sv-text-el").textContent="";
-    $("sv-time-el").textContent=timeSince(s.ts);
-    const dur=s.type==="video"?0:5000;
+// ---- PARTAGE ----
+const APP_MSG="💬 Rejoins-moi sur Sonia !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
+async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-    if(s.type==="photo"){ $("sv-img").src=s.src; $("sv-img").style.display="block"; }
-    else if(s.type==="video"){ $("sv-vid").src=s.src; $("sv-vid").style.display="block"; $("sv-vid").play(); }
-    else { $("sv-text-el").textContent=s.src; $("sv-text-el").style.display="block"; }
-
-    // Barre de progression animee (sauf video)
-    const fill=document.getElementById("svbar-"+idx);
-    if(fill&&s.type!=="video"){
-      fill.style.transition="none"; fill.style.width="0%";
-      requestAnimationFrame(()=>{ fill.style.transition="width "+dur/1000+"s linear"; fill.style.width="100%"; });
-      svTimer=setTimeout(()=>{ markViewed(s,isMine); showStatusItem(idx+1,isMine); }, dur);
-    } else if(fill&&s.type==="video"){
-      $("sv-vid").onended=()=>{ fill.style.width="100%"; markViewed(s,isMine); showStatusItem(idx+1,isMine); };
-      $("sv-vid").ontimeupdate=()=>{
-        const pct=($("sv-vid").currentTime/$("sv-vid").duration)*100||0;
-        fill.style.width=pct+"%";
-      };
-    }
-
-    // Vues (si c est mon statut)
-    if(isMine){
-      const viewers=s.viewers?Object.values(s.viewers):[];
-      $("sv-viewers-count").textContent=viewers.length+" vue"+(viewers.length>1?"s":"");
-      $("sv-viewers-names").textContent=viewers.map(v=>v.name||v.phone||"?").join(", ");
-      $("sv-viewers-el").style.display="flex";
-    } else {
-      $("sv-viewers-el").style.display="none";
-    }
-
-    // Marquer barre precedente comme complete
-    for(let i=0;i<idx;i++){ const f=document.getElementById("svbar-"+i); if(f) f.style.width="100%"; }
-  }
-
-  async function markViewed(s, isMine){
-    if(isMine) return; // pas besoin de marquer ses propres statuts
-    try{
-      await update(ref(db,"statuses/"+s.uid+"/"+s.id+"/viewers/"+S.myUid),{
-        name:S.profile.name||S.myPhone, phone:S.myPhone, ts:Date.now()
-      });
-    }catch(e){}
-  }
-
-  function closeStatusViewer(){
-    clearTimeout(svTimer);
-    $("sv-vid").pause(); $("sv-vid").src="";
-    $("status-viewer").style.display="none";
-    loadStatuses();
-  }
-  $("sv-close").onclick=closeStatusViewer;
-  // Tap gauche/droite pour naviguer
-  $("status-viewer").onclick=e=>{
-    if(e.target.closest(".sv-header")||e.target.closest(".sv-footer")) return;
-    const x=e.clientX, w=window.innerWidth;
-    if(x<w/2){ if(svIdx>0){ svIdx--; showStatusItem(svIdx,false); } }
-    else { svIdx++; showStatusItem(svIdx,false); }
-  };
-
-} // fin initApp
+if("serviceWorker" in navigator){navigator.serviceWorker.register("sw.js").catch(()=>{});}
 </script>
-
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;width:100%;overflow:hidden;background:#0b1120}
 body{font-family:'Sora',sans-serif;color:#e8f0fe}
 button{font-family:inherit;cursor:pointer;border:none;background:none;padding:0}
-input{font-family:inherit;border:none;outline:none}
+input,textarea{font-family:inherit;border:none;outline:none}
 ::-webkit-scrollbar{width:0}
-:root{
-  --bg:#0b1120;--surface:#111827;--card:#19253a;
-  --accent:#00d4aa;--accent2:#00a882;--glow:rgba(0,212,170,.13);
-  --bubble-in:#1e3a5f;--bubble-out:#004d3e;
-  --text:#e8f0fe;--sub:#7a8ea8;--dim:#3d5068;
-  --danger:#ff4757;--warn:#ffa502;--green:#2ed573;
-  --border:rgba(255,255,255,.07);
-}
+:root{--bg:#0b1120;--surface:#111827;--card:#19253a;--accent:#00d4aa;--accent2:#00a882;--glow:rgba(0,212,170,.13);--bubble-in:#1e3a5f;--bubble-out:#004d3e;--text:#e8f0fe;--sub:#7a8ea8;--dim:#3d5068;--danger:#ff4757;--warn:#ffa502;--green:#2ed573;--border:rgba(255,255,255,.07);}
 .screen{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--bg);transition:transform .3s,opacity .3s}
 .screen.off{transform:translateX(100%);opacity:0;pointer-events:none}
 .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--card);color:var(--text);padding:10px 20px;border-radius:20px;font-size:13px;font-weight:600;border:1px solid var(--border);opacity:0;transition:all .3s;z-index:9999;white-space:nowrap}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .toast.toast-err{border-color:var(--danger);color:var(--danger)}
-
 /* AUTH */
 #s-auth{align-items:center;justify-content:center;background:radial-gradient(ellipse 120% 60% at 50% -10%,rgba(0,212,170,.14),transparent)}
 .auth-card{width:min(340px,90vw);padding:40px 28px;background:var(--card);border-radius:24px;border:1px solid var(--border)}
 .logo-row{text-align:center;margin-bottom:28px}
 .logo-icon{display:flex;align-items:center;justify-content:center;margin-bottom:2px}
-.logo-icon svg{filter:drop-shadow(0 4px 16px rgba(255,45,45,.5))}
+.logo-icon svg{filter:drop-shadow(0 4px 16px rgba(255,45,45,.4))}
 .logo-name{color:var(--accent);font-size:26px;font-weight:800;letter-spacing:-1px;margin-top:6px}
 .logo-sub{color:var(--sub);font-size:13px;margin-top:6px;min-height:18px}
 .field-label{color:var(--sub);font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-bottom:7px;display:block}
@@ -1617,33 +498,32 @@ input{font-family:inherit;border:none;outline:none}
 .flag-box{padding:13px 14px;background:var(--surface);border-radius:12px;border:1px solid var(--border);color:var(--text);font-size:14px;flex-shrink:0}
 .ph-input{flex:1;padding:13px 15px;background:var(--surface);border:1.5px solid var(--border);border-radius:12px;color:var(--text);font-size:15px}
 .ph-input:focus{border-color:var(--accent)}
-.big-btn{width:100%;padding:15px;background:var(--accent);border-radius:13px;color:#000;font-weight:800;font-size:15px;margin-top:4px}
+.big-btn{width:100%;padding:15px;background:var(--accent);border-radius:13px;color:#000;font-weight:800;font-size:15px;margin-top:4px;cursor:pointer;border:none;font-family:inherit}
 .big-btn:active{opacity:.85}
-.ghost-btn{width:100%;padding:12px;border:1.5px solid var(--border);border-radius:12px;color:var(--sub);font-size:14px;margin-top:10px}
+.ghost-btn{width:100%;padding:12px;border:1.5px solid var(--border);border-radius:12px;color:var(--sub);font-size:14px;margin-top:10px;cursor:pointer;background:none;font-family:inherit}
 .otp-row{display:flex;gap:8px;justify-content:center;margin:14px 0 6px}
 .otp-box{width:44px;height:52px;text-align:center;font-size:20px;font-weight:700;background:var(--surface);border:2px solid var(--border);border-radius:11px;color:var(--text)}
 .otp-box.ok{border-color:var(--accent)}
 .otp-hint{text-align:center;color:var(--accent);font-size:13px;font-weight:700;min-height:20px;margin-bottom:6px}
 .err-msg{color:var(--danger);text-align:center;font-size:13px;margin-top:8px;min-height:16px}
-
 /* LIST */
 #s-list{display:flex;flex-direction:column}
-.topbar{display:flex;align-items:center;padding:12px 16px;gap:12px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+.topbar{display:flex;align-items:center;padding:12px 16px;gap:10px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
 .my-av{width:42px;height:42px;border-radius:50%;border:2.5px solid var(--accent);background:var(--card);display:flex;align-items:center;justify-content:center;font-size:22px;overflow:hidden;flex-shrink:0}
 .my-av img{width:100%;height:100%;object-fit:cover;border-radius:50%}
-.topbar-title{flex:1;font-weight:800;font-size:18px;color:var(--text)}
+.topbar-title{flex:1;font-weight:800;font-size:17px;color:var(--text)}
 .topbar-title span{display:block;color:var(--green);font-size:11px;font-weight:500;margin-top:1px}
-.icon-circle{width:40px;height:40px;border-radius:12px;background:var(--card);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.icon-circle{width:38px;height:38px;border-radius:12px;background:var(--card);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;cursor:pointer}
 .tabs-wrap{padding:10px 16px 0;background:var(--surface);flex-shrink:0}
 .tabs{display:flex;background:var(--bg);border-radius:12px;padding:3px}
-.tab{flex:1;padding:9px;border-radius:10px;font-size:13px;font-weight:700;color:var(--sub);text-align:center}
+.tab{flex:1;padding:9px;border-radius:10px;font-size:13px;font-weight:700;color:var(--sub);text-align:center;cursor:pointer;border:none;background:none;font-family:inherit}
 .tab.on{background:var(--card);color:var(--accent)}
 .search-wrap{padding:10px 16px 12px;background:var(--surface);flex-shrink:0}
 .search-box{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg);border-radius:13px;border:1.5px solid var(--border)}
 .search-box input{flex:1;background:none;color:var(--text);font-size:14px}
 .search-box input::placeholder{color:var(--dim)}
 .list-body{flex:1;overflow-y:auto;background:var(--bg)}
-.contact-row{display:flex;align-items:center;gap:13px;padding:13px 16px;border-bottom:1px solid var(--border);position:relative}
+.contact-row{display:flex;align-items:center;gap:13px;padding:13px 16px;border-bottom:1px solid var(--border);cursor:pointer}
 .contact-row:active,.contact-row.active-row{background:var(--glow)}
 .av-wrap{position:relative;flex-shrink:0}
 .av{width:52px;height:52px;border-radius:50%;background:var(--card);border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:27px;overflow:hidden;flex-shrink:0}
@@ -1655,20 +535,22 @@ input{font-family:inherit;border:none;outline:none}
 .row-time{color:var(--sub);font-size:12px;flex-shrink:0}
 .row-bot{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-top:3px}
 .row-last{color:var(--sub);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
-.arch-btn{color:var(--dim);font-size:16px;padding:6px;opacity:.7}
+.arch-btn{color:var(--dim);font-size:16px;padding:6px;cursor:pointer}
 .empty-note{padding:40px 24px;text-align:center;color:var(--sub);font-size:14px}
-
+.bottom-nav{display:flex;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0}
+.nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:10px 4px;font-size:20px;color:var(--sub);cursor:pointer;border:none;background:none;font-family:inherit;position:relative}
+.nav-btn.active{color:var(--accent)}
+.nav-btn span{font-size:11px;font-weight:700}
 /* CHAT */
 #s-chat{display:flex;flex-direction:column}
 .chat-bar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
-.back-btn{font-size:22px;color:var(--accent);padding:4px 6px 4px 0}
+.back-btn{font-size:22px;color:var(--accent);padding:4px 6px 4px 0;cursor:pointer}
 .chat-av{width:40px;height:40px;border-radius:50%;background:var(--card);border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:20px;overflow:hidden;flex-shrink:0}
 .chat-info{flex:1;min-width:0}
 .chat-name{font-weight:700;font-size:15px;color:var(--text)}
 .chat-status{font-size:12px;margin-top:1px}
 .call-btns{display:flex;gap:8px}
-.call-btn-sm{width:38px;height:38px;border-radius:11px;background:var(--card);border:1px solid var(--border);font-size:17px;display:flex;align-items:center;justify-content:center}
-
+.call-btn-sm{width:38px;height:38px;border-radius:11px;background:var(--card);border:1px solid var(--border);font-size:17px;display:flex;align-items:center;justify-content:center;cursor:pointer}
 #msg-list{flex:1;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:3px;background-image:radial-gradient(var(--glow) 1px,transparent 1px);background-size:28px 28px}
 .bubble-row{display:flex}.bubble-row.out{justify-content:flex-end}.bubble-row.in{justify-content:flex-start}
 .bubble{max-width:78%;padding:9px 13px;font-size:14px;line-height:1.5;position:relative}
@@ -1678,7 +560,7 @@ input{font-family:inherit;border:none;outline:none}
 .b-text{margin-bottom:4px}.b-meta{display:flex;justify-content:flex-end;align-items:center;gap:4px}
 .b-time{color:rgba(255,255,255,.35);font-size:11px}.b-check{color:var(--accent);font-size:11px}
 .vbubble{display:flex;align-items:center;gap:8px;margin-bottom:4px;min-width:180px}
-.vplay{font-size:18px;flex-shrink:0;width:28px;height:28px;display:flex;align-items:center;justify-content:center}
+.vplay{font-size:18px;flex-shrink:0;width:28px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer}
 .vbar{flex:1;height:4px;background:rgba(255,255,255,.15);border-radius:4px;overflow:hidden}
 .vfill{height:100%;width:0%;background:var(--accent);border-radius:4px}
 .vdur{color:rgba(255,255,255,.5);font-size:11px;flex-shrink:0;min-width:36px;text-align:right}
@@ -1687,18 +569,16 @@ input{font-family:inherit;border:none;outline:none}
 .video-bub video{display:block;max-width:220px;max-height:220px;border-radius:12px}
 .vid-play-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:36px;color:#fff;text-shadow:0 2px 8px rgba(0,0,0,.7);pointer-events:none}
 .del-menu{position:absolute;bottom:calc(100% + 6px);right:0;background:var(--card);border-radius:14px;border:1px solid var(--border);overflow:hidden;z-index:200;min-width:200px;box-shadow:0 12px 32px rgba(0,0,0,.6)}
-.del-menu button{display:flex;align-items:center;gap:8px;width:100%;padding:13px 16px;font-size:13px;color:var(--text);border-bottom:1px solid var(--border)}
+.del-menu button{display:flex;align-items:center;gap:8px;width:100%;padding:13px 16px;font-size:13px;color:var(--text);border-bottom:1px solid var(--border);cursor:pointer;font-family:inherit;background:none}
 .del-menu button.red{color:var(--danger)}.del-menu button:last-child{border-bottom:none;color:var(--sub)}
-
+/* INPUT */
 #input-bar{padding:10px 12px;border-top:1px solid var(--border);background:var(--surface);flex-shrink:0;padding-bottom:max(10px,env(safe-area-inset-bottom))}
 .input-row{display:flex;gap:5px;align-items:center}
-.in-icon{width:36px;height:36px;border-radius:11px;background:var(--card);border:1px solid var(--border);font-size:17px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.in-icon{width:36px;height:36px;border-radius:11px;background:var(--card);border:1px solid var(--border);font-size:17px;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer}
 .txt-input{flex:1;min-width:0;padding:9px 10px;background:var(--bg);border:1.5px solid var(--border);border-radius:22px;color:var(--text);font-size:14px}
-.txt-input::placeholder{color:var(--dim)}
-.txt-input:focus{border-color:rgba(0,212,170,.4)}
-.send-btn-el{width:36px;height:36px;border-radius:11px;background:var(--accent);font-size:17px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.mic-btn-el{width:36px;height:36px;border-radius:11px;background:var(--card);border:1px solid var(--border);font-size:17px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-
+.txt-input::placeholder{color:var(--dim)}.txt-input:focus{border-color:rgba(0,212,170,.4)}
+.send-btn-el{width:36px;height:36px;border-radius:11px;background:var(--accent);font-size:17px;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;border:none}
+.mic-btn-el{width:36px;height:36px;border-radius:11px;background:var(--card);border:1px solid var(--border);font-size:17px;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer}
 #rec-bar{display:none;flex-direction:column;background:var(--card);border-radius:18px;border:1.5px solid var(--accent);overflow:hidden}
 .rec-top{display:flex;align-items:center;gap:8px;padding:10px 12px}
 .rec-dot{width:9px;height:9px;border-radius:50%;background:var(--danger);flex-shrink:0}
@@ -1707,33 +587,35 @@ input{font-family:inherit;border:none;outline:none}
 .wave{display:flex;align-items:center;gap:2px;flex:1}
 .wave span{display:inline-block;width:3px;background:var(--accent);border-radius:2px}
 .wave span:nth-child(1){height:8px;animation:wb .8s ease infinite}
-.wave span:nth-child(2){height:16px;animation:wb .8s ease .1s infinite}
-.wave span:nth-child(3){height:12px;animation:wb .8s ease .2s infinite}
-.wave span:nth-child(4){height:20px;animation:wb .8s ease .3s infinite}
-.wave span:nth-child(5){height:10px;animation:wb .8s ease .15s infinite}
-.wave span:nth-child(6){height:18px;animation:wb .8s ease .25s infinite}
-.wave span:nth-child(7){height:8px;animation:wb .8s ease .05s infinite}
+.wave span:nth-child(2){height:16px;animation:wb .8s .1s infinite}
+.wave span:nth-child(3){height:12px;animation:wb .8s .2s infinite}
+.wave span:nth-child(4){height:20px;animation:wb .8s .3s infinite}
+.wave span:nth-child(5){height:10px;animation:wb .8s .15s infinite}
+.wave span:nth-child(6){height:18px;animation:wb .8s .25s infinite}
+.wave span:nth-child(7){height:8px;animation:wb .8s .05s infinite}
 .rec-state{color:var(--sub);font-size:11px;font-weight:600;flex-shrink:0}
 .rec-actions{display:flex;align-items:center;border-top:1px solid var(--border)}
-.r-action{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:10px 6px;font-size:20px;border-right:1px solid var(--border)}
+.r-action{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:10px 6px;font-size:20px;border-right:1px solid var(--border);cursor:pointer;border-top:none;border-bottom:none;border-left:none;background:none;font-family:inherit}
 .r-action:last-child{border-right:none}
 .r-action span{font-size:11px;font-weight:600}
 .r-action.delete span{color:var(--danger)}.r-action.pause span{color:var(--warn)}
 .r-action.resume-a span,.r-action.send-a span{color:var(--accent)}
-
 #photo-preview-bar{display:none;align-items:center;gap:10px;padding:10px 12px;background:var(--card);border-radius:18px;border:1.5px solid var(--accent)}
 .ph-prev-thumb{width:52px;height:52px;border-radius:10px;overflow:hidden;flex-shrink:0;border:1.5px solid var(--border)}
 .ph-prev-thumb img{width:100%;height:100%;object-fit:cover}
 .ph-prev-info{flex:1;min-width:0}
 .ph-prev-name{color:var(--text);font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ph-prev-size{color:var(--sub);font-size:11px}
-.ph-prev-cancel{color:var(--danger);font-size:20px;flex-shrink:0;padding:4px}
-.ph-prev-send{width:42px;height:42px;border-radius:13px;background:var(--accent);font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-
+.ph-prev-cancel{color:var(--danger);font-size:20px;flex-shrink:0;padding:4px;cursor:pointer}
+.ph-prev-send{width:42px;height:42px;border-radius:13px;background:var(--accent);font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;border:none}
+#video-preview-bar{display:none;align-items:center;gap:10px;padding:10px 12px;background:var(--card);border-radius:18px;border:1.5px solid var(--accent)}
 #photo-viewer{position:fixed;inset:0;background:rgba(0,0,0,.95);z-index:800;display:none;align-items:center;justify-content:center;flex-direction:column}
 #photo-viewer img{max-width:95vw;max-height:80vh;border-radius:12px;object-fit:contain}
-#photo-viewer-close{position:absolute;top:16px;right:16px;color:var(--text);font-size:28px;background:rgba(255,255,255,.1);border-radius:50%;width:42px;height:42px;display:flex;align-items:center;justify-content:center}
-
+#photo-viewer-close{position:absolute;top:16px;right:16px;color:var(--text);font-size:28px;background:rgba(255,255,255,.1);border-radius:50%;width:42px;height:42px;display:flex;align-items:center;justify-content:center;cursor:pointer}
+#video-viewer{position:fixed;inset:0;background:rgba(0,0,0,.97);z-index:801;display:none;align-items:center;justify-content:center;flex-direction:column}
+#video-viewer video{max-width:95vw;max-height:85vh;border-radius:12px;outline:none}
+#video-viewer-close{position:absolute;top:16px;right:16px;color:#fff;font-size:28px;background:rgba(255,255,255,.1);border-radius:50%;width:42px;height:42px;display:flex;align-items:center;justify-content:center;cursor:pointer}
+/* MODALS */
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.78);backdrop-filter:blur(10px);z-index:500;display:flex;align-items:flex-end;justify-content:center}
 .overlay.center{align-items:center}
 .modal{background:var(--card);border-radius:24px 24px 0 0;width:100%;max-height:90vh;overflow-y:auto;padding:0 0 max(20px,env(safe-area-inset-bottom)) 0}
@@ -1741,8 +623,9 @@ input{font-family:inherit;border:none;outline:none}
 .modal-drag{width:40px;height:4px;background:var(--dim);border-radius:2px;margin:12px auto 0}
 .modal-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px}
 .modal-title{font-size:18px;font-weight:800;color:var(--text)}
-.modal-close{font-size:22px;color:var(--sub);width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--surface)}
+.modal-close{font-size:22px;color:var(--sub);width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--surface);cursor:pointer}
 .modal-body{padding:0 20px 20px}
+/* PROFILE */
 .prof-av-center{text-align:center;margin-bottom:6px}
 .prof-av-wrap{display:inline-block;position:relative}
 .prof-av{width:110px;height:110px;border-radius:50%;background:var(--surface);border:3px solid var(--accent);display:flex;align-items:center;justify-content:center;font-size:54px;overflow:hidden;cursor:pointer;position:relative;box-shadow:0 0 0 6px var(--glow)}
@@ -1750,49 +633,18 @@ input{font-family:inherit;border:none;outline:none}
 .cam-badge{position:absolute;bottom:4px;right:4px;width:32px;height:32px;border-radius:50%;background:var(--accent);border:3px solid var(--card);display:flex;align-items:center;justify-content:center;font-size:15px;pointer-events:none}
 .av-edit-hint{color:var(--accent);font-size:12px;font-weight:700;text-align:center;margin:8px 0 16px}
 .av-actions{display:flex;gap:8px;margin-bottom:16px}
-.av-action-btn{flex:1;padding:11px 6px;border-radius:14px;background:var(--surface);border:1.5px solid var(--border);color:var(--text);font-size:12px;font-weight:700;display:flex;flex-direction:column;align-items:center;gap:5px}
+.av-action-btn{flex:1;padding:11px 6px;border-radius:14px;background:var(--surface);border:1.5px solid var(--border);color:var(--text);font-size:12px;font-weight:700;display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;font-family:inherit}
 .av-action-btn .ab-icon{font-size:22px}
 .av-action-btn.danger .ab-icon,.av-action-btn.danger span{color:var(--danger)}
 .av-action-btn.hidden-btn{display:none}
 .prof-sep{height:1px;background:var(--border);margin:2px 0 16px}
 .emoji-grid{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}
-.em-btn{width:42px;height:42px;border-radius:50%;background:var(--surface);border:2px solid var(--border);font-size:22px;display:flex;align-items:center;justify-content:center}
+.em-btn{width:42px;height:42px;border-radius:50%;background:var(--surface);border:2px solid var(--border);font-size:22px;display:flex;align-items:center;justify-content:center;cursor:pointer}
 .em-btn.sel{background:var(--glow);border-color:var(--accent)}
 .f-label{color:var(--sub);font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-bottom:7px;display:block}
 .f-input{width:100%;padding:12px 14px;background:var(--surface);border:1.5px solid var(--border);border-radius:12px;color:var(--text);font-size:14px;margin-bottom:14px}
 .f-input:focus{border-color:var(--accent)}
-.call-box{text-align:center;padding:24px 20px 28px}
-.call-big-av{font-size:72px;margin-bottom:12px}
-.call-cname{font-size:22px;font-weight:700;color:var(--text)}
-.call-cinfo{color:var(--accent);font-size:13px;margin:8px 0 20px}
-.call-video-box{width:100%;height:160px;background:#000;border-radius:16px;margin-bottom:20px;display:flex;align-items:center;justify-content:center;color:var(--sub);font-size:13px;border:1px solid var(--border)}
-.call-actions{display:flex;justify-content:center;gap:16px}
-.c-btn{width:60px;height:60px;border-radius:50%;font-size:24px;display:flex;align-items:center;justify-content:center}
-.c-btn.normal{background:rgba(255,255,255,.07);border:1px solid var(--border)}
-.c-btn.hangup{background:var(--danger)}
-.c-btn.muted{background:var(--warn)}
-
-/* ---- SHARE ---- */
-.share-net-btn{display:flex;align-items:center;gap:8px;padding:12px 14px;border-radius:14px;background:var(--surface);border:1.5px solid var(--border);color:var(--text);font-size:13px;font-weight:700;font-family:inherit;cursor:pointer;transition:all .15s}
-.share-net-btn:active{background:var(--glow);border-color:var(--accent)}
-.share-net-btn span:last-child{flex:1;text-align:left}
-
-/* ---- LANGUAGE SELECTOR ---- */
-.lang-item{display:flex;align-items:center;gap:14px;padding:14px 12px;border-radius:14px;border:1.5px solid var(--border);margin-bottom:8px;cursor:pointer;transition:all .15s;background:var(--surface)}
-.lang-item:active{background:var(--glow);border-color:var(--accent)}
-.lang-item.selected{background:var(--glow);border-color:var(--accent)}
-.lang-flag{font-size:28px;flex-shrink:0;width:40px;text-align:center}
-.lang-info{flex:1}
-.lang-name{color:var(--text);font-weight:700;font-size:15px}
-.lang-country{color:var(--sub);font-size:12px;margin-top:2px}
-.lang-check{color:var(--accent);font-size:20px;font-weight:900}
-.bottom-nav{display:flex;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0}
-.nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:10px 4px;font-size:20px;color:var(--sub);transition:color .2s;position:relative}
-.nav-btn.active{color:var(--accent)}
-.nav-btn span{font-size:11px;font-weight:700}
-.nav-badge{position:absolute;top:6px;right:calc(50% - 18px);background:var(--danger);color:#fff;font-size:10px;font-weight:800;min-width:16px;height:16px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 4px}
-
-/* ---- STATUS SCREEN ---- */
+/* STATUS */
 #s-status{display:flex;flex-direction:column}
 .status-topbar{display:flex;align-items:center;padding:12px 16px;gap:12px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
 .status-body{flex:1;overflow-y:auto;padding:16px}
@@ -1804,8 +656,7 @@ input{font-family:inherit;border:none;outline:none}
 .my-status-info h3{color:var(--text);font-size:15px;font-weight:700}
 .my-status-info p{color:var(--sub);font-size:12px;margin-top:2px}
 .status-add-btns{display:flex;gap:8px}
-.status-add-btn{flex:1;padding:10px;border-radius:13px;background:var(--surface);border:1.5px solid var(--border);color:var(--text);font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:6px}
-.status-add-btn:active{background:var(--glow)}
+.status-add-btn{flex:1;padding:10px;border-radius:13px;background:var(--surface);border:1.5px solid var(--border);color:var(--text);font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;font-family:inherit}
 .status-section-title{color:var(--sub);font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px}
 .status-contact-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer}
 .status-contact-row:last-child{border-bottom:none}
@@ -1827,28 +678,46 @@ input{font-family:inherit;border:none;outline:none}
 .sv-av img{width:100%;height:100%;object-fit:cover;border-radius:50%}
 .sv-name{color:#fff;font-weight:700;font-size:14px;flex:1}
 .sv-time{color:rgba(255,255,255,.7);font-size:12px}
-.sv-close{color:#fff;font-size:24px;width:36px;height:36px;display:flex;align-items:center;justify-content:center}
+.sv-close{color:#fff;font-size:24px;width:36px;height:36px;display:flex;align-items:center;justify-content:center;cursor:pointer}
 .sv-content{width:100%;height:100%;display:flex;align-items:center;justify-content:center}
 #sv-img{max-width:100%;max-height:100%;object-fit:contain;display:none}
 #sv-vid{max-width:100%;max-height:100%;display:none}
 #sv-text-el{color:#fff;font-size:22px;font-weight:700;text-align:center;padding:24px;display:none;background:rgba(0,0,0,.5);border-radius:16px;margin:24px;line-height:1.5}
 .sv-footer{padding:14px 16px;position:absolute;bottom:0;left:0;right:0;background:linear-gradient(to top,rgba(0,0,0,.8),transparent)}
 .sv-viewers{color:rgba(255,255,255,.85);font-size:13px;display:flex;align-items:center;gap:8px}
-.sv-eye{font-size:16px}
 #status-create-modal{position:fixed;inset:0;background:var(--bg);z-index:850;display:none;flex-direction:column}
 .sc-header{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--border)}
 .sc-title{color:var(--text);font-size:18px;font-weight:800;flex:1}
 .sc-body{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px;overflow-y:auto}
-.sc-preview{width:100%;border-radius:16px;overflow:hidden;background:var(--card);display:none;align-items:center;justify-content:center;margin-bottom:8px}
+.sc-preview{width:100%;border-radius:16px;overflow:hidden;background:var(--card);display:none;align-items:center;justify-content:center}
 .sc-preview img,.sc-preview video{max-width:100%;max-height:45vh;object-fit:contain;border-radius:16px}
 textarea.sc-text-input{width:100%;padding:16px;background:var(--card);border:1.5px solid var(--border);border-radius:16px;color:var(--text);font-size:18px;text-align:center;resize:none;height:120px;font-family:inherit}
 textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 .sc-options{display:flex;gap:10px;width:100%}
 .sc-opt-btn{flex:1;padding:14px;border-radius:14px;background:var(--card);border:1.5px solid var(--border);color:var(--text);font-size:13px;font-weight:700;display:flex;flex-direction:column;align-items:center;gap:6px;font-family:inherit;cursor:pointer}
 .sc-opt-btn .sc-icon{font-size:24px}
-.sc-opt-btn:active{background:var(--glow);border-color:var(--accent)}
 .sc-footer{padding:16px;border-top:1px solid var(--border)}
-
+/* CALL */
+.call-box{text-align:center;padding:24px 20px 28px}
+.call-big-av{font-size:72px;margin-bottom:12px}
+.call-cname{font-size:22px;font-weight:700;color:var(--text)}
+.call-cinfo{color:var(--accent);font-size:13px;margin:8px 0 20px}
+.call-video-box{width:100%;height:160px;background:#000;border-radius:16px;margin-bottom:20px;display:flex;align-items:center;justify-content:center;color:var(--sub);font-size:13px;border:1px solid var(--border)}
+.call-actions{display:flex;justify-content:center;gap:16px}
+.c-btn{width:60px;height:60px;border-radius:50%;font-size:24px;display:flex;align-items:center;justify-content:center;cursor:pointer;border:none}
+.c-btn.normal{background:rgba(255,255,255,.07);border:1px solid var(--border)}
+.c-btn.hangup{background:var(--danger)}.c-btn.muted{background:var(--warn)}
+/* LANG */
+.lang-item{display:flex;align-items:center;gap:14px;padding:14px 12px;border-radius:14px;border:1.5px solid var(--border);margin-bottom:8px;cursor:pointer;background:var(--surface)}
+.lang-item.selected{background:var(--glow);border-color:var(--accent)}
+.lang-flag{font-size:28px;flex-shrink:0;width:40px;text-align:center}
+.lang-info{flex:1}
+.lang-name{color:var(--text);font-weight:700;font-size:15px}
+.lang-country{color:var(--sub);font-size:12px;margin-top:2px}
+.lang-check{color:var(--accent);font-size:20px;font-weight:900}
+/* SHARE */
+.share-net-btn{display:flex;align-items:center;gap:8px;padding:12px 14px;border-radius:14px;background:var(--surface);border:1.5px solid var(--border);color:var(--text);font-size:13px;font-weight:700;font-family:inherit;cursor:pointer}
+.share-net-btn span:last-child{flex:1;text-align:left}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.2}}
 @keyframes wb{0%,100%{transform:scaleY(.4)}50%{transform:scaleY(1)}}
 </style>
@@ -1857,35 +726,29 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 
 <!-- AUTH -->
 <div class="screen" id="s-auth">
-  <!-- Barre langue en haut -->
   <div style="display:flex;justify-content:flex-end;padding:12px 16px 0;position:absolute;top:0;right:0;z-index:10">
-    <button onclick="openLangFromAuth()" style="display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.12);border-radius:20px;padding:7px 14px;color:#e8f0fe;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">
-      <span id="auth-lang-flag">🇫🇷</span>
-      <span id="auth-lang-name">Français</span>
-      <span style="font-size:10px;opacity:.7">▼</span>
+    <button onclick="openLangModal()" style="display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.12);border-radius:20px;padding:7px 14px;color:#e8f0fe;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">
+      <span id="auth-lang-flag">🇫🇷</span><span id="auth-lang-name">Français</span><span style="font-size:10px;opacity:.7">▼</span>
     </button>
   </div>
   <div class="auth-card">
     <div class="logo-row">
       <div class="logo-icon">
-        <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect width="64" height="64" rx="18" fill="#ff2d2d"/>
-          <path d="M10 18C10 14.686 12.686 12 16 12H48C51.314 12 54 14.686 54 18V38C54 41.314 51.314 44 48 44H36L26 54V44H16C12.686 44 10 41.314 10 38V18Z" fill="#00d4aa"/>
-        </svg>
+        <svg width="64" height="64" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" rx="18" fill="#ff2d2d"/><path d="M10 18C10 14.686 12.686 12 16 12H48C51.314 12 54 14.686 54 18V38C54 41.314 51.314 44 48 44H36L26 54V44H16C12.686 44 10 41.314 10 38V18Z" fill="#00d4aa"/></svg>
       </div>
       <div class="logo-name">Sonia</div>
       <div class="logo-sub" id="auth-sub">Entrez votre numéro pour continuer</div>
     </div>
     <div id="step-phone">
-      <label class="field-label" id="lbl-phone">Numéro de téléphone</label>
+      <label class="field-label">Numéro de téléphone</label>
       <div class="phone-row">
         <div class="flag-box">🌍 +</div>
-        <input class="ph-input" id="ph-input" type="tel" placeholder="224 600 000 000"/>
+        <input class="ph-input" id="ph-input" type="tel" placeholder="224 600 000 000" onkeydown="if(event.key==='Enter')sendCode()"/>
       </div>
       <button class="big-btn" id="send-code-btn" onclick="sendCode()">Recevoir le code SMS</button>
     </div>
     <div id="step-otp" style="display:none">
-      <label class="field-label" id="lbl-otp">Code SMS reçu</label>
+      <label class="field-label">Code SMS reçu</label>
       <div class="otp-row">
         <input class="otp-box" maxlength="1" inputmode="numeric"/>
         <input class="otp-box" maxlength="1" inputmode="numeric"/>
@@ -1895,8 +758,8 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
         <input class="otp-box" maxlength="1" inputmode="numeric"/>
       </div>
       <p class="otp-hint" id="otp-hint-el"></p>
-      <button class="big-btn" id="verify-btn" style="margin-top:10px" onclick="verifyCode()">Confirmer</button>
-      <button class="ghost-btn" id="back-btn" onclick="goBackToPhone()">← Modifier le numéro</button>
+      <button class="big-btn" id="verify-btn" onclick="verifyCode()" style="margin-top:10px">Confirmer</button>
+      <button class="ghost-btn" id="back-btn" onclick="goBackPhone()">← Modifier le numéro</button>
     </div>
     <div class="err-msg" id="auth-err"></div>
   </div>
@@ -1905,221 +768,38 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 <!-- LISTE -->
 <div class="screen off" id="s-list">
   <div class="topbar">
-    <button id="open-prof-btn"><div class="my-av" id="my-av-el"><span>🧑🏾</span></div></button>
+    <button onclick="openProfileModal()"><div class="my-av" id="my-av-el"><span>🧑🏾</span></div></button>
     <div class="topbar-title"><span id="my-name-el">Sonia</span><span id="my-status-el">● En ligne</span></div>
-    <button class="icon-circle" id="share-app-btn" title="Partager l'application" style="font-size:18px">🔗</button>
-    <button class="icon-circle" id="lang-btn" title="Changer la langue" style="font-size:20px">🌍</button>
-    <button class="icon-circle" id="settings-btn">⚙</button>
+    <button class="icon-circle" onclick="openShareModal()" title="Partager">🔗</button>
+    <button class="icon-circle" id="lang-btn" onclick="openLangModal()" title="Langue">🇫🇷</button>
+    <button class="icon-circle" onclick="openProfileModal()">⚙</button>
   </div>
   <div class="tabs-wrap"><div class="tabs">
-    <button class="tab on" data-tab="chats" id="tab-chats">💬 Discussions</button>
-    <button class="tab" data-tab="archived" id="tab-archived">🗄 Archives</button>
+    <button class="tab on" id="tab-chats" onclick="switchTab('chats')">💬 Discussions</button>
+    <button class="tab" id="tab-archived" onclick="switchTab('archived')">🗄 Archives</button>
   </div></div>
   <div class="search-wrap"><div class="search-box">
     <span style="color:var(--dim);font-size:16px">🔍</span>
-    <input id="search-input" placeholder="Rechercher..."/>
+    <input id="search-input" placeholder="Rechercher..." oninput="S.search=this.value;renderList()"/>
   </div></div>
   <div class="list-body" id="contact-list"></div>
-  <!-- Barre navigation bas -->
   <div class="bottom-nav">
-    <button class="nav-btn active" id="nav-chats">💬<span id="nav-chats-lbl">Discussions</span></button>
-    <button class="nav-btn" id="nav-status">🔵<span id="nav-status-lbl">Statuts</span><div class="nav-badge hidden" id="status-badge">0</div></button>
-    <button class="nav-btn" id="nav-calls">📞<span id="nav-calls-lbl">Appels</span></button>
-  </div>
-</div>
-
-<!-- SHARE MODAL -->
-<div class="overlay" id="share-overlay" style="display:none">
-  <div class="modal">
-    <div class="modal-drag"></div>
-    <div class="modal-head">
-      <span class="modal-title">🔗 Partager Sonia</span>
-      <button class="modal-close" id="share-close">✕</button>
-    </div>
-    <div style="padding:0 20px 28px">
-
-      <!-- App info -->
-      <div style="display:flex;align-items:center;gap:14px;background:var(--surface);border-radius:16px;padding:16px;margin-bottom:20px;border:1px solid var(--border)">
-        <div style="width:56px;height:56px;border-radius:14px;overflow:hidden;flex-shrink:0">
-          <svg width="56" height="56" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect width="64" height="64" rx="18" fill="#ff2d2d"/>
-            <path d="M10 18C10 14.686 12.686 12 16 12H48C51.314 12 54 14.686 54 18V38C54 41.314 51.314 44 48 44H36L26 54V44H16C12.686 44 10 41.314 10 38V18Z" fill="#00d4aa"/>
-          </svg>
-        </div>
-        <div>
-          <div style="color:var(--text);font-weight:800;font-size:17px">Sonia</div>
-          <div style="color:var(--sub);font-size:12px;margin-top:2px">Application de messagerie gratuite</div>
-          <div style="color:var(--accent);font-size:11px;font-weight:700;margin-top:4px">● Disponible maintenant</div>
-        </div>
-      </div>
-
-      <!-- Lien à copier -->
-      <p style="color:var(--sub);font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-bottom:8px">Lien de l'application</p>
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:20px">
-        <div style="flex:1;background:var(--surface);border:1.5px solid var(--border);border-radius:12px;padding:12px 14px;font-size:13px;color:var(--accent);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="share-link-display">https://orsservice20-crypto.github.io/Sonia</div>
-        <button id="copy-link-btn" style="flex-shrink:0;width:44px;height:44px;border-radius:12px;background:var(--accent);font-size:18px;display:flex;align-items:center;justify-content:center">📋</button>
-      </div>
-
-      <!-- Texte prêt à partager -->
-      <p style="color:var(--sub);font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-bottom:8px">Message prêt à envoyer</p>
-      <div id="share-msg-box" style="background:var(--surface);border:1.5px solid var(--border);border-radius:14px;padding:14px;font-size:13px;color:var(--text);line-height:1.6;margin-bottom:16px">
-        💬 <b>Rejoins-moi sur Sonia !</b><br/>
-        L'app de messagerie gratuite 🚀<br/>
-        ✅ Messages, photos, vidéos, vocaux<br/>
-        📞 Appels audio & vidéo<br/>
-        🔵 Statuts 24h<br/><br/>
-        👉 Clique ici pour accéder : <span style="color:var(--accent)">https://orsservice20-crypto.github.io/Sonia</span>
-      </div>
-      <button id="copy-msg-btn" style="width:100%;padding:13px;border-radius:14px;background:var(--surface);border:1.5px solid var(--border);color:var(--text);font-size:14px;font-weight:700;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:12px">
-        📋 Copier le message complet
-      </button>
-
-      <!-- Boutons réseaux sociaux -->
-      <p style="color:var(--sub);font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">Partager sur</p>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        <button class="share-net-btn" id="share-whatsapp">
-          <span style="font-size:22px">💬</span><span>WhatsApp</span>
-        </button>
-        <button class="share-net-btn" id="share-facebook">
-          <span style="font-size:22px">📘</span><span>Facebook</span>
-        </button>
-        <button class="share-net-btn" id="share-twitter">
-          <span style="font-size:22px">🐦</span><span>Twitter / X</span>
-        </button>
-        <button class="share-net-btn" id="share-telegram">
-          <span style="font-size:22px">✈️</span><span>Telegram</span>
-        </button>
-        <button class="share-net-btn" id="share-instagram">
-          <span style="font-size:22px">📸</span><span>Instagram</span>
-        </button>
-        <button class="share-net-btn" id="share-sms">
-          <span style="font-size:22px">📱</span><span>SMS</span>
-        </button>
-      </div>
-
-      <!-- Bouton natif partage -->
-      <button id="share-native-btn" style="width:100%;margin-top:12px;padding:14px;border-radius:14px;background:var(--accent);border:none;color:#000;font-size:15px;font-weight:800;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px">
-        📤 Partager via...
-      </button>
-    </div>
-  </div>
-</div>
-
-<!-- LANGUE MODAL -->
-<div class="overlay" id="lang-overlay" style="display:none">
-  <div class="modal">
-    <div class="modal-drag"></div>
-    <div class="modal-head">
-      <span class="modal-title">🌍 Choisir la langue</span>
-      <button class="modal-close" id="lang-close">✕</button>
-    </div>
-    <div style="padding:0 16px 24px">
-      <div id="lang-list"></div>
-    </div>
-  </div>
-</div>
-
-<!-- STATUTS SCREEN -->
-<div class="screen off" id="s-status">
-  <div class="status-topbar">
-    <button class="back-btn" id="status-back">‹</button>
-    <span style="color:var(--text);font-weight:800;font-size:18px;flex:1">Statuts</span>
-  </div>
-  <div class="status-body">
-    <!-- Mon statut -->
-    <div class="my-status-card">
-      <div class="my-status-top">
-        <div style="position:relative">
-          <div class="my-status-av" id="my-status-av-el"><span>🧑🏾</span></div>
-          <div class="add-status-badge">+</div>
-        </div>
-        <div class="my-status-info">
-          <h3>Mon statut</h3>
-          <p id="my-status-count-el">Appuyez pour ajouter un statut</p>
-        </div>
-      </div>
-      <!-- Miniatures de mes statuts -->
-      <div class="my-statuses-strip" id="my-statuses-strip" style="display:none"></div>
-      <!-- Boutons ajouter -->
-      <div class="status-add-btns">
-        <button class="status-add-btn" id="add-status-text-btn">✏️ Texte</button>
-        <button class="status-add-btn" id="add-status-photo-btn">📷 Photo</button>
-        <button class="status-add-btn" id="add-status-video-btn">🎥 Video</button>
-      </div>
-      <input type="file" id="status-photo-in" accept="image/*" style="display:none"/>
-      <input type="file" id="status-video-in" accept="video/*" style="display:none"/>
-    </div>
-
-    <!-- Statuts des contacts -->
-    <div id="contacts-statuses-section" style="display:none">
-      <p class="status-section-title">Recents</p>
-      <div id="contacts-statuses-list"></div>
-    </div>
-    <div id="no-contacts-status" style="text-align:center;color:var(--sub);font-size:14px;padding:32px 0">
-      Aucun statut pour le moment
-    </div>
-  </div>
-</div>
-
-<!-- STATUS VIEWER (plein ecran) -->
-<div id="status-viewer">
-  <div class="sv-progress-bars" id="sv-bars"></div>
-  <div class="sv-header">
-    <div class="sv-av" id="sv-av-el"></div>
-    <span class="sv-name" id="sv-name-el"></span>
-    <span class="sv-time" id="sv-time-el"></span>
-    <button class="sv-close" id="sv-close">✕</button>
-  </div>
-  <div class="sv-content">
-    <img id="sv-img" src="" alt=""/>
-    <video id="sv-vid" playsinline controls></video>
-    <div id="sv-text-el"></div>
-  </div>
-  <div class="sv-footer">
-    <div class="sv-viewers" id="sv-viewers-el">
-      <span class="sv-eye">👁</span>
-      <span id="sv-viewers-count">0 vue</span>
-      <span id="sv-viewers-names" style="color:rgba(255,255,255,.6)"></span>
-    </div>
-  </div>
-</div>
-
-<!-- STATUS CREATE MODAL -->
-<div id="status-create-modal">
-  <div class="sc-header">
-    <button class="sv-close" id="sc-close">✕</button>
-    <span class="sc-title">Nouveau statut</span>
-    <button class="big-btn" id="sc-publish-btn" style="width:auto;padding:10px 20px;margin:0;font-size:14px">Publier</button>
-  </div>
-  <div class="sc-body">
-    <div class="sc-preview" id="sc-preview-el"></div>
-    <textarea class="sc-text-input" id="sc-text-in" placeholder="Ecrire un statut..." style="display:none"></textarea>
-    <div class="sc-options" id="sc-options">
-      <button class="sc-opt-btn" id="sc-pick-photo"><span class="sc-icon">📷</span><span>Choisir photo</span></button>
-      <button class="sc-opt-btn" id="sc-pick-video"><span class="sc-icon">🎥</span><span>Choisir video</span></button>
-      <button class="sc-opt-btn" id="sc-write-text"><span class="sc-icon">✏️</span><span>Ecrire texte</span></button>
-    </div>
-    <input type="file" id="sc-photo-in" accept="image/*" style="display:none"/>
-    <input type="file" id="sc-video-in" accept="video/*" style="display:none"/>
-  </div>
-  <div class="sc-footer">
-    <p style="color:var(--sub);font-size:12px;text-align:center">Le statut disparait apres 24 heures</p>
+    <button class="nav-btn active" id="nav-chats" onclick="showScreen('s-list');setNav('nav-chats')">💬<span id="nav-chats-lbl">Discussions</span></button>
+    <button class="nav-btn" id="nav-status" onclick="showScreen('s-status');setNav('nav-status');loadStatuses()">🔵<span id="nav-status-lbl">Statuts</span></button>
+    <button class="nav-btn" id="nav-calls" onclick="toast('Bientôt disponible')">📞<span id="nav-calls-lbl">Appels</span></button>
   </div>
 </div>
 
 <!-- CHAT -->
 <div class="screen off" id="s-chat">
   <div class="chat-bar">
-    <button class="back-btn" id="back-to-list">‹</button>
-    <div style="position:relative;flex-shrink:0">
-      <div class="chat-av" id="c-av"></div>
-      <div class="dot" id="c-dot"></div>
-    </div>
+    <button class="back-btn" onclick="S.activeId=null;if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}showScreen('s-list')">‹</button>
+    <div style="position:relative;flex-shrink:0"><div class="chat-av" id="c-av"></div><div class="dot" id="c-dot"></div></div>
     <div class="chat-info"><div class="chat-name" id="c-name"></div><div class="chat-status" id="c-status"></div></div>
     <div class="call-btns">
-      <button class="call-btn-sm" id="audio-btn">📞</button>
-      <button class="call-btn-sm" id="video-btn">📹</button>
-      <button class="call-btn-sm" id="arch-btn">🗄</button>
+      <button class="call-btn-sm" onclick="openCall('audio')">📞</button>
+      <button class="call-btn-sm" onclick="openCall('video')">📹</button>
+      <button class="call-btn-sm" id="arch-btn" onclick="if(S.activeId)toggleArch(S.activeId)">🗄</button>
     </div>
   </div>
   <div id="msg-list"></div>
@@ -2132,101 +812,331 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
         <span class="rec-state" id="rec-state">En cours...</span>
       </div>
       <div class="rec-actions">
-        <button class="r-action delete" id="r-delete"><span style="font-size:20px">🗑</span><span>Annuler</span></button>
-        <button class="r-action pause" id="r-pause"><span style="font-size:20px">⏸</span><span>Pause</span></button>
-        <button class="r-action resume-a" id="r-resume" style="display:none"><span style="font-size:20px">▶</span><span>Reprendre</span></button>
-        <button class="r-action send-a" id="r-send"><span style="font-size:20px">➤</span><span>Envoyer</span></button>
+        <button class="r-action delete" onclick="stopRec()"><span style="font-size:20px">🗑</span><span>Annuler</span></button>
+        <button class="r-action pause" id="r-pause" onclick="pauseRec()"><span style="font-size:20px">⏸</span><span>Pause</span></button>
+        <button class="r-action resume-a" id="r-resume" style="display:none" onclick="resumeRec()"><span style="font-size:20px">▶</span><span>Reprendre</span></button>
+        <button class="r-action send-a" onclick="sendVoice()"><span style="font-size:20px">➤</span><span>Envoyer</span></button>
       </div>
     </div>
     <div id="photo-preview-bar">
       <div class="ph-prev-thumb"><img id="ph-prev-img" src="" alt=""/></div>
       <div class="ph-prev-info"><div class="ph-prev-name" id="ph-prev-name"></div><div class="ph-prev-size" id="ph-prev-size"></div></div>
-      <button class="ph-prev-cancel" id="ph-cancel-btn">✕</button>
-      <button class="ph-prev-send" id="ph-send-btn">➤</button>
+      <button class="ph-prev-cancel" onclick="S.pendingPhoto=null;$('photo-preview-bar').style.display='none';$('normal-row').style.display='flex'">✕</button>
+      <button class="ph-prev-send" onclick="sendPhoto()">➤</button>
     </div>
-
-    <div id="video-preview-bar" style="display:none;align-items:center;gap:10px;padding:10px 12px;background:var(--card);border-radius:18px;border:1.5px solid var(--accent);margin-bottom:0">
-      <div style="width:52px;height:52px;border-radius:10px;overflow:hidden;flex-shrink:0;border:1.5px solid var(--border);background:#000;display:flex;align-items:center;justify-content:center;font-size:24px">🎥</div>
-      <div style="flex:1;min-width:0">
-        <div id="vid-prev-name" style="color:var(--text);font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
-        <div id="vid-prev-size" style="color:var(--sub);font-size:11px"></div>
-        <video id="vid-prev-src" style="display:none"></video>
-      </div>
-      <button id="vid-cancel-btn" style="color:var(--danger);font-size:20px;flex-shrink:0;padding:4px">✕</button>
-      <button id="vid-send-btn" style="width:42px;height:42px;border-radius:13px;background:var(--accent);font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0">➤</button>
+    <div id="video-preview-bar">
+      <div style="width:52px;height:52px;border-radius:10px;background:var(--card);border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0">🎥</div>
+      <div style="flex:1;min-width:0"><div id="vid-prev-name" style="color:var(--text);font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div><div id="vid-prev-size" style="color:var(--sub);font-size:11px"></div></div>
+      <button style="color:var(--danger);font-size:20px;flex-shrink:0;padding:4px;cursor:pointer" onclick="S.pendingVideo=null;$('video-preview-bar').style.display='none';$('normal-row').style.display='flex'">✕</button>
+      <button style="width:42px;height:42px;border-radius:13px;background:var(--accent);font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;border:none" onclick="sendVideo()">➤</button>
     </div>
-    <div class="input-row" id="normal-row" style="display:flex;align-items:center;gap:5px">
-      <button class="in-icon" id="emoji-btn">😊</button>
-      <input class="txt-input" id="txt-in" placeholder="Ecrire un message..."/>
-      <button class="in-icon" id="photo-btn" title="Photo">📷</button>
-      <input type="file" id="photo-file-in" accept="image/*" style="display:none"/>
-      <button class="in-icon" id="video-file-btn" title="Video">🎥</button>
-      <input type="file" id="video-file-in" accept="video/*" style="display:none"/>
-      <button class="mic-btn-el" id="mic-btn">🎙</button>
-      <button class="send-btn-el" id="send-btn">➤</button>
+    <div class="input-row" id="normal-row" style="display:flex">
+      <button class="in-icon">😊</button>
+      <input class="txt-input" id="txt-in" placeholder="Écrire un message..." onkeydown="if(event.key==='Enter')doSend()"/>
+      <button class="in-icon" onclick="$('photo-file-in').click()">📷</button>
+      <input type="file" id="photo-file-in" accept="image/*" style="display:none" onchange="handlePhotoFile(this)"/>
+      <button class="in-icon" onclick="$('video-file-in').click()">🎥</button>
+      <input type="file" id="video-file-in" accept="video/*" style="display:none" onchange="handleVideoFile(this)"/>
+      <button class="mic-btn-el" onclick="startRec()">🎙</button>
+      <button class="send-btn-el" onclick="doSend()">➤</button>
     </div>
   </div>
 </div>
 
-<!-- PHOTO VIEWER -->
-<div id="photo-viewer">
-  <button id="photo-viewer-close">✕</button>
-  <img id="photo-viewer-img" src="" alt=""/>
+<!-- STATUS SCREEN -->
+<div class="screen off" id="s-status">
+  <div class="status-topbar">
+    <button class="back-btn" onclick="showScreen('s-list');setNav('nav-chats')">‹</button>
+    <span style="color:var(--text);font-weight:800;font-size:18px;flex:1">Statuts</span>
+  </div>
+  <div class="status-body">
+    <div class="my-status-card">
+      <div class="my-status-top">
+        <div style="position:relative"><div class="my-status-av" id="my-status-av-el"><span>🧑🏾</span></div><div class="add-status-badge">+</div></div>
+        <div class="my-status-info"><h3>Mon statut</h3><p id="my-status-count-el">Appuyez pour ajouter un statut</p></div>
+      </div>
+      <div class="my-statuses-strip" id="my-statuses-strip" style="display:none"></div>
+      <div class="status-add-btns">
+        <button class="status-add-btn" onclick="openStatusCreate('text')">✏️ Texte</button>
+        <button class="status-add-btn" onclick="$('status-photo-in').click()">📷 Photo</button>
+        <button class="status-add-btn" onclick="$('status-video-in').click()">🎥 Vidéo</button>
+      </div>
+      <input type="file" id="status-photo-in" accept="image/*" style="display:none" onchange="handleStatusFile(this,'photo')"/>
+      <input type="file" id="status-video-in" accept="video/*" style="display:none" onchange="handleStatusFile(this,'video')"/>
+    </div>
+    <div id="contacts-statuses-section" style="display:none"><p class="status-section-title">Récents</p><div id="contacts-statuses-list"></div></div>
+    <div id="no-contacts-status" style="text-align:center;color:var(--sub);font-size:14px;padding:32px 0">Aucun statut pour le moment</div>
+  </div>
 </div>
 
-<!-- VIDEO VIEWER -->
-<div id="video-viewer" style="position:fixed;inset:0;background:rgba(0,0,0,.97);z-index:801;display:none;align-items:center;justify-content:center;flex-direction:column">
-  <button id="video-viewer-close" style="position:absolute;top:16px;right:16px;color:#fff;font-size:28px;background:rgba(255,255,255,.1);border-radius:50%;width:42px;height:42px;display:flex;align-items:center;justify-content:center">✕</button>
-  <video id="video-viewer-el" controls playsinline style="max-width:95vw;max-height:85vh;border-radius:12px;outline:none"></video>
+<!-- STATUS VIEWER -->
+<div id="status-viewer">
+  <div class="sv-progress-bars" id="sv-bars"></div>
+  <div class="sv-header"><div class="sv-av" id="sv-av-el"></div><span class="sv-name" id="sv-name-el"></span><span class="sv-time" id="sv-time-el"></span><button class="sv-close" onclick="closeStatusViewer()">✕</button></div>
+  <div class="sv-content"><img id="sv-img" src="" alt=""/><video id="sv-vid" playsinline controls></video><div id="sv-text-el"></div></div>
+  <div class="sv-footer"><div class="sv-viewers" id="sv-viewers-el"><span>👁</span><span id="sv-viewers-count">0 vue</span><span id="sv-viewers-names" style="color:rgba(255,255,255,.6)"></span></div></div>
 </div>
 
-<!-- PROFIL MODAL -->
-<div class="overlay" id="prof-overlay" style="display:none">
+<!-- STATUS CREATE -->
+<div id="status-create-modal">
+  <div class="sc-header">
+    <button class="sv-close" onclick="$('status-create-modal').style.display='none'">✕</button>
+    <span class="sc-title">Nouveau statut</span>
+    <button class="big-btn" onclick="publishStatus()" style="width:auto;padding:10px 20px;margin:0;font-size:14px">Publier</button>
+  </div>
+  <div class="sc-body">
+    <div class="sc-preview" id="sc-preview-el"></div>
+    <textarea class="sc-text-input" id="sc-text-in" placeholder="Écrire un statut..." style="display:none"></textarea>
+    <div class="sc-options" id="sc-options">
+      <button class="sc-opt-btn" onclick="$('sc-photo-in').click()"><span class="sc-icon">📷</span><span>Photo</span></button>
+      <button class="sc-opt-btn" onclick="$('sc-video-in').click()"><span class="sc-icon">🎥</span><span>Vidéo</span></button>
+      <button class="sc-opt-btn" onclick="openStatusCreate('text')"><span class="sc-icon">✏️</span><span>Texte</span></button>
+    </div>
+    <input type="file" id="sc-photo-in" accept="image/*" style="display:none" onchange="handleScFile(this,'photo')"/>
+    <input type="file" id="sc-video-in" accept="video/*" style="display:none" onchange="handleScFile(this,'video')"/>
+  </div>
+  <div class="sc-footer"><p style="color:var(--sub);font-size:12px;text-align:center">Le statut disparaît après 24 heures</p></div>
+</div>
+
+<!-- PHOTO/VIDEO VIEWERS -->
+<div id="photo-viewer"><button id="photo-viewer-close" onclick="$('photo-viewer').style.display='none'">✕</button><img id="photo-viewer-img" src="" alt=""/></div>
+<div id="video-viewer"><button id="video-viewer-close" onclick="$('video-viewer-el').pause();$('video-viewer-el').src='';$('video-viewer').style.display='none'">✕</button><video id="video-viewer-el" controls playsinline></video></div>
+
+<!-- PROFILE MODAL -->
+<div class="overlay" id="prof-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
   <div class="modal">
     <div class="modal-drag"></div>
-    <div class="modal-head"><span class="modal-title">Mon profil</span><button class="modal-close" id="prof-close">✕</button></div>
+    <div class="modal-head"><span class="modal-title">Mon profil</span><button class="modal-close" onclick="$('prof-overlay').style.display='none'">✕</button></div>
     <div class="modal-body">
       <div class="prof-av-center"><div class="prof-av-wrap">
-        <div class="prof-av" id="prof-av-el"><span>🧑🏾</span></div>
+        <div class="prof-av" id="prof-av-el" onclick="$('file-in-gallery').click()"><span>🧑🏾</span></div>
         <div class="cam-badge">📷</div>
       </div></div>
       <p class="av-edit-hint">Appuyez sur la photo pour modifier</p>
       <div class="av-actions">
-        <button class="av-action-btn" id="src-gallery-btn"><span class="ab-icon">🖼️</span><span>Galerie</span></button>
-        <button class="av-action-btn" id="src-camera-btn"><span class="ab-icon">📸</span><span>Camera</span></button>
-        <button class="av-action-btn danger hidden-btn" id="remove-photo-btn"><span class="ab-icon">🗑️</span><span>Supprimer</span></button>
+        <button class="av-action-btn" onclick="$('file-in-gallery').click()"><span class="ab-icon">🖼️</span><span>Galerie</span></button>
+        <button class="av-action-btn" onclick="$('file-in-camera').click()"><span class="ab-icon">📸</span><span>Caméra</span></button>
+        <button class="av-action-btn danger hidden-btn" id="remove-photo-btn" onclick="removeProfilePhoto()"><span class="ab-icon">🗑️</span><span>Supprimer</span></button>
       </div>
-      <input type="file" id="file-in-gallery" accept="image/*" style="display:none"/>
-      <input type="file" id="file-in-camera" accept="image/*" capture="user" style="display:none"/>
+      <input type="file" id="file-in-gallery" accept="image/*" style="display:none" onchange="handleProfilePhoto(this)"/>
+      <input type="file" id="file-in-camera" accept="image/*" capture="user" style="display:none" onchange="handleProfilePhoto(this)"/>
       <div class="prof-sep"></div>
       <p class="f-label" style="margin-bottom:9px">Ou choisir un avatar</p>
       <div class="emoji-grid" id="emoji-grid"></div>
-      <label class="f-label">Nom d affichage</label>
+      <label class="f-label">Nom d'affichage</label>
       <input class="f-input" id="f-name" placeholder="Votre nom"/>
       <label class="f-label">Statut</label>
       <input class="f-input" id="f-status" placeholder="Votre statut"/>
-      <button class="big-btn" id="save-prof-btn">Enregistrer ✓</button>
+      <button class="big-btn" id="save-prof-btn" onclick="saveProfile()">Enregistrer ✓</button>
+    </div>
+  </div>
+</div>
+
+<!-- LANG MODAL -->
+<div class="overlay" id="lang-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <div class="modal-drag"></div>
+    <div class="modal-head"><span class="modal-title">🌍 Choisir la langue</span><button class="modal-close" onclick="$('lang-overlay').style.display='none'">✕</button></div>
+    <div style="padding:0 16px 24px"><div id="lang-list"></div></div>
+  </div>
+</div>
+
+<!-- SHARE MODAL -->
+<div class="overlay" id="share-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <div class="modal-drag"></div>
+    <div class="modal-head"><span class="modal-title">🔗 Partager Sonia</span><button class="modal-close" onclick="$('share-overlay').style.display='none'">✕</button></div>
+    <div style="padding:0 20px 28px">
+      <div style="display:flex;align-items:center;gap:14px;background:var(--surface);border-radius:16px;padding:16px;margin-bottom:20px;border:1px solid var(--border)">
+        <div style="width:56px;height:56px;border-radius:14px;overflow:hidden;flex-shrink:0"><svg width="56" height="56" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" rx="18" fill="#ff2d2d"/><path d="M10 18C10 14.686 12.686 12 16 12H48C51.314 12 54 14.686 54 18V38C54 41.314 51.314 44 48 44H36L26 54V44H16C12.686 44 10 41.314 10 38V18Z" fill="#00d4aa"/></svg></div>
+        <div><div style="color:var(--text);font-weight:800;font-size:17px">Sonia</div><div style="color:var(--sub);font-size:12px;margin-top:2px">Application de messagerie gratuite</div><div style="color:var(--accent);font-size:11px;font-weight:700;margin-top:4px">● Disponible maintenant</div></div>
+      </div>
+      <p style="color:var(--sub);font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-bottom:8px">Lien de l'application</p>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:20px">
+        <div style="flex:1;background:var(--surface);border:1.5px solid var(--border);border-radius:12px;padding:12px 14px;font-size:13px;color:var(--accent);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">https://orsservice20-crypto.github.io/Sonia</div>
+        <button id="copy-link-btn" onclick="copyText(APP_URL).then(()=>{this.textContent='✅';setTimeout(()=>this.textContent='📋',2000);toast('Lien copié ✓');})" style="flex-shrink:0;width:44px;height:44px;border-radius:12px;background:var(--accent);font-size:18px;display:flex;align-items:center;justify-content:center;cursor:pointer;border:none">📋</button>
+      </div>
+      <button onclick="copyText(APP_MSG).then(()=>toast('Message copié ✓'))" style="width:100%;padding:13px;border-radius:14px;background:var(--surface);border:1.5px solid var(--border);color:var(--text);font-size:14px;font-weight:700;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:12px">📋 Copier le message complet</button>
+      <p style="color:var(--sub);font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-bottom:10px">Partager sur</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+        <button class="share-net-btn" onclick="window.open('https://wa.me/?text='+encodeURIComponent(APP_MSG),'_blank')"><span style="font-size:22px">💬</span><span>WhatsApp</span></button>
+        <button class="share-net-btn" onclick="window.open('https://www.facebook.com/sharer/sharer.php?u='+encodeURIComponent(APP_URL),'_blank')"><span style="font-size:22px">📘</span><span>Facebook</span></button>
+        <button class="share-net-btn" onclick="window.open('https://twitter.com/intent/tweet?text='+encodeURIComponent(APP_MSG),'_blank')"><span style="font-size:22px">🐦</span><span>Twitter / X</span></button>
+        <button class="share-net-btn" onclick="window.open('https://t.me/share/url?url='+encodeURIComponent(APP_URL),'_blank')"><span style="font-size:22px">✈️</span><span>Telegram</span></button>
+        <button class="share-net-btn" onclick="copyText(APP_MSG).then(()=>{toast('Message copié — colle dans Instagram !');setTimeout(()=>window.open('https://www.instagram.com','_blank'),800)})"><span style="font-size:22px">📸</span><span>Instagram</span></button>
+        <button class="share-net-btn" onclick="window.open('sms:?body='+encodeURIComponent(APP_MSG),'_blank')"><span style="font-size:22px">📱</span><span>SMS</span></button>
+      </div>
+      <button onclick="navigator.share?navigator.share({title:'Sonia',text:APP_MSG,url:APP_URL}).catch(()=>{}):copyText(APP_URL).then(()=>toast('Lien copié ✓'))" style="width:100%;padding:14px;border-radius:14px;background:var(--accent);border:none;color:#000;font-size:15px;font-weight:800;font-family:inherit;cursor:pointer">📤 Partager via...</button>
     </div>
   </div>
 </div>
 
 <!-- CALL MODAL -->
-<div class="overlay center" id="call-overlay" style="display:none">
-  <div class="modal">
-    <div class="call-box">
-      <div class="call-big-av" id="call-av-el"></div>
-      <div class="call-cname" id="call-name-el"></div>
-      <div class="call-cinfo" id="call-info-el"></div>
-      <div class="call-video-box" id="call-vid-box" style="display:none">📷 Camera simulee</div>
-      <div class="call-actions">
-        <button class="c-btn normal" id="mute-btn">🎤</button>
-        <button class="c-btn normal">📢</button>
-        <button class="c-btn normal" id="cam-call-btn" style="display:none">📷</button>
-        <button class="c-btn hangup" id="hangup-btn">📵</button>
-      </div>
+<div class="overlay center" id="call-overlay" style="display:none" onclick="if(event.target===this)endCall()">
+  <div class="modal"><div class="call-box">
+    <div class="call-big-av" id="call-av-el"></div>
+    <div class="call-cname" id="call-name-el"></div>
+    <div class="call-cinfo" id="call-info-el"></div>
+    <div class="call-video-box" id="call-vid-box" style="display:none">📷 Caméra simulée</div>
+    <div class="call-actions">
+      <button class="c-btn normal" id="mute-btn" onclick="toggleMute()">🎤</button>
+      <button class="c-btn normal">📢</button>
+      <button class="c-btn normal" id="cam-call-btn" style="display:none">📷</button>
+      <button class="c-btn hangup" onclick="endCall()">📵</button>
     </div>
-  </div>
+  </div></div>
 </div>
 
+<script>
+window.addEventListener("DOMContentLoaded",()=>{
+  // ---- TABS ----
+  function switchTab(tab){
+    S.tab=tab;
+    document.getElementById("tab-chats").classList.toggle("on",tab==="chats");
+    document.getElementById("tab-archived").classList.toggle("on",tab==="archived");
+    renderList();
+  }
+  window.switchTab=switchTab;
+
+  function setNav(id){document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.id===id));}
+  window.setNav=setNav;
+
+  // ---- PROFILE ----
+  const EMOJIS=["🧑🏾","👨🏿","👩🏽","🧔🏻","👧🏾","👦🏽","🧕🏾","🧓🏿"];
+  const eg=document.getElementById("emoji-grid");
+  EMOJIS.forEach(e=>{
+    const b=document.createElement("button");b.className="em-btn"+(e===S.profile.emoji?" sel":"");b.textContent=e;
+    b.onclick=()=>{S.profile.avType="emoji";S.profile.emoji=e;S.profile.img=null;document.querySelectorAll(".em-btn").forEach(x=>x.classList.toggle("sel",x===b));renderProfAv();syncRemoveBtn();};
+    eg.appendChild(b);
+  });
+
+  window.openProfileModal=function(){
+    document.getElementById("f-name").value=S.profile.name;
+    document.getElementById("f-status").value=S.profile.status;
+    renderProfAv();document.querySelectorAll(".em-btn").forEach(b=>b.classList.toggle("sel",b.textContent===S.profile.emoji));
+    syncRemoveBtn();document.getElementById("prof-overlay").style.display="flex";
+  };
+  window.openShareModal=function(){document.getElementById("share-overlay").style.display="flex";};
+  window.openProfileModal=window.openProfileModal;
+
+  function renderProfAv(){
+    const el=document.getElementById("prof-av-el");el.innerHTML="";
+    if(S.profile.avType==="img"&&S.profile.img){const img=document.createElement("img");img.src=S.profile.img;el.appendChild(img);}
+    else{const sp=document.createElement("span");sp.textContent=S.profile.emoji;el.appendChild(sp);}
+  }
+  function syncRemoveBtn(){document.getElementById("remove-photo-btn").classList.toggle("hidden-btn",!(S.profile.avType==="img"&&S.profile.img));}
+
+  window.handleProfilePhoto=function(input){
+    const f=input.files[0];if(!f)return;
+    const r=new FileReader();r.onload=ev=>{S.profile.avType="img";S.profile.img=ev.target.result;renderProfAv();syncRemoveBtn();document.querySelectorAll(".em-btn").forEach(b=>b.classList.remove("sel"));};r.readAsDataURL(f);input.value="";
+  };
+  window.removeProfilePhoto=function(){S.profile.avType="emoji";S.profile.img=null;renderProfAv();syncRemoveBtn();};
+
+  window.saveProfile=function(){
+    S.profile.name=document.getElementById("f-name").value||S.myPhone||"Moi";
+    S.profile.status=document.getElementById("f-status").value||"En ligne";
+    if(S.myUid)db.ref("users/"+S.myUid).update({name:S.profile.name,status:S.profile.status,emoji:S.profile.emoji,avType:S.profile.avType,img:S.profile.img||null});
+    updateMyAv();document.getElementById("prof-overlay").style.display="none";toast("Profil sauvegardé ✓");
+  };
+
+  // ---- PHOTO/VIDEO SEND ----
+  window.handlePhotoFile=function(input){
+    const f=input.files[0];if(!f||!S.activeId)return;
+    const r=new FileReader();r.onload=ev=>{
+      S.pendingPhoto={src:ev.target.result,name:f.name,size:(f.size/1024).toFixed(1)+" Ko"};
+      document.getElementById("ph-prev-img").src=ev.target.result;
+      document.getElementById("ph-prev-name").textContent=f.name;
+      document.getElementById("ph-prev-size").textContent=S.pendingPhoto.size;
+      document.getElementById("normal-row").style.display="none";
+      document.getElementById("photo-preview-bar").style.display="flex";
+    };r.readAsDataURL(f);input.value="";
+  };
+  window.sendPhoto=function(){
+    if(!S.pendingPhoto||!S.activeId)return;
+    pushMsg({from:S.myUid,type:"photo",src:S.pendingPhoto.src,text:"",t:nowT(),del:false});
+    S.pendingPhoto=null;document.getElementById("photo-preview-bar").style.display="none";document.getElementById("normal-row").style.display="flex";
+  };
+  window.handleVideoFile=function(input){
+    const f=input.files[0];if(!f||!S.activeId)return;
+    if(f.size/1024/1024>25){toast("Vidéo trop lourde (max 25 Mo)","err");return;}
+    const r=new FileReader();r.onload=ev=>{
+      S.pendingVideo={src:ev.target.result,name:f.name,size:(f.size/1024/1024).toFixed(1)+" Mo"};
+      document.getElementById("vid-prev-name").textContent=f.name;
+      document.getElementById("vid-prev-size").textContent=S.pendingVideo.size;
+      document.getElementById("normal-row").style.display="none";
+      document.getElementById("video-preview-bar").style.display="flex";
+    };r.readAsDataURL(f);input.value="";
+  };
+  window.sendVideo=function(){
+    if(!S.pendingVideo||!S.activeId)return;
+    toast("Envoi...");
+    pushMsg({from:S.myUid,type:"video",src:S.pendingVideo.src,text:"",t:nowT(),del:false});
+    S.pendingVideo=null;document.getElementById("video-preview-bar").style.display="none";document.getElementById("normal-row").style.display="flex";
+  };
+
+  // ---- VOCAL ----
+  window.pauseRec=function(){clearInterval(S.recTick);S.recPaused=true;document.getElementById("rec-dot").classList.remove("pulse");document.getElementById("rec-state").textContent=t("recPause");document.getElementById("r-pause").style.display="none";document.getElementById("r-resume").style.display="flex";};
+  window.resumeRec=function(){S.recPaused=false;document.getElementById("rec-dot").classList.add("pulse");document.getElementById("rec-state").textContent=t("recEnCours");document.getElementById("r-resume").style.display="none";document.getElementById("r-pause").style.display="flex";S.recTick=setInterval(()=>{if(!S.recPaused){S.recSecs++;document.getElementById("rec-time").textContent=fmt(S.recSecs);}},1000);};
+  window.sendVoice=function(){clearInterval(S.recTick);pushMsg({from:S.myUid,type:"voice",duration:S.recSecs,text:"",t:nowT(),del:false});stopRec();};
+
+  // ---- CALLS ----
+  window.openCall=function(type){
+    const c=S.contacts.find(x=>x.uid===S.activeId)||{};
+    S.callType=type;S.callMuted=false;S.callSecs=0;
+    document.getElementById("call-av-el").textContent=c.emoji||"🧑🏾";
+    document.getElementById("call-name-el").textContent=c.name||c.phone||"Inconnu";
+    updCallInfo();
+    document.getElementById("call-vid-box").style.display=type==="video"?"flex":"none";
+    document.getElementById("cam-call-btn").style.display=type==="video"?"flex":"none";
+    document.getElementById("mute-btn").className="c-btn normal";document.getElementById("mute-btn").textContent="🎤";
+    document.getElementById("call-overlay").style.display="flex";
+    S.callTick=setInterval(()=>{S.callSecs++;updCallInfo();},1000);
+  };
+  function updCallInfo(){document.getElementById("call-info-el").textContent=(S.callType==="video"?t("appVideo"):t("appAudio"))+" · "+fmt(S.callSecs);}
+  window.endCall=function(){clearInterval(S.callTick);document.getElementById("call-overlay").style.display="none";};
+  window.toggleMute=function(){S.callMuted=!S.callMuted;const b=document.getElementById("mute-btn");b.className="c-btn "+(S.callMuted?"muted":"normal");b.textContent=S.callMuted?"🔇":"🎤";};
+
+  // ---- STATUS CREATE ----
+  let scType=null,scSrc=null;
+  window.openStatusCreate=function(type){
+    scType=null;scSrc=null;
+    document.getElementById("sc-preview-el").style.display="none";document.getElementById("sc-preview-el").innerHTML="";
+    document.getElementById("sc-text-in").style.display="none";document.getElementById("sc-text-in").value="";
+    document.getElementById("sc-options").style.display="flex";
+    document.getElementById("status-create-modal").style.display="flex";
+    if(type==="text"){document.getElementById("sc-options").style.display="none";document.getElementById("sc-text-in").style.display="block";document.getElementById("sc-text-in").focus();scType="text";}
+  };
+  window.handleStatusFile=function(input,type){
+    const f=input.files[0];if(!f)return;
+    openStatusCreate("");
+    const r=new FileReader();r.onload=ev=>{scSrc=ev.target.result;scType=type;showScPreview(type,ev.target.result);};r.readAsDataURL(f);input.value="";
+  };
+  window.handleScFile=function(input,type){
+    const f=input.files[0];if(!f)return;
+    const r=new FileReader();r.onload=ev=>{scSrc=ev.target.result;scType=type;showScPreview(type,ev.target.result);};r.readAsDataURL(f);input.value="";
+  };
+  function showScPreview(type,src){
+    document.getElementById("sc-options").style.display="none";
+    const p=document.getElementById("sc-preview-el");p.innerHTML="";
+    const el=document.createElement(type==="photo"?"img":"video");el.src=src;if(type==="video")el.controls=true;
+    p.appendChild(el);p.style.display="flex";
+  }
+  window.publishStatus=async function(){
+    if(scType==="text"){const txt=document.getElementById("sc-text-in").value.trim();if(!txt){toast("Écrivez quelque chose","err");return;}scSrc=txt;}
+    if(!scType||!scSrc){toast("Choisissez un contenu","err");return;}
+    await db.ref("statuses/"+S.myUid).push({uid:S.myUid,name:S.profile.name||S.myPhone,emoji:S.profile.emoji,avType:S.profile.avType,img:S.profile.img||null,type:scType,src:scSrc,ts:Date.now(),viewers:{}});
+    document.getElementById("status-create-modal").style.display="none";toast("Statut publié ✓");loadStatuses();
+  };
+
+  // Tap status viewer nav
+  document.getElementById("status-viewer").addEventListener("click",e=>{
+    if(e.target.closest(".sv-header")||e.target.closest(".sv-footer"))return;
+    const x=e.clientX,w=window.innerWidth;
+    if(x<w/2){if(svIdx>0){svIdx--;showStatusItem(svIdx,false);}}
+    else{svIdx++;showStatusItem(svIdx,false);}
+  });
+
+});
+</script>
 </body>
 </html>
