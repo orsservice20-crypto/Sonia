@@ -731,7 +731,6 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       <span id="auth-lang-flag">🇫🇷</span><span id="auth-lang-name">Français</span><span style="font-size:10px;opacity:.7">▼</span>
     </button>
   </div>
-  <div class="auth-card">
     <div class="logo-row">
       <div class="logo-icon">
         <svg width="64" height="64" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" rx="18" fill="#ff2d2d"/><path d="M10 18C10 14.686 12.686 12 16 12H48C51.314 12 54 14.686 54 18V38C54 41.314 51.314 44 48 44H36L26 54V44H16C12.686 44 10 41.314 10 38V18Z" fill="#00d4aa"/></svg>
@@ -763,6 +762,14 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
     </div>
     <div class="err-msg" id="auth-err"></div>
   </div>
+
+  <!-- Politique de confidentialité tout en bas de l'écran -->
+  <div style="position:absolute;bottom:20px;left:0;right:0;text-align:center">
+    <button onclick="document.getElementById('privacy-modal').style.display='flex'" style="color:rgba(255,255,255,.45);font-size:12px;font-weight:600;background:none;border:none;cursor:pointer;font-family:inherit;padding:8px 16px;letter-spacing:.3px">
+      🔒 Politique de Confidentialité
+    </button>
+  </div>
+
 </div>
 
 <!-- LISTE -->
@@ -1025,14 +1032,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     else{const sp=document.createElement("span");sp.textContent=S.profile.emoji;el.appendChild(sp);}
   }
   function syncRemoveBtn(){document.getElementById("remove-photo-btn").classList.toggle("hidden-btn",!(S.profile.avType==="img"&&S.profile.img));}
-
-  window.handleProfilePhoto=function(input){
-    const f=input.files[0];if(!f)return;
-    const r=new FileReader();r.onload=ev=>{S.profile.avType="img";S.profile.img=ev.target.result;renderProfAv();syncRemoveBtn();document.querySelectorAll(".em-btn").forEach(b=>b.classList.remove("sel"));};r.readAsDataURL(f);input.value="";
-  };
-  window.removeProfilePhoto=function(){S.profile.avType="emoji";S.profile.img=null;renderProfAv();syncRemoveBtn();};
-
-  window.saveProfile=function(){
+window.saveProfile=function(){
     S.profile.name=document.getElementById("f-name").value||S.myPhone||"Moi";
     S.profile.status=document.getElementById("f-status").value||"En ligne";
     if(S.myUid)db.ref("users/"+S.myUid).update({name:S.profile.name,status:S.profile.status,emoji:S.profile.emoji,avType:S.profile.avType,img:S.profile.img||null});
@@ -1138,5 +1138,191 @@ window.addEventListener("DOMContentLoaded",()=>{
 
 });
 </script>
+<!-- PRIVACY POLICY MODAL -->
+<div class="overlay" id="privacy-modal" style="display:none;align-items:flex-end" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-height:92vh;overflow-y:auto">
+    <div class="modal-drag"></div>
+    <div class="modal-head" style="position:sticky;top:0;background:var(--card);z-index:10;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:36px;height:36px;border-radius:10px;background:#ff2d2d;display:flex;align-items:center;justify-content:center">
+          <svg width="22" height="22" viewBox="0 0 64 64" fill="none"><path d="M10 18C10 14.686 12.686 12 16 12H48C51.314 12 54 14.686 54 18V38C54 41.314 51.314 44 48 44H36L26 54V44H16C12.686 44 10 41.314 10 38V18Z" fill="#00d4aa"/></svg>
+        </div>
+        <span class="modal-title">Politique de Confidentialité</span>
+      </div>
+      <button class="modal-close" onclick="document.getElementById('privacy-modal').style.display='none'">✕</button>
+    </div>
+    <div style="padding:20px 20px 32px">
+
+      <!-- Badges -->
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px">
+        <span style="background:rgba(255,45,45,.12);color:#ff2d2d;border-radius:20px;padding:4px 12px;font-size:11px;font-weight:700">📅 Juin 2026</span>
+        <span style="background:rgba(0,212,170,.12);color:#00d4aa;border-radius:20px;padding:4px 12px;font-size:11px;font-weight:700">🔒 Données protégées</span>
+        <span style="background:rgba(0,212,170,.12);color:#00d4aa;border-radius:20px;padding:4px 12px;font-size:11px;font-weight:700">🌍 Mondiale</span>
+      </div>
+
+      <style>
+        .pp-section{margin-bottom:22px}
+        .pp-title{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:800;color:var(--text);margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+        .pp-icon{width:32px;height:32px;border-radius:9px;background:rgba(255,45,45,.12);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+        .pp-text{font-size:13px;color:var(--sub);line-height:1.75;margin-bottom:8px}
+        .pp-text:last-child{margin-bottom:0}
+        .pp-list{list-style:none;padding:0;margin:6px 0}
+        .pp-list li{font-size:13px;color:var(--sub);padding:4px 0 4px 20px;position:relative;line-height:1.55}
+        .pp-list li::before{content:"✓";position:absolute;left:0;color:#00d4aa;font-weight:800}
+        .pp-list li.no::before{content:"✗";color:var(--danger)}
+        .pp-highlight{background:rgba(255,45,45,.08);border-left:3px solid #ff2d2d;border-radius:0 10px 10px 0;padding:10px 12px;font-size:12px;color:var(--sub);line-height:1.65;margin:10px 0}
+        .pp-highlight strong{color:#ff6b6b}
+        .pp-contact{background:linear-gradient(135deg,#ff2d2d,#b50000);border-radius:14px;padding:16px;margin-top:8px}
+        .pp-contact p{color:rgba(255,255,255,.9);font-size:13px;margin-bottom:7px;line-height:1.5}
+        .pp-contact p:last-child{margin-bottom:0}
+        .pp-contact a{color:#fff;font-weight:700}
+      </style>
+
+      <!-- 1. Introduction -->
+      <div class="pp-section">
+        <div class="pp-title"><div class="pp-icon">📋</div>Introduction et engagement</div>
+        <p class="pp-text">Bienvenue sur <strong style="color:var(--text)">Sonia</strong>, votre plateforme de messagerie instantanée. Nous attachons une grande importance à la protection de votre vie privée ainsi qu'à la sécurité de vos données personnelles.</p>
+        <p class="pp-text">Cette politique de confidentialité a pour but de vous informer de manière claire et transparente sur les méthodes que nous employons pour collecter, utiliser, protéger et gérer vos informations personnelles lors de l'utilisation de notre application.</p>
+        <div class="pp-highlight"><strong>Notre engagement :</strong> Nous nous engageons à ne jamais vendre vos données personnelles à des tiers. Les informations que vous fournissez vous appartiennent et ne sont utilisées que dans le cadre du fonctionnement de l'application pour vous servir.</div>
+        <p class="pp-text">En utilisant Sonia, vous consentez aux pratiques décrites dans cette politique. Si vous n'êtes pas en accord avec ces conditions, nous vous conseillons de ne pas utiliser l'application.</p>
+      </div>
+
+      <!-- 2. Données collectées -->
+      <div class="pp-section">
+        <div class="pp-title"><div class="pp-icon">📱</div>Données que nous collectons</div>
+        <p class="pp-text">Afin de vous garantir une expérience de messagerie de qualité, nous ne collectons que les données strictement nécessaires :</p>
+        <ul class="pp-list">
+          <li><strong style="color:var(--text)">Numéro de téléphone</strong> — utilisé uniquement pour la création et la sécurisation de votre compte</li>
+          <li><strong style="color:var(--text)">Nom d'affichage</strong> — le nom que vous choisissez de manière autonome dans votre profil</li>
+          <li><strong style="color:var(--text)">Photo de profil</strong> — uniquement si vous choisissez d'en ajouter une</li>
+          <li><strong style="color:var(--text)">Messages</strong> — textes, photos, vidéos et messages vocaux que vous envoyez</li>
+          <li><strong style="color:var(--text)">Statuts</strong> — contenus publiés dans la section dédiée, supprimés après 24 heures</li>
+          <li><strong style="color:var(--text)">Statut de présence</strong> — indique si vous êtes actuellement en ligne ou hors ligne</li>
+        </ul>
+        <div class="pp-highlight"><strong>Principe de minimisation :</strong> Nous nous engageons à ne collecter que les données nécessaires au bon fonctionnement de Sonia. Nous ne recueillons jamais d'informations superflues.</div>
+        <p class="pp-text"><strong style="color:var(--text)">Ce que nous ne collectons en aucun cas :</strong></p>
+        <ul class="pp-list">
+          <li class="no">Votre localisation par GPS</li>
+          <li class="no">Vos contacts téléphoniques</li>
+          <li class="no">Vos informations bancaires ou financières</li>
+          <li class="no">Votre historique de navigation</li>
+          <li class="no">Vos données biométriques</li>
+        </ul>
+      </div>
+
+      <!-- 3. Sécurité -->
+      <div class="pp-section">
+        <div class="pp-title"><div class="pp-icon">🔒</div>Sécurité et protection de vos données</div>
+        <p class="pp-text">La sécurité de vos informations est notre priorité. Nous mettons en œuvre des mesures de protection strictes :</p>
+        <ul class="pp-list">
+          <li>Chiffrement de toutes les communications via le protocole <strong style="color:var(--text)">HTTPS/TLS</strong></li>
+          <li>Connexion protégée par un code à usage unique (<strong style="color:var(--text)">OTP</strong>) valable seulement 5 minutes</li>
+          <li>Données hébergées sur des <strong style="color:var(--text)">serveurs certifiés</strong> respectant des normes de sécurité internationales</li>
+          <li>Accès aux données strictement limité aux <strong style="color:var(--text)">utilisateurs authentifiés</strong></li>
+          <li>Codes de vérification expirant <strong style="color:var(--text)">automatiquement</strong> après 5 minutes</li>
+          <li>Systèmes soumis à une <strong style="color:var(--text)">surveillance constante</strong> pour prévenir toute activité suspecte</li>
+        </ul>
+        <div class="pp-highlight"><strong>Règle fondamentale :</strong> Sonia n'a jamais accès à vos messages privés. Vos échanges demeurent uniquement entre vous et vos contacts.</div>
+      </div>
+
+      <!-- 4. Utilisation -->
+      <div class="pp-section">
+        <div class="pp-title"><div class="pp-icon">🎯</div>Utilisation de vos données</div>
+        <p class="pp-text">Vos données sont exclusivement destinées aux objectifs suivants :</p>
+        <ul class="pp-list">
+          <li>Assurer la création et la gestion sécurisée de votre compte utilisateur</li>
+          <li>Faciliter l'envoi et la réception de messages entre vous et vos contacts</li>
+          <li>Permettre l'affichage de votre profil auprès des personnes avec qui vous échangez</li>
+          <li>Envoyer le code de vérification lors de votre connexion</li>
+          <li>Afficher votre statut de présence (en ligne ou hors ligne)</li>
+          <li>Optimiser la performance et la stabilité de l'application</li>
+        </ul>
+        <div class="pp-highlight"><strong>Interdiction absolue :</strong> Il est formellement interdit d'utiliser vos données à des fins publicitaires, commerciales ou de profilage. Vos informations ne sont ni vendues, ni louées, ni partagées avec des annonceurs.</div>
+      </div>
+
+      <!-- 5. Conservation -->
+      <div class="pp-section">
+        <div class="pp-title"><div class="pp-icon">⏱️</div>Durée de conservation des données</div>
+        <p class="pp-text">Nous appliquons des délais stricts et minimaux :</p>
+        <ul class="pp-list">
+          <li><strong style="color:var(--text)">Codes OTP</strong> — supprimés automatiquement 5 minutes après leur création, qu'ils aient été utilisés ou non</li>
+          <li><strong style="color:var(--text)">Statuts publiés</strong> — effacés automatiquement 24 heures après leur publication, sans besoin d'intervention</li>
+          <li><strong style="color:var(--text)">Messages et profil</strong> — conservés jusqu'à ce que l'utilisateur choisisse de les supprimer ou demande la suppression de son compte</li>
+        </ul>
+      </div>
+
+      <!-- 6. Vos droits -->
+      <div class="pp-section">
+        <div class="pp-title"><div class="pp-icon">👤</div>Vos droits sur vos données</div>
+        <p class="pp-text">Vous disposez de droits complets concernant vos données personnelles, que vous pouvez exercer à tout moment :</p>
+        <ul class="pp-list">
+          <li><strong style="color:var(--text)">Droit de rectification</strong> — modifiez votre nom, photo de profil et statut à tout moment via les paramètres</li>
+          <li><strong style="color:var(--text)">Droit à l'effacement</strong> — supprimez vos messages, votre profil et votre compte quand vous le souhaitez</li>
+          <li><strong style="color:var(--text)">Droit d'accès</strong> — consultez à tout moment les informations que nous possédons à votre sujet</li>
+          <li><strong style="color:var(--text)">Droit d'opposition</strong> — vous êtes libre de cesser d'utiliser l'application à tout moment, sans aucune pénalité</li>
+          <li><strong style="color:var(--text)">Droit à la portabilité</strong> — exportez vos données personnelles sur simple demande</li>
+          <li><strong style="color:var(--text)">Droit à la limitation</strong> — demandez à limiter le traitement de vos données à tout moment</li>
+        </ul>
+      </div>
+
+      <!-- 7. Autorisations -->
+      <div class="pp-section">
+        <div class="pp-title"><div class="pp-icon">📲</div>Autorisations nécessaires sur votre appareil</div>
+        <p class="pp-text">Sonia peut solliciter les autorisations suivantes sur votre téléphone, chacune étant liée à une fonctionnalité spécifique :</p>
+        <ul class="pp-list">
+          <li><strong style="color:var(--text)">Appareil photo</strong> — pour prendre une photo de profil ou envoyer des images en direct</li>
+          <li><strong style="color:var(--text)">Stockage / Galerie</strong> — pour sélectionner et partager des photos et vidéos depuis votre appareil</li>
+          <li><strong style="color:var(--text)">Microphone</strong> — uniquement pour enregistrer des messages vocaux</li>
+          <li><strong style="color:var(--text)">Internet</strong> — pour se connecter à nos serveurs et envoyer ou recevoir des messages</li>
+        </ul>
+        <div class="pp-highlight">Vous pouvez révoquer chacune de ces autorisations à tout moment dans les paramètres de votre téléphone. L'application continuera de fonctionner, bien que certaines fonctionnalités soient désactivées.</div>
+      </div>
+
+      <!-- 8. Mineurs -->
+      <div class="pp-section">
+        <div class="pp-title"><div class="pp-icon">👶</div>Protection des mineurs</div>
+        <p class="pp-text">Sonia s'adresse aux utilisateurs âgés de <strong style="color:var(--text)">14 ans et plus</strong>. Nous n'avons pas l'intention de collecter des données personnelles d'enfants de moins de 14 ans.</p>
+        <p class="pp-text">Si vous êtes un parent ou un tuteur et que vous pensez qu'un mineur a partagé des informations personnelles sans votre accord, merci de nous contacter sans délai. Nous nous engageons à supprimer ces informations rapidement.</p>
+      </div>
+
+      <!-- 9. Partage -->
+      <div class="pp-section">
+        <div class="pp-title"><div class="pp-icon">🤝</div>Partage de vos données</div>
+        <p class="pp-text">Vos informations personnelles ne seront jamais divulguées, vendues ou transmises à des tiers à des fins commerciales.</p>
+      </div>
+
+      <!-- 10. Modifications -->
+      <div class="pp-section">
+        <div class="pp-title"><div class="pp-icon">📝</div>Modifications de cette politique</div>
+        <p class="pp-text">Nous nous réservons le droit d'effectuer des mises à jour pour refléter nos pratiques actuelles ou répondre à des obligations légales. En cas de changement significatif, nous vous en informerons directement par le biais de l'application, avec un préavis raisonnable avant que ces modifications ne prennent effet.</p>
+        <p class="pp-text">La date de la dernière mise à jour figure en haut de ce document. Nous vous recommandons de la consulter régulièrement.</p>
+      </div>
+
+      <!-- 11. Contact -->
+      <div class="pp-section">
+        <div class="pp-title"><div class="pp-icon">📧</div>Nous contacter</div>
+        <p class="pp-text">Pour toute demande, réclamation ou exercice de vos droits relatifs à cette politique de confidentialité ou à vos données personnelles, n'hésitez pas à nous contacter :</p>
+        <div class="pp-contact">
+          <p>📧 <strong>Email :</strong> <a href="mailto:soniaapp.contact@gmail.com">soniaapp.contact@gmail.com</a></p>
+          <p>📱 <strong>Application :</strong> Sonia — Messagerie instantanée</p>
+          <p>🌍 <strong>Site internet :</strong> <a href="https://orsservice20-crypto.github.io/Sonia">orsservice20-crypto.github.io/Sonia</a></p>
+          <p>⏱️ <strong>Délai de réponse :</strong> Nous nous engageons à vous répondre dans un maximum de <strong>72 heures</strong></p>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div style="text-align:center;color:var(--dim);font-size:11px;margin-top:8px;padding-top:16px;border-top:1px solid var(--border);line-height:1.7">
+        <p>© 2026 Sonia — Application de messagerie instantanée. Tous droits réservés.</p>
+        <p>Cette politique est en vigueur depuis le <strong style="color:var(--sub)">1er juin 2026</strong> — Version 1.0</p>
+        <p>Ce document a été rédigé en français. En cas de traduction, la version française prévaut.</p>
+      </div>
+
+      <!-- Bouton fermer -->
+      <button onclick="document.getElementById('privacy-modal').style.display='none'" style="width:100%;margin-top:16px;padding:14px;background:var(--accent);border:none;border-radius:14px;color:#000;font-weight:800;font-size:15px;font-family:inherit;cursor:pointer">J'ai compris ✓</button>
+
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
