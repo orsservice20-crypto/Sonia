@@ -60,7 +60,6 @@ window.addEventListener("DOMContentLoaded",()=>{
   applyLang();
   updateOnlineBanner();
 });
-
 // ---- AUTH (fonctions globales appelées depuis onclick HTML) ----
 function sendCode(){
   const raw=$("ph-input").value.trim();
@@ -209,6 +208,7 @@ auth.onAuthStateChanged(async user=>{
     updateMyAv();
     if(isOnline)listenContacts();
     else{const cc=CACHE.load("contacts");if(cc){S.contacts=cc;renderList();}}
+    listenIncomingCalls();
     showScreen("s-list");
   } else {
     const cachedUid=CACHE.load("myUid");
@@ -875,7 +875,6 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
     <div id="no-contacts-status" style="text-align:center;color:var(--sub);font-size:14px;padding:32px 0">Aucun statut pour le moment</div>
   </div>
 </div>
-
 <!-- STATUS VIEWER -->
 <div id="status-viewer">
   <div class="sv-progress-bars" id="sv-bars"></div>
@@ -978,21 +977,55 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
   </div>
 </div>
 
-<!-- CALL MODAL -->
+<!-- CALL MODAL (sortant) -->
 <div class="overlay center" id="call-overlay" style="display:none" onclick="if(event.target===this)endCall()">
   <div class="modal"><div class="call-box">
-    <div class="call-big-av" id="call-av-el"></div>
-    <div class="call-cname" id="call-name-el"></div>
-    <div class="call-cinfo" id="call-info-el"></div>
-    <div class="call-video-box" id="call-vid-box" style="display:none">📷 Caméra simulée</div>
-    <div class="call-actions">
+    <div style="font-size:72px;margin-bottom:12px" id="call-av-el"></div>
+    <div style="font-size:22px;font-weight:700;color:var(--text)" id="call-name-el"></div>
+    <div style="color:var(--accent);font-size:13px;margin:8px 0 24px" id="call-info-el"></div>
+    <p style="color:var(--sub);font-size:12px;text-align:center;margin-bottom:20px;line-height:1.6">
+      La salle d'appel s'ouvre dans un nouvel onglet.<br/>
+      Votre contact recevra une notification pour rejoindre.
+    </p>
+    <div style="display:flex;justify-content:center;gap:16px">
       <button class="c-btn normal" id="mute-btn" onclick="toggleMute()">🎤</button>
-      <button class="c-btn normal">📢</button>
-      <button class="c-btn normal" id="cam-call-btn" style="display:none">📷</button>
       <button class="c-btn hangup" onclick="endCall()">📵</button>
     </div>
   </div></div>
 </div>
+
+<!-- APPEL ENTRANT MODAL -->
+<div class="overlay center" id="incoming-call-modal" style="display:none">
+  <div class="modal" style="border-radius:24px;width:min(320px,92vw)">
+    <div style="text-align:center;padding:32px 24px 28px">
+      <!-- Animation sonnerie -->
+      <div style="position:relative;display:inline-block;margin-bottom:16px">
+        <div style="width:90px;height:90px;border-radius:50%;background:var(--glow);border:3px solid var(--accent);display:flex;align-items:center;justify-content:center;font-size:46px;animation:ringPulse 1s ease infinite" id="incoming-av">🧑🏾</div>
+        <div style="position:absolute;inset:-8px;border-radius:50%;border:3px solid rgba(0,212,170,.3);animation:ringExpand 1.5s ease infinite"></div>
+      </div>
+      <div style="color:var(--text);font-size:20px;font-weight:800;margin-bottom:6px" id="incoming-name"></div>
+      <div style="color:var(--accent);font-size:13px;margin-bottom:28px" id="incoming-type"></div>
+      <!-- Boutons accepter/refuser -->
+      <div style="display:flex;justify-content:center;gap:24px">
+        <!-- Refuser -->
+        <div style="text-align:center">
+          <button onclick="rejectCall()" style="width:64px;height:64px;border-radius:50%;background:var(--danger);border:none;font-size:26px;cursor:pointer;display:flex;align-items:center;justify-content:center;margin:0 auto">📵</button>
+          <div style="color:var(--sub);font-size:11px;margin-top:8px;font-weight:600">Refuser</div>
+        </div>
+        <!-- Accepter -->
+        <div style="text-align:center">
+          <button onclick="acceptCall()" style="width:64px;height:64px;border-radius:50%;background:var(--green);border:none;font-size:26px;cursor:pointer;display:flex;align-items:center;justify-content:center;margin:0 auto;animation:ringPulse 1s ease infinite">📞</button>
+          <div style="color:var(--sub);font-size:11px;margin-top:8px;font-weight:600">Accepter</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+@keyframes ringPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
+@keyframes ringExpand{0%{transform:scale(1);opacity:.6}100%{transform:scale(1.5);opacity:0}}
+</style>
 
 <script>
 window.addEventListener("DOMContentLoaded",()=>{
@@ -1032,7 +1065,14 @@ window.addEventListener("DOMContentLoaded",()=>{
     else{const sp=document.createElement("span");sp.textContent=S.profile.emoji;el.appendChild(sp);}
   }
   function syncRemoveBtn(){document.getElementById("remove-photo-btn").classList.toggle("hidden-btn",!(S.profile.avType==="img"&&S.profile.img));}
-window.saveProfile=function(){
+
+  window.handleProfilePhoto=function(input){
+    const f=input.files[0];if(!f)return;
+    const r=new FileReader();r.onload=ev=>{S.profile.avType="img";S.profile.img=ev.target.result;renderProfAv();syncRemoveBtn();document.querySelectorAll(".em-btn").forEach(b=>b.classList.remove("sel"));};r.readAsDataURL(f);input.value="";
+  };
+  window.removeProfilePhoto=function(){S.profile.avType="emoji";S.profile.img=null;renderProfAv();syncRemoveBtn();};
+
+  window.saveProfile=function(){
     S.profile.name=document.getElementById("f-name").value||S.myPhone||"Moi";
     S.profile.status=document.getElementById("f-status").value||"En ligne";
     if(S.myUid)db.ref("users/"+S.myUid).update({name:S.profile.name,status:S.profile.status,emoji:S.profile.emoji,avType:S.profile.avType,img:S.profile.img||null});
@@ -1079,22 +1119,126 @@ window.saveProfile=function(){
   window.resumeRec=function(){S.recPaused=false;document.getElementById("rec-dot").classList.add("pulse");document.getElementById("rec-state").textContent=t("recEnCours");document.getElementById("r-resume").style.display="none";document.getElementById("r-pause").style.display="flex";S.recTick=setInterval(()=>{if(!S.recPaused){S.recSecs++;document.getElementById("rec-time").textContent=fmt(S.recSecs);}},1000);};
   window.sendVoice=function(){clearInterval(S.recTick);pushMsg({from:S.myUid,type:"voice",duration:S.recSecs,text:"",t:nowT(),del:false});stopRec();};
 
-  // ---- CALLS ----
-  window.openCall=function(type){
-    const c=S.contacts.find(x=>x.uid===S.activeId)||{};
-    S.callType=type;S.callMuted=false;S.callSecs=0;
-    document.getElementById("call-av-el").textContent=c.emoji||"🧑🏾";
-    document.getElementById("call-name-el").textContent=c.name||c.phone||"Inconnu";
-    updCallInfo();
-    document.getElementById("call-vid-box").style.display=type==="video"?"flex":"none";
-    document.getElementById("cam-call-btn").style.display=type==="video"?"flex":"none";
-    document.getElementById("mute-btn").className="c-btn normal";document.getElementById("mute-btn").textContent="🎤";
-    document.getElementById("call-overlay").style.display="flex";
-    S.callTick=setInterval(()=>{S.callSecs++;updCallInfo();},1000);
-  };
-  function updCallInfo(){document.getElementById("call-info-el").textContent=(S.callType==="video"?t("appVideo"):t("appAudio"))+" · "+fmt(S.callSecs);}
-  window.endCall=function(){clearInterval(S.callTick);document.getElementById("call-overlay").style.display="none";};
-  window.toggleMute=function(){S.callMuted=!S.callMuted;const b=document.getElementById("mute-btn");b.className="c-btn "+(S.callMuted?"muted":"normal");b.textContent=S.callMuted?"🔇":"🎤";};
+// ---- APPELS REELS VIA JITSI ----
+window.openCall=function(type){
+  const c=S.contacts.find(x=>x.uid===S.activeId)||{};
+
+  // Créer un ID de salle unique basé sur les 2 utilisateurs
+  const roomId = "sonia-" + chatKey(S.myUid, S.activeId);
+  const contactName = encodeURIComponent(c.name||c.phone||"Contact");
+  const myName = encodeURIComponent(S.profile.name||S.myPhone||"Moi");
+
+  // Construire l'URL Jitsi avec options
+  let jitsiUrl = "https://meet.jit.si/" + roomId;
+  jitsiUrl += "#userInfo.displayName=" + myName;
+  jitsiUrl += "&config.startWithAudioMuted=false";
+
+  if(type === "video"){
+    jitsiUrl += "&config.startWithVideoMuted=false";
+  } else {
+    // Appel audio → caméra coupée par défaut
+    jitsiUrl += "&config.startWithVideoMuted=true";
+  }
+
+  // Notifier le contact dans Firebase qu'il y a un appel entrant
+  if(S.activeId && S.myUid){
+    db.ref("calls/" + S.activeId + "/incoming").set({
+      from: S.myUid,
+      fromName: S.profile.name||S.myPhone||"Inconnu",
+      fromEmoji: S.profile.emoji||"🧑🏾",
+      type: type,
+      roomId: roomId,
+      ts: Date.now()
+    });
+    // Supprimer la notification après 60 secondes
+    setTimeout(()=>{
+      db.ref("calls/" + S.activeId + "/incoming").remove().catch(()=>{});
+    }, 60000);
+  }
+
+  // Afficher le modal d'appel sortant
+  $("call-av-el").textContent = c.emoji||"🧑🏾";
+  $("call-name-el").textContent = c.name||c.phone||"Inconnu";
+  $("call-info-el").textContent = (type==="video"?"📹 Appel vidéo":"🎙 Appel audio") + " · En attente...";
+  $("call-overlay").style.display = "flex";
+
+  // Ouvrir Jitsi après 1 seconde
+  setTimeout(()=>{
+    window.open(jitsiUrl, "_blank");
+    // Mettre à jour le statut
+    $("call-info-el").textContent = (type==="video"?"📹 Appel vidéo":"🎙 Appel audio") + " · Salle ouverte";
+  }, 1000);
+
+  S.callType = type;
+  S.callSecs = 0;
+  S.callTick = setInterval(()=>{ S.callSecs++; $("call-info-el").textContent = (type==="video"?"📹":"🎙") + " · " + fmt(S.callSecs); }, 1000);
+};
+
+window.endCall=function(){
+  clearInterval(S.callTick);
+  // Supprimer la notification d'appel
+  if(S.activeId) db.ref("calls/"+S.activeId+"/incoming").remove().catch(()=>{});
+  $("call-overlay").style.display="none";
+};
+
+window.toggleMute=function(){
+  S.callMuted=!S.callMuted;
+  const b=$("mute-btn");
+  b.className="c-btn "+(S.callMuted?"muted":"normal");
+  b.textContent=S.callMuted?"🔇":"🎤";
+};
+
+// ---- ECOUTER LES APPELS ENTRANTS ----
+function listenIncomingCalls(){
+  if(!S.myUid) return;
+  db.ref("calls/"+S.myUid+"/incoming").on("value", snap=>{
+    const call = snap.val();
+    if(!call) return;
+    // Vérifier que l'appel est récent (moins de 60 secondes)
+    if(Date.now() - call.ts > 60000){
+      db.ref("calls/"+S.myUid+"/incoming").remove();
+      return;
+    }
+    showIncomingCall(call);
+  });
+}
+
+function showIncomingCall(call){
+  // Afficher notification d'appel entrant
+  $("incoming-av").textContent = call.fromEmoji||"🧑🏾";
+  $("incoming-name").textContent = call.fromName||"Inconnu";
+  $("incoming-type").textContent = call.type==="video" ? "📹 Appel vidéo entrant" : "🎙 Appel audio entrant";
+  $("incoming-call-modal").style.display = "flex";
+
+  // Stocker le roomId pour rejoindre
+  $("incoming-call-modal").dataset.roomId = call.roomId;
+  $("incoming-call-modal").dataset.type = call.type;
+  $("incoming-call-modal").dataset.fromName = call.fromName;
+}
+
+// Accepter l'appel → ouvrir Jitsi
+window.acceptCall = function(){
+  const modal = $("incoming-call-modal");
+  const roomId = modal.dataset.roomId;
+  const type = modal.dataset.type;
+  const myName = encodeURIComponent(S.profile.name||S.myPhone||"Moi");
+
+  let url = "https://meet.jit.si/" + roomId;
+  url += "#userInfo.displayName=" + myName;
+  url += "&config.startWithAudioMuted=false";
+  url += "&config.startWithVideoMuted=" + (type==="video" ? "false" : "true");
+
+  window.open(url, "_blank");
+  db.ref("calls/"+S.myUid+"/incoming").remove();
+  modal.style.display = "none";
+};
+
+// Refuser l'appel
+window.rejectCall = function(){
+  db.ref("calls/"+S.myUid+"/incoming").remove();
+  $("incoming-call-modal").style.display = "none";
+  toast("Appel refusé");
+};
 
   // ---- STATUS CREATE ----
   let scType=null,scSrc=null;
