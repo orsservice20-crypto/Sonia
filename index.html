@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+<meta http-equiv="Pragma" content="no-cache"/>
+<meta http-equiv="Expires" content="0"/>
 <title>Sonia</title>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&display=swap" rel="stylesheet"/>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
@@ -60,6 +63,7 @@ window.addEventListener("DOMContentLoaded",()=>{
   applyLang();
   updateOnlineBanner();
 });
+
 // ---- AUTH (fonctions globales appelées depuis onclick HTML) ----
 function sendCode(){
   const raw=$("ph-input").value.trim();
@@ -875,6 +879,14 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
     <div id="no-contacts-status" style="text-align:center;color:var(--sub);font-size:14px;padding:32px 0">Aucun statut pour le moment</div>
   </div>
 </div>
+
+<!-- STATUS VIEWER -->
+<div id="status-viewer">
+  <div class="sv-progress-bars" id="sv-bars"></div>
+  <div class="sv-header"><div class="sv-av" id="sv-av-el"></div><span class="sv-name" id="sv-name-el"></span><span class="sv-time" id="sv-time-el"></span><button class="sv-close" onclick="closeStatusViewer()">✕</button></div>
+  <div class="sv-content"><img id="sv-img" src="" alt=""/><video id="sv-vid" playsinline controls></video><div id="sv-text-el"></div></div>
+  <div class="sv-footer"><div class="sv-viewers" id="sv-viewers-el"><span>👁</span><span id="sv-viewers-count">0 vue</span><span id="sv-viewers-names" style="color:rgba(255,255,255,.6)"></span></div></div>
+</div>
 <!-- STATUS VIEWER -->
 <div id="status-viewer">
   <div class="sv-progress-bars" id="sv-bars"></div>
@@ -1040,7 +1052,7 @@ window.addEventListener("DOMContentLoaded",()=>{
 
   function setNav(id){document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.id===id));}
   window.setNav=setNav;
-
+  
   // ---- PROFILE ----
   const EMOJIS=["🧑🏾","👨🏿","👩🏽","🧔🏻","👧🏾","👦🏽","🧕🏾","🧓🏿"];
   const eg=document.getElementById("emoji-grid");
@@ -1455,6 +1467,12 @@ window.rejectCall = function(){
       </div>
 
       <!-- Footer -->
+      <div style="text-align:center;color:var(--dim);font-size:11px;margin-top:8px;padding-top:16px;border-top:1px solid var(--border);line-height:1.7">
+        <p>© 2026 Sonia — Application de messagerie instantanée. Tous droits réservés.</p>
+        <p>Cette politique est en vigueur depuis le <strong style="color:var(--sub)">1er juin 2026</strong> — Version 1.0</p>
+        <p>Ce document a été rédigé en français. En cas de traduction, la version française prévaut.</p>
+      </div>
+<!-- Footer -->
       <div style="text-align:center;color:var(--dim);font-size:11px;margin-top:8px;padding-top:16px;border-top:1px solid var(--border);line-height:1.7">
         <p>© 2026 Sonia — Application de messagerie instantanée. Tous droits réservés.</p>
         <p>Cette politique est en vigueur depuis le <strong style="color:var(--sub)">1er juin 2026</strong> — Version 1.0</p>
