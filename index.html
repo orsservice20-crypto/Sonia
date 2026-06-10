@@ -16,8 +16,35 @@ const firebaseConfig={apiKey:"AIzaSyD8TsBNkUQ_ymSbhOxNaOcq_j-w38OHrSg",authDomai
 firebase.initializeApp(firebaseConfig);
 const auth=firebase.auth();
 const db=firebase.database();
-const SMS_KEY="6IMieB6iuVzvA8Exbi9KBQChlqhFt1TGhxClLBlosuZ7zbimeowQk0BMXj8cJTbG";
-const APP_URL="https://orsservice20-crypto.github.io/Sonia";
+// ---- SMS via Seven.io ----
+const SMS_KEY = "6IMieB6iuVzvA8Exbi9KBQChlqhFt1TGhxClLBlosuZ7zbimeowQk0BMXj8cJTbG";
+
+async function sendSms(phone, code){
+  try{
+    // Utilisation d'un numéro comme expéditeur pour éviter les blocages opérateurs
+    const body = new URLSearchParams({
+      to:   phone,
+      from: "447700900000", // numéro UK générique qui passe partout
+      text: "Sonia - Votre code : " + code + ". Valable 5 minutes."
+    });
+    const r = await fetch("https://gateway.seven.io/api/sms", {
+      method:  "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-Api-Key": SMS_KEY
+      },
+      body: body.toString()
+    });
+    const txt = await r.text();
+    console.log("Seven.io response:", txt);
+    return r.ok;
+  } catch(e){
+    console.warn("SMS error:", e.message);
+    return false;
+  }
+}
+
+const APP_URL = "https://orsservice20-crypto.github.io/Sonia";
 
 const CACHE={
   save(k,d){try{localStorage.setItem("sonia_"+k,JSON.stringify(d));}catch(e){}},
@@ -224,7 +251,6 @@ auth.onAuthStateChanged(async user=>{
     } else {showScreen("s-auth");}
   }
 });
-
 // ---- CONTACTS ----
 function listenContacts(){
   if(S.unsubContacts){S.unsubContacts();S.unsubContacts=null;}
@@ -887,13 +913,6 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
   <div class="sv-content"><img id="sv-img" src="" alt=""/><video id="sv-vid" playsinline controls></video><div id="sv-text-el"></div></div>
   <div class="sv-footer"><div class="sv-viewers" id="sv-viewers-el"><span>👁</span><span id="sv-viewers-count">0 vue</span><span id="sv-viewers-names" style="color:rgba(255,255,255,.6)"></span></div></div>
 </div>
-<!-- STATUS VIEWER -->
-<div id="status-viewer">
-  <div class="sv-progress-bars" id="sv-bars"></div>
-  <div class="sv-header"><div class="sv-av" id="sv-av-el"></div><span class="sv-name" id="sv-name-el"></span><span class="sv-time" id="sv-time-el"></span><button class="sv-close" onclick="closeStatusViewer()">✕</button></div>
-  <div class="sv-content"><img id="sv-img" src="" alt=""/><video id="sv-vid" playsinline controls></video><div id="sv-text-el"></div></div>
-  <div class="sv-footer"><div class="sv-viewers" id="sv-viewers-el"><span>👁</span><span id="sv-viewers-count">0 vue</span><span id="sv-viewers-names" style="color:rgba(255,255,255,.6)"></span></div></div>
-</div>
 
 <!-- STATUS CREATE -->
 <div id="status-create-modal">
@@ -1038,7 +1057,6 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 @keyframes ringPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
 @keyframes ringExpand{0%{transform:scale(1);opacity:.6}100%{transform:scale(1.5);opacity:0}}
 </style>
-
 <script>
 window.addEventListener("DOMContentLoaded",()=>{
   // ---- TABS ----
@@ -1052,7 +1070,7 @@ window.addEventListener("DOMContentLoaded",()=>{
 
   function setNav(id){document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.id===id));}
   window.setNav=setNav;
-  
+
   // ---- PROFILE ----
   const EMOJIS=["🧑🏾","👨🏿","👩🏽","🧔🏻","👧🏾","👦🏽","🧕🏾","🧓🏿"];
   const eg=document.getElementById("emoji-grid");
@@ -1453,8 +1471,7 @@ window.rejectCall = function(){
         <p class="pp-text">Nous nous réservons le droit d'effectuer des mises à jour pour refléter nos pratiques actuelles ou répondre à des obligations légales. En cas de changement significatif, nous vous en informerons directement par le biais de l'application, avec un préavis raisonnable avant que ces modifications ne prennent effet.</p>
         <p class="pp-text">La date de la dernière mise à jour figure en haut de ce document. Nous vous recommandons de la consulter régulièrement.</p>
       </div>
-
-      <!-- 11. Contact -->
+<!-- 11. Contact -->
       <div class="pp-section">
         <div class="pp-title"><div class="pp-icon">📧</div>Nous contacter</div>
         <p class="pp-text">Pour toute demande, réclamation ou exercice de vos droits relatifs à cette politique de confidentialité ou à vos données personnelles, n'hésitez pas à nous contacter :</p>
@@ -1467,12 +1484,6 @@ window.rejectCall = function(){
       </div>
 
       <!-- Footer -->
-      <div style="text-align:center;color:var(--dim);font-size:11px;margin-top:8px;padding-top:16px;border-top:1px solid var(--border);line-height:1.7">
-        <p>© 2026 Sonia — Application de messagerie instantanée. Tous droits réservés.</p>
-        <p>Cette politique est en vigueur depuis le <strong style="color:var(--sub)">1er juin 2026</strong> — Version 1.0</p>
-        <p>Ce document a été rédigé en français. En cas de traduction, la version française prévaut.</p>
-      </div>
-<!-- Footer -->
       <div style="text-align:center;color:var(--dim);font-size:11px;margin-top:8px;padding-top:16px;border-top:1px solid var(--border);line-height:1.7">
         <p>© 2026 Sonia — Application de messagerie instantanée. Tous droits réservés.</p>
         <p>Cette politique est en vigueur depuis le <strong style="color:var(--sub)">1er juin 2026</strong> — Version 1.0</p>
