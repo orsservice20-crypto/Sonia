@@ -21,27 +21,18 @@ const SMS_KEY = "6IMieB6iuVzvA8Exbi9KBQChlqhFt1TGhxClLBlosuZ7zbimeowQk0BMXj8cJTb
 
 async function sendSms(phone, code){
   try{
-    // Utilisation d'un numéro comme expéditeur pour éviter les blocages opérateurs
     const body = new URLSearchParams({
       to:   phone,
-      from: "447700900000", // numéro UK générique qui passe partout
-      text: "Sonia - Votre code : " + code + ". Valable 5 minutes."
+      from: "447700900000",
+      text: "Sonia - Code : " + code + ". Valable 5 minutes."
     });
-    const r = await fetch("https://gateway.seven.io/api/sms", {
-      method:  "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Api-Key": SMS_KEY
-      },
+    const r = await fetch("https://gateway.seven.io/api/sms",{
+      method:"POST",
+      headers:{"Content-Type":"application/x-www-form-urlencoded","X-Api-Key":SMS_KEY},
       body: body.toString()
     });
-    const txt = await r.text();
-    console.log("Seven.io response:", txt);
     return r.ok;
-  } catch(e){
-    console.warn("SMS error:", e.message);
-    return false;
-  }
+  }catch(e){ return false; }
 }
 
 const APP_URL = "https://orsservice20-crypto.github.io/Sonia";
@@ -104,14 +95,20 @@ function sendCode(){
   const key=phone.replace(/\+/g,"00").replace(/\D/g,"");
   db.ref("otpCodes/"+key).set({code:code,expires:Date.now()+5*60*1000}).catch(()=>{});
   sendSms(phone,code).then(sent=>{
-    if(sent){$("auth-sub").textContent="SMS envoyé au "+phone;$("otp-hint-el").textContent="";}
-    else{$("auth-sub").textContent="Code pour "+phone;$("otp-hint-el").textContent="Code test : "+code;}
+    $("auth-sub").textContent = sent ? "SMS envoyé au "+phone : "Code généré pour "+phone;
+    // Toujours afficher le code à l'écran jusqu'à ce que le SMS soit résolu
+    $("otp-hint-el").textContent = "Votre code : " + code;
     $("step-phone").style.display="none";
     $("step-otp").style.display="block";
     if(otpBoxes[0])otpBoxes[0].focus();
     btn.textContent=t("recevoirCode");btn.disabled=false;
   }).catch(()=>{
-    $("auth-err").textContent="Erreur, réessayez";
+    // Même en cas d'erreur réseau, afficher le code
+    $("auth-sub").textContent = "Code généré pour "+phone;
+    $("otp-hint-el").textContent = "Votre code : " + code;
+    $("step-phone").style.display="none";
+    $("step-otp").style.display="block";
+    if(otpBoxes[0])otpBoxes[0].focus();
     btn.textContent=t("recevoirCode");btn.disabled=false;
   });
 }
@@ -189,7 +186,6 @@ function applyLang(){
   const lb=$("lang-btn");if(lb)lb.textContent=L.flag;
   localStorage.setItem("sonia_lang",currentLang);
 }
-
 function openLangModal(){
   const list=$("lang-list");if(!list)return;
   list.innerHTML="";
@@ -251,6 +247,7 @@ auth.onAuthStateChanged(async user=>{
     } else {showScreen("s-auth");}
   }
 });
+
 // ---- CONTACTS ----
 function listenContacts(){
   if(S.unsubContacts){S.unsubContacts();S.unsubContacts=null;}
@@ -367,7 +364,6 @@ function delMsg(msgId){
   const key=chatKey(S.myUid,S.activeId);
   db.ref("chats/"+key+"/messages/"+msgId).update({del:true,text:"",src:""});
 }
-
 function pushMsg(m){
   const key=chatKey(S.myUid,S.activeId);
   db.ref("chats/"+key+"/messages").push(m);
@@ -1057,6 +1053,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 @keyframes ringPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}
 @keyframes ringExpand{0%{transform:scale(1);opacity:.6}100%{transform:scale(1.5);opacity:0}}
 </style>
+
 <script>
 window.addEventListener("DOMContentLoaded",()=>{
   // ---- TABS ----
@@ -1185,7 +1182,6 @@ window.openCall=function(type){
       db.ref("calls/" + S.activeId + "/incoming").remove().catch(()=>{});
     }, 60000);
   }
-
   // Afficher le modal d'appel sortant
   $("call-av-el").textContent = c.emoji||"🧑🏾";
   $("call-name-el").textContent = c.name||c.phone||"Inconnu";
@@ -1471,7 +1467,8 @@ window.rejectCall = function(){
         <p class="pp-text">Nous nous réservons le droit d'effectuer des mises à jour pour refléter nos pratiques actuelles ou répondre à des obligations légales. En cas de changement significatif, nous vous en informerons directement par le biais de l'application, avec un préavis raisonnable avant que ces modifications ne prennent effet.</p>
         <p class="pp-text">La date de la dernière mise à jour figure en haut de ce document. Nous vous recommandons de la consulter régulièrement.</p>
       </div>
-<!-- 11. Contact -->
+
+      <!-- 11. Contact -->
       <div class="pp-section">
         <div class="pp-title"><div class="pp-icon">📧</div>Nous contacter</div>
         <p class="pp-text">Pour toute demande, réclamation ou exercice de vos droits relatifs à cette politique de confidentialité ou à vos données personnelles, n'hésitez pas à nous contacter :</p>
