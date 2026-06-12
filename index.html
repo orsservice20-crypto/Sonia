@@ -121,11 +121,30 @@ function verifyCode(){
   const key=S.pendingPhone.replace(/\+/g,"00").replace(/\D/g,"");
   db.ref("otpCodes/"+key).get().then(snap=>{
     const data=snap.val();
-    if(!data||Date.now()>data.expires)throw new Error("Code expiré");
-    if(entered!==data.code)throw new Error("Code incorrect");
-    return auth.signInAnonymously();
+    if(!data){
+      $("auth-err").textContent="Code expiré — demandez un nouveau code";
+      btn.textContent=t("confirmer");btn.disabled=false;
+      return;
+    }
+    if(Date.now()>data.expires){
+      $("auth-err").textContent="Code expiré — demandez un nouveau code";
+      btn.textContent=t("confirmer");btn.disabled=false;
+      return;
+    }
+    if(entered!==data.code){
+      $("auth-err").textContent="Code incorrect";
+      btn.textContent=t("confirmer");btn.disabled=false;
+      return;
+    }
+    // Code correct → connexion
+    auth.signInAnonymously().then(()=>{
+      btn.textContent=t("confirmer");btn.disabled=false;
+    }).catch(e=>{
+      $("auth-err").textContent="Erreur connexion : "+e.message;
+      btn.textContent=t("confirmer");btn.disabled=false;
+    });
   }).catch(e=>{
-    $("auth-err").textContent=e.message;
+    $("auth-err").textContent="Erreur : "+e.message;
     btn.textContent=t("confirmer");btn.disabled=false;
   });
 }
@@ -186,6 +205,7 @@ function applyLang(){
   const lb=$("lang-btn");if(lb)lb.textContent=L.flag;
   localStorage.setItem("sonia_lang",currentLang);
 }
+
 function openLangModal(){
   const list=$("lang-list");if(!list)return;
   list.innerHTML="";
@@ -364,6 +384,7 @@ function delMsg(msgId){
   const key=chatKey(S.myUid,S.activeId);
   db.ref("chats/"+key+"/messages/"+msgId).update({del:true,text:"",src:""});
 }
+
 function pushMsg(m){
   const key=chatKey(S.myUid,S.activeId);
   db.ref("chats/"+key+"/messages").push(m);
@@ -1182,6 +1203,7 @@ window.openCall=function(type){
       db.ref("calls/" + S.activeId + "/incoming").remove().catch(()=>{});
     }, 60000);
   }
+
   // Afficher le modal d'appel sortant
   $("call-av-el").textContent = c.emoji||"🧑🏾";
   $("call-name-el").textContent = c.name||c.phone||"Inconnu";
@@ -1409,8 +1431,7 @@ window.rejectCall = function(){
         </ul>
         <div class="pp-highlight"><strong>Interdiction absolue :</strong> Il est formellement interdit d'utiliser vos données à des fins publicitaires, commerciales ou de profilage. Vos informations ne sont ni vendues, ni louées, ni partagées avec des annonceurs.</div>
       </div>
-
-      <!-- 5. Conservation -->
+            <!-- 5. Conservation -->
       <div class="pp-section">
         <div class="pp-title"><div class="pp-icon">⏱️</div>Durée de conservation des données</div>
         <p class="pp-text">Nous appliquons des délais stricts et minimaux :</p>
@@ -1496,3 +1517,4 @@ window.rejectCall = function(){
 
 </body>
 </html>
+ 
