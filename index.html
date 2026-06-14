@@ -14,10 +14,10 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <script>
 window.addEventListener("error", function(e){
-  alert("ERREUR JS GLOBALE: " + e.message + " (ligne " + e.lineno + ")");
+  console.error("ERREUR JS:", e.message, "ligne", e.lineno);
 });
 window.addEventListener("unhandledrejection", function(e){
-  alert("PROMESSE REJETÉE: " + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  console.error("PROMESSE REJETÉE:", e.reason && e.reason.message ? e.reason.message : e.reason);
 });
 const firebaseConfig={apiKey:"AIzaSyD8TsBNkUQ_ymSbhOxNaOcq_j-w38OHrSg",authDomain:"sonia-a2b62.firebaseapp.com",databaseURL:"https://sonia-a2b62-default-rtdb.firebaseio.com",projectId:"sonia-a2b62",storageBucket:"sonia-a2b62.firebasestorage.app",messagingSenderId:"407732850153",appId:"1:407732850153:web:12fa073ce636a07e484f78"};
 firebase.initializeApp(firebaseConfig);
@@ -117,16 +117,13 @@ function sendCode(){
 }
 
 async function verifyCode(){
-  alert("DEBUG: verifyCode() appelée");
   const entered=otpBoxes.map(b=>b.value).join("");
-  alert("DEBUG: code entré = "+entered+" (longueur "+entered.length+")");
   if(entered.length<6){$("auth-err").textContent="Code incomplet";return;}
   $("auth-err").textContent="";
   const btn=$("verify-btn");btn.textContent="Vérification...";btn.disabled=true;
 
   // Récupérer le numéro depuis S.pendingPhone ou localStorage
   const phone = S.pendingPhone || CACHE.load("pendingPhone");
-  alert("DEBUG: phone = "+phone);
   if(!phone){
     $("auth-err").textContent="Numéro introuvable — recommencez";
     btn.textContent=t("confirmer");btn.disabled=false;
@@ -134,10 +131,8 @@ async function verifyCode(){
   }
 
   const key = phone.replace(/\+/g,"00").replace(/\D/g,"");
-  alert("DEBUG: key Firebase = "+key+" — lecture en cours...");
   db.ref("otpCodes/"+key).get().then(async snap=>{
     const data=snap.val();
-    alert("DEBUG: data reçu = "+JSON.stringify(data));
     if(!data){
       $("auth-err").textContent="Code expiré — demandez un nouveau code";
       btn.textContent=t("confirmer");btn.disabled=false;
@@ -157,21 +152,15 @@ async function verifyCode(){
     S.pendingPhone = phone;
     CACHE.save("myPhone", phone);
     btn.textContent=t("confirmer");btn.disabled=false;
-    toast("Code OK ✓ connexion...");
     try{
       if(auth.currentUser){
-        toast("Déjà connecté, redirection...");
         await completeLogin(auth.currentUser);
       } else {
-        toast("Création session...");
         const cred = await auth.signInAnonymously();
-        toast("Session OK, chargement...");
         await completeLogin(cred.user);
       }
-      toast("Terminé ✓");
     }catch(e){
       $("auth-err").textContent="Erreur connexion : "+e.message;
-      toast("ERREUR: "+e.message,"err");
     }
   }).catch(e=>{
     $("auth-err").textContent="Erreur réseau — vérifiez votre connexion";
@@ -285,9 +274,52 @@ async function completeLogin(user){
   if(isOnline)listenContacts();
   else{const cc=CACHE.load("contacts");if(cc){S.contacts=cc;renderList();}}
   listenIncomingCalls();
-  toast("Affichage liste...");
   showScreen("s-list");
 }
+
+// ---- ECOUTER LES APPELS ENTRANTS ----
+function listenIncomingCalls(){
+  if(!S.myUid) return;
+  db.ref("calls/"+S.myUid+"/incoming").on("value", snap=>{
+    const call = snap.val();
+    if(!call) return;
+    if(Date.now() - call.ts > 60000){
+      db.ref("calls/"+S.myUid+"/incoming").remove();
+      return;
+    }
+    showIncomingCall(call);
+  });
+}
+
+function showIncomingCall(call){
+  $("incoming-av").textContent = call.fromEmoji||"🧑🏾";
+  $("incoming-name").textContent = call.fromName||"Inconnu";
+  $("incoming-type").textContent = call.type==="video" ? "📹 Appel vidéo entrant" : "🎙 Appel audio entrant";
+  $("incoming-call-modal").style.display = "flex";
+  $("incoming-call-modal").dataset.roomId = call.roomId;
+  $("incoming-call-modal").dataset.type = call.type;
+  $("incoming-call-modal").dataset.fromName = call.fromName;
+}
+
+window.acceptCall = function(){
+  const modal = $("incoming-call-modal");
+  const roomId = modal.dataset.roomId;
+  const type = modal.dataset.type;
+  const myName = encodeURIComponent(S.profile.name||S.myPhone||"Moi");
+  let url = "https://meet.jit.si/" + roomId;
+  url += "#userInfo.displayName=" + myName;
+  url += "&config.startWithAudioMuted=false";
+  url += "&config.startWithVideoMuted=" + (type==="video" ? "false" : "true");
+  window.open(url, "_blank");
+  db.ref("calls/"+S.myUid+"/incoming").remove();
+  modal.style.display = "none";
+};
+
+window.rejectCall = function(){
+  db.ref("calls/"+S.myUid+"/incoming").remove();
+  $("incoming-call-modal").style.display = "none";
+  toast("Appel refusé");
+};
 
 auth.onAuthStateChanged(async user=>{
   if(user){
@@ -1269,58 +1301,6 @@ window.toggleMute=function(){
   const b=$("mute-btn");
   b.className="c-btn "+(S.callMuted?"muted":"normal");
   b.textContent=S.callMuted?"🔇":"🎤";
-};
-
-// ---- ECOUTER LES APPELS ENTRANTS ----
-function listenIncomingCalls(){
-  if(!S.myUid) return;
-  db.ref("calls/"+S.myUid+"/incoming").on("value", snap=>{
-    const call = snap.val();
-    if(!call) return;
-    // Vérifier que l'appel est récent (moins de 60 secondes)
-    if(Date.now() - call.ts > 60000){
-      db.ref("calls/"+S.myUid+"/incoming").remove();
-      return;
-    }
-    showIncomingCall(call);
-  });
-}
-
-function showIncomingCall(call){
-  // Afficher notification d'appel entrant
-  $("incoming-av").textContent = call.fromEmoji||"🧑🏾";
-  $("incoming-name").textContent = call.fromName||"Inconnu";
-  $("incoming-type").textContent = call.type==="video" ? "📹 Appel vidéo entrant" : "🎙 Appel audio entrant";
-  $("incoming-call-modal").style.display = "flex";
-
-  // Stocker le roomId pour rejoindre
-  $("incoming-call-modal").dataset.roomId = call.roomId;
-  $("incoming-call-modal").dataset.type = call.type;
-  $("incoming-call-modal").dataset.fromName = call.fromName;
-}
-
-// Accepter l'appel → ouvrir Jitsi
-window.acceptCall = function(){
-  const modal = $("incoming-call-modal");
-  const roomId = modal.dataset.roomId;
-  const type = modal.dataset.type;
-  const myName = encodeURIComponent(S.profile.name||S.myPhone||"Moi");
-
-  let url = "https://meet.jit.si/" + roomId;
-  url += "#userInfo.displayName=" + myName;
-  url += "&config.startWithAudioMuted=false";
-  url += "&config.startWithVideoMuted=" + (type==="video" ? "false" : "true");
-
-  window.open(url, "_blank");
-  db.ref("calls/"+S.myUid+"/incoming").remove();
-  modal.style.display = "none";
-};
-
-// Refuser l'appel
-window.rejectCall = function(){
-  db.ref("calls/"+S.myUid+"/incoming").remove();
-  $("incoming-call-modal").style.display = "none";
-  toast("Appel refusé");
 };
 
   // ---- STATUS CREATE ----
