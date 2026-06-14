@@ -7,11 +7,18 @@
 <meta http-equiv="Pragma" content="no-cache"/>
 <meta http-equiv="Expires" content="0"/>
 <title>Sonia</title>
+<!-- BUILD: v2026-06-13-fix1 -->
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&display=swap" rel="stylesheet"/>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <script>
+window.addEventListener("error", function(e){
+  alert("ERREUR JS GLOBALE: " + e.message + " (ligne " + e.lineno + ")");
+});
+window.addEventListener("unhandledrejection", function(e){
+  alert("PROMESSE REJETÉE: " + (e.reason && e.reason.message ? e.reason.message : e.reason));
+});
 const firebaseConfig={apiKey:"AIzaSyD8TsBNkUQ_ymSbhOxNaOcq_j-w38OHrSg",authDomain:"sonia-a2b62.firebaseapp.com",databaseURL:"https://sonia-a2b62-default-rtdb.firebaseio.com",projectId:"sonia-a2b62",storageBucket:"sonia-a2b62.firebasestorage.app",messagingSenderId:"407732850153",appId:"1:407732850153:web:12fa073ce636a07e484f78"};
 firebase.initializeApp(firebaseConfig);
 const auth=firebase.auth();
@@ -65,11 +72,6 @@ const chatKey=(a,b)=>[a,b].sort().join("_");
 function showScreen(id){document.querySelectorAll(".screen").forEach(s=>s.classList.add("off"));$(id).classList.remove("off");}
 function toast(msg,type){const t=document.createElement("div");t.className="toast"+(type==="err"?" toast-err":"");t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.classList.add("show"),10);setTimeout(()=>{t.classList.remove("show");setTimeout(()=>t.remove(),400);},3000);}
 
-// ---- SMS ----
-async function sendSms(phone,code){
-  try{const r=await fetch("https://gateway.seven.io/api/sms",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded","X-Api-Key":SMS_KEY},body:new URLSearchParams({to:phone,from:"Sonia",text:"Votre code Sonia : "+code+". Valable 5 minutes."}).toString()});return r.ok;}catch(e){return false;}
-}
-
 // ---- OTP BOXES (initialisées au chargement) ----
 const otpBoxes=[];
 window.addEventListener("DOMContentLoaded",()=>{
@@ -91,6 +93,7 @@ function sendCode(){
   let phone=raw.replace(/\s/g,"");
   if(!phone.startsWith("+"))phone="+"+phone.replace(/\D/g,"");
   S.pendingPhone=phone;
+  CACHE.save("pendingPhone", phone);
   const code=String(Math.floor(100000+Math.random()*900000));
   const key=phone.replace(/\+/g,"00").replace(/\D/g,"");
   db.ref("otpCodes/"+key).set({code:code,expires:Date.now()+5*60*1000}).catch(()=>{});
@@ -113,14 +116,28 @@ function sendCode(){
   });
 }
 
-function verifyCode(){
+async function verifyCode(){
+  alert("DEBUG: verifyCode() appelée");
   const entered=otpBoxes.map(b=>b.value).join("");
+  alert("DEBUG: code entré = "+entered+" (longueur "+entered.length+")");
   if(entered.length<6){$("auth-err").textContent="Code incomplet";return;}
   $("auth-err").textContent="";
   const btn=$("verify-btn");btn.textContent="Vérification...";btn.disabled=true;
-  const key=S.pendingPhone.replace(/\+/g,"00").replace(/\D/g,"");
-  db.ref("otpCodes/"+key).get().then(snap=>{
+
+  // Récupérer le numéro depuis S.pendingPhone ou localStorage
+  const phone = S.pendingPhone || CACHE.load("pendingPhone");
+  alert("DEBUG: phone = "+phone);
+  if(!phone){
+    $("auth-err").textContent="Numéro introuvable — recommencez";
+    btn.textContent=t("confirmer");btn.disabled=false;
+    return;
+  }
+
+  const key = phone.replace(/\+/g,"00").replace(/\D/g,"");
+  alert("DEBUG: key Firebase = "+key+" — lecture en cours...");
+  db.ref("otpCodes/"+key).get().then(async snap=>{
     const data=snap.val();
+    alert("DEBUG: data reçu = "+JSON.stringify(data));
     if(!data){
       $("auth-err").textContent="Code expiré — demandez un nouveau code";
       btn.textContent=t("confirmer");btn.disabled=false;
@@ -132,19 +149,32 @@ function verifyCode(){
       return;
     }
     if(entered!==data.code){
-      $("auth-err").textContent="Code incorrect";
+      $("auth-err").textContent="Code incorrect — réessayez";
       btn.textContent=t("confirmer");btn.disabled=false;
       return;
     }
-    // Code correct → connexion
-    auth.signInAnonymously().then(()=>{
-      btn.textContent=t("confirmer");btn.disabled=false;
-    }).catch(e=>{
+    // Code correct → connexion anonyme Firebase
+    S.pendingPhone = phone;
+    CACHE.save("myPhone", phone);
+    btn.textContent=t("confirmer");btn.disabled=false;
+    toast("Code OK ✓ connexion...");
+    try{
+      if(auth.currentUser){
+        toast("Déjà connecté, redirection...");
+        await completeLogin(auth.currentUser);
+      } else {
+        toast("Création session...");
+        const cred = await auth.signInAnonymously();
+        toast("Session OK, chargement...");
+        await completeLogin(cred.user);
+      }
+      toast("Terminé ✓");
+    }catch(e){
       $("auth-err").textContent="Erreur connexion : "+e.message;
-      btn.textContent=t("confirmer");btn.disabled=false;
-    });
+      toast("ERREUR: "+e.message,"err");
+    }
   }).catch(e=>{
-    $("auth-err").textContent="Erreur : "+e.message;
+    $("auth-err").textContent="Erreur réseau — vérifiez votre connexion";
     btn.textContent=t("confirmer");btn.disabled=false;
   });
 }
@@ -230,33 +260,38 @@ function updateOnlineBanner(){
 }
 
 // ---- AUTH FIREBASE ----
+async function completeLogin(user){
+  S.myUid=user.uid;
+  S.myPhone=S.pendingPhone||CACHE.load("myPhone")||"utilisateur";
+  CACHE.save("myUid",S.myUid);
+  CACHE.save("myPhone",S.myPhone);
+  if(isOnline){
+    try{
+      const snap=await db.ref("users/"+S.myUid).get();
+      if(snap.exists()){Object.assign(S.profile,snap.val());CACHE.save("profile",S.profile);}
+      else{
+        S.profile.name=S.myPhone;
+        await db.ref("users/"+S.myUid).set({uid:S.myUid,phone:S.myPhone,name:S.profile.name,status:"En ligne",emoji:"🧑🏾",avType:"emoji",img:null,online:true});
+        CACHE.save("profile",S.profile);
+      }
+      db.ref("users/"+S.myUid+"/online").set(true);
+      db.ref("users/"+S.myUid+"/online").onDisconnect().set(false);
+    }catch(e){const c=CACHE.load("profile");if(c)Object.assign(S.profile,c);}
+  } else {
+    const c=CACHE.load("profile");if(c)Object.assign(S.profile,c);
+    const cc=CACHE.load("contacts");if(cc)S.contacts=cc;
+  }
+  updateMyAv();
+  if(isOnline)listenContacts();
+  else{const cc=CACHE.load("contacts");if(cc){S.contacts=cc;renderList();}}
+  listenIncomingCalls();
+  toast("Affichage liste...");
+  showScreen("s-list");
+}
+
 auth.onAuthStateChanged(async user=>{
   if(user){
-    S.myUid=user.uid;
-    S.myPhone=S.pendingPhone||CACHE.load("myPhone")||"utilisateur";
-    CACHE.save("myUid",S.myUid);
-    CACHE.save("myPhone",S.myPhone);
-    if(isOnline){
-      try{
-        const snap=await db.ref("users/"+S.myUid).get();
-        if(snap.exists()){Object.assign(S.profile,snap.val());CACHE.save("profile",S.profile);}
-        else{
-          S.profile.name=S.myPhone;
-          await db.ref("users/"+S.myUid).set({uid:S.myUid,phone:S.myPhone,name:S.profile.name,status:"En ligne",emoji:"🧑🏾",avType:"emoji",img:null,online:true});
-          CACHE.save("profile",S.profile);
-        }
-        db.ref("users/"+S.myUid+"/online").set(true);
-        db.ref("users/"+S.myUid+"/online").onDisconnect().set(false);
-      }catch(e){const c=CACHE.load("profile");if(c)Object.assign(S.profile,c);}
-    } else {
-      const c=CACHE.load("profile");if(c)Object.assign(S.profile,c);
-      const cc=CACHE.load("contacts");if(cc)S.contacts=cc;
-    }
-    updateMyAv();
-    if(isOnline)listenContacts();
-    else{const cc=CACHE.load("contacts");if(cc){S.contacts=cc;renderList();}}
-    listenIncomingCalls();
-    showScreen("s-list");
+    await completeLogin(user);
   } else {
     const cachedUid=CACHE.load("myUid");
     if(cachedUid&&!isOnline){
@@ -1431,7 +1466,8 @@ window.rejectCall = function(){
         </ul>
         <div class="pp-highlight"><strong>Interdiction absolue :</strong> Il est formellement interdit d'utiliser vos données à des fins publicitaires, commerciales ou de profilage. Vos informations ne sont ni vendues, ni louées, ni partagées avec des annonceurs.</div>
       </div>
-            <!-- 5. Conservation -->
+
+      <!-- 5. Conservation -->
       <div class="pp-section">
         <div class="pp-title"><div class="pp-icon">⏱️</div>Durée de conservation des données</div>
         <p class="pp-text">Nous appliquons des délais stricts et minimaux :</p>
@@ -1517,4 +1553,3 @@ window.rejectCall = function(){
 
 </body>
 </html>
- 
