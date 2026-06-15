@@ -570,8 +570,26 @@ window.callToggleCam = function(){
 window.openNewChatModal=function(){
   $("nc-phone-input").value="";
   $("nc-result").innerHTML='<p style="color:var(--sub);font-size:13px;text-align:center;padding:8px 0">Entrez le numéro de votre ami pour le retrouver</p>';
+  $("pick-contact-btn").style.display=("contacts" in navigator && "ContactsManager" in window)?"flex":"none";
   $("newchat-overlay").style.display="flex";
   setTimeout(()=>$("nc-phone-input").focus(),200);
+};
+
+// Choisir un contact du téléphone et vérifier s'il est inscrit sur Sonia
+window.pickFromPhoneContacts=async function(){
+  try{
+    const props=["name","tel"];
+    const opts={multiple:false};
+    const contacts=await navigator.contacts.select(props,opts);
+    if(!contacts||!contacts.length){return;}
+    const picked=contacts[0];
+    const tel=(picked.tel&&picked.tel[0])||"";
+    if(!tel){toast("Ce contact n'a pas de numéro","err");return;}
+    $("nc-phone-input").value=tel.replace(/[^\d+]/g,"");
+    searchUserByPhone();
+  }catch(e){
+    if(e && e.name!=="AbortError") toast("Impossible d'accéder aux contacts","err");
+  }
 };
 
 let ncSearchTimer=null;
@@ -696,6 +714,36 @@ function refreshChatHeader(c){
   const cn=$("c-name");if(cn)cn.textContent=c.name||c.phone||"Inconnu";
   const cs=$("c-status");if(cs){cs.textContent=c.online?"● En ligne":"⚫ Hors ligne";cs.style.color=c.online?"var(--green)":"var(--sub)";}
 }
+
+// ---- INFOS CONTACT / ENREGISTRER DANS LE TÉLÉPHONE ----
+window.openContactInfo=function(){
+  if(!S.activeId)return;
+  const c=S.contacts.find(x=>x.uid===S.activeId);
+  if(!c)return;
+  const av=$("ci-av");av.innerHTML="";
+  if(c.avType==="img"&&c.img){const img=document.createElement("img");img.src=c.img;img.style.cssText="width:100%;height:100%;object-fit:cover;border-radius:50%";av.appendChild(img);}
+  else{av.innerHTML="<span>"+(c.emoji||"🧑🏾")+"</span>";}
+  $("ci-name").textContent=c.name||c.phone||"Inconnu";
+  $("ci-phone").textContent=c.phone||"";
+  $("ci-status").textContent=c.status||"";
+  $("contact-info-overlay").style.display="flex";
+};
+
+window.downloadContactVcf=function(){
+  if(!S.activeId)return;
+  const c=S.contacts.find(x=>x.uid===S.activeId);
+  if(!c)return;
+  const name=(c.name||c.phone||"Contact").replace(/[\r\n]/g,"");
+  const phone=(c.phone||"").replace(/[\r\n]/g,"");
+  const vcf="BEGIN:VCARD\r\nVERSION:3.0\r\nFN:"+name+"\r\nTEL;TYPE=CELL:"+phone+"\r\nEND:VCARD\r\n";
+  const blob=new Blob([vcf],{type:"text/vcard"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;a.download=name.replace(/\s+/g,"_")+".vcf";
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+  toast("Contact téléchargé ✓");
+};
 
 function renderList(){
   const box=$("contact-list");if(!box)return;
@@ -980,7 +1028,39 @@ function closeStatusViewer(){
 const APP_MSG="💬 Rejoins-moi sur Sonia !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-if("serviceWorker" in navigator){navigator.serviceWorker.register("sw.js").catch(()=>{});}
+if("serviceWorker" in navigator){
+  navigator.serviceWorker.register("sw.js").then(reg=>{
+    // Vérifier immédiatement s'il y a une mise à jour disponible
+    reg.update().catch(()=>{});
+
+    // Quand un nouveau Service Worker est trouvé et installé, l'activer immédiatement
+    reg.addEventListener("updatefound",()=>{
+      const newWorker=reg.installing;
+      if(!newWorker)return;
+      newWorker.addEventListener("statechange",()=>{
+        if(newWorker.state==="installed" && navigator.serviceWorker.controller){
+          // Une nouvelle version est prête → l'activer puis recharger
+          newWorker.postMessage("SKIP_WAITING");
+        }
+      });
+    });
+  }).catch(()=>{});
+
+  // Quand le nouveau SW prend le contrôle, recharger la page pour afficher la dernière version
+  let refreshing=false;
+  navigator.serviceWorker.addEventListener("controllerchange",()=>{
+    if(refreshing)return;
+    refreshing=true;
+    window.location.reload();
+  });
+
+  // Revérifier les mises à jour chaque fois que l'app revient au premier plan
+  document.addEventListener("visibilitychange",()=>{
+    if(document.visibilityState==="visible"){
+      navigator.serviceWorker.getRegistration().then(reg=>{if(reg)reg.update().catch(()=>{});});
+    }
+  });
+}
 </script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
@@ -1321,8 +1401,10 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 <div class="screen off" id="s-chat">
   <div class="chat-bar">
     <button class="back-btn" onclick="S.activeId=null;if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}showScreen('s-list')">‹</button>
-    <div style="position:relative;flex-shrink:0"><div class="chat-av" id="c-av"></div><div class="dot" id="c-dot"></div></div>
-    <div class="chat-info"><div class="chat-name" id="c-name"></div><div class="chat-status" id="c-status"></div></div>
+    <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;cursor:pointer" onclick="openContactInfo()">
+      <div style="position:relative;flex-shrink:0"><div class="chat-av" id="c-av"></div><div class="dot" id="c-dot"></div></div>
+      <div class="chat-info"><div class="chat-name" id="c-name"></div><div class="chat-status" id="c-status"></div></div>
+    </div>
     <div class="call-btns">
       <button class="call-btn-sm" onclick="startCall('audio')">📞</button>
       <button class="call-btn-sm" onclick="startCall('video')">📹</button>
@@ -1452,6 +1534,22 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
   </div>
 </div>
 
+<!-- CONTACT INFO MODAL -->
+<div class="overlay" id="contact-info-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal">
+    <div class="modal-drag"></div>
+    <div class="modal-head"><span class="modal-title">Infos contact</span><button class="modal-close" onclick="$('contact-info-overlay').style.display='none'">✕</button></div>
+    <div class="modal-body" style="text-align:center;padding:8px 20px 24px">
+      <div class="prof-av-center"><div class="prof-av" id="ci-av" style="margin:0 auto"><span>🧑🏾</span></div></div>
+      <div style="font-size:20px;font-weight:800;color:var(--text);margin-top:14px" id="ci-name"></div>
+      <div style="font-size:14px;color:var(--sub);margin-top:4px" id="ci-phone"></div>
+      <div style="font-size:13px;color:var(--accent);margin-top:6px" id="ci-status"></div>
+      <button class="big-btn" style="margin-top:24px" onclick="downloadContactVcf()">📇 Ajouter à mes contacts téléphone</button>
+      <p style="font-size:12px;color:var(--sub);margin-top:10px;line-height:1.5">Un fichier de contact (.vcf) sera téléchargé. Ouvrez-le pour l'ajouter à votre répertoire.</p>
+    </div>
+  </div>
+</div>
+
 <!-- PROFILE MODAL -->
 <div class="overlay" id="prof-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
   <div class="modal">
@@ -1497,7 +1595,8 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
     <div class="modal-drag"></div>
     <div class="modal-head"><span class="modal-title">➕ Nouvelle discussion</span><button class="modal-close" onclick="$('newchat-overlay').style.display='none'">✕</button></div>
     <div style="padding:0 20px 24px">
-      <label class="f-label">Numéro de téléphone</label>
+      <button class="big-btn" id="pick-contact-btn" style="margin-bottom:14px;display:none" onclick="pickFromPhoneContacts()">📱 Choisir depuis mes contacts téléphone</button>
+      <label class="f-label">Ou entrez un numéro de téléphone</label>
       <div class="phone-row" style="margin-bottom:6px">
         <div class="flag-box">🌍 +</div>
         <input class="ph-input" id="nc-phone-input" type="tel" placeholder="224 600 000 000" oninput="searchUserByPhone()"/>
