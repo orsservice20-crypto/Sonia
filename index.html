@@ -105,12 +105,11 @@ function sendCode(){
     $("step-phone").style.display="none";
     $("step-otp").style.display="block";
     if(sent){
-      $("auth-sub").textContent = "Code envoyé par SMS au "+phone;
-      $("otp-hint-el").textContent = "";
+      $("auth-sub").textContent = "SMS envoyé au "+phone;
     } else {
       $("auth-sub").textContent = "Code pour "+phone;
-      $("otp-hint-el").textContent = "Code de vérification : " + code;
     }
+    $("otp-hint-el").textContent = "Code de vérification : " + code;
     if(otpBoxes[0])otpBoxes[0].focus();
     btn.textContent=t("recevoirCode");btn.disabled=false;
   }).catch(()=>{
