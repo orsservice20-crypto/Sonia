@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover"/>
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
 <meta http-equiv="Pragma" content="no-cache"/>
 <meta http-equiv="Expires" content="0"/>
@@ -73,7 +73,49 @@ const nowT=()=>new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digi
 const esc=t=>String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 const chatKey=(a,b)=>[a,b].sort().join("_");
 
-function showScreen(id){document.querySelectorAll(".screen").forEach(s=>s.classList.add("off"));$(id).classList.remove("off");}
+function showScreen(id,pushHistory){
+  document.querySelectorAll(".screen").forEach(s=>s.classList.add("off"));
+  $(id).classList.remove("off");
+  if(pushHistory!==false){
+    if(id==="s-list"){
+      // Écran racine : on remplace l'historique pour éviter d'empiler
+      history.replaceState({screen:"s-list"},"","#");
+    } else {
+      history.pushState({screen:id},"","#"+id);
+    }
+  }
+}
+
+// ---- BOUTON RETOUR DU TÉLÉPHONE : navigation interne au lieu de quitter l'app ----
+history.replaceState({screen:"s-list"},"","#");
+window.addEventListener("popstate",e=>{
+  // Fermer en priorité les overlays/modales ouverts
+  const openOverlay=document.querySelector(".overlay:not([style*='display: none']):not([style*='display:none'])");
+  if(openOverlay){ openOverlay.style.display="none"; history.pushState({screen:"s-list"},"","#"); return; }
+  if($("photo-viewer").style.display==="flex"){$("photo-viewer").style.display="none";history.pushState({screen:"s-list"},"","#");return;}
+  if($("video-viewer").style.display==="flex"||$("video-viewer").style.display==="block"){const v=$("video-viewer-el");v.pause();v.src="";$("video-viewer").style.display="none";history.pushState({screen:"s-list"},"","#");return;}
+  if($("status-viewer").style.display==="flex"){closeStatusViewer();history.pushState({screen:"s-list"},"","#");return;}
+  if($("status-create-modal").style.display==="flex"){$("status-create-modal").style.display="none";history.pushState({screen:"s-list"},"","#");return;}
+  if($("call-overlay").style.display==="flex"){
+    // Ne pas fermer un appel en cours via le bouton retour
+    history.pushState({screen:"s-chat"},"","#s-chat");return;
+  }
+
+  // Navigation entre écrans principaux
+  if($("s-chat") && !$("s-chat").classList.contains("off")){
+    S.activeId=null;if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}
+    showScreen("s-list",false);
+    history.replaceState({screen:"s-list"},"","#");
+    return;
+  }
+  if($("s-status") && !$("s-status").classList.contains("off")){
+    showScreen("s-list",false);setNav("nav-chats");
+    history.replaceState({screen:"s-list"},"","#");
+    return;
+  }
+  // Sur l'écran principal : laisser le comportement par défaut (quitter/minimiser) au prochain retour
+});
+
 function toast(msg,type){const t=document.createElement("div");t.className="toast"+(type==="err"?" toast-err":"");t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.classList.add("show"),10);setTimeout(()=>{t.classList.remove("show");setTimeout(()=>t.remove(),400);},3000);}
 
 // ---- OTP BOXES (initialisées au chargement) ----
@@ -808,6 +850,9 @@ function listenMsgs(){
     const msgs=[];const box=$("msg-list");box.innerHTML="";
     snap.forEach(child=>{const m={id:child.key,...child.val()};if(m.type!=="photo"&&m.type!=="video")msgs.push(m);box.appendChild(makeBubble(m));});
     CACHE.save("msgs_"+key,msgs);box.scrollTop=box.scrollHeight;
+  }, err=>{
+    console.error("listenMsgs erreur:",err.message);
+    toast("Erreur de chargement des messages : "+err.message,"err");
   });
 }
 
@@ -877,8 +922,19 @@ function delMsg(msgId){
 
 function pushMsg(m){
   const key=chatKey(S.myUid,S.activeId);
-  db.ref("chats/"+key+"/messages").push(m);
-  db.ref("chats/"+key+"/lastMsg").set({text:m.text||"",t:m.t,type:m.type,del:false});
+
+  // Vérifier la taille des médias (Firebase RTDB n'accepte pas de très grosses valeurs)
+  if(m.src && m.src.length > 6*1024*1024){
+    toast("Fichier trop volumineux (max ~4 Mo). Message non envoyé.","err");
+    return Promise.reject(new Error("trop volumineux"));
+  }
+
+  return db.ref("chats/"+key+"/messages").push(m).then(()=>{
+    return db.ref("chats/"+key+"/lastMsg").set({text:m.text||"",t:m.t,type:m.type,del:false});
+  }).catch(e=>{
+    toast("Échec de l'envoi : "+e.message,"err");
+    throw e;
+  });
 }
 
 // ---- ENVOI TEXTE ----
@@ -886,7 +942,7 @@ function doSend(){
   const ti=$("txt-in");if(!ti)return;
   const v=ti.value.trim();if(!v||!S.activeId)return;
   ti.value="";
-  pushMsg({from:S.myUid,text:v,t:nowT(),type:"text",del:false});
+  pushMsg({from:S.myUid,text:v,t:nowT(),type:"text",del:false}).catch(()=>{ti.value=v;});
 }
 
 // ---- VOCAL ----
@@ -1107,7 +1163,7 @@ input,textarea{font-family:inherit;border:none;outline:none}
 .nav-btn span{font-size:11px;font-weight:700}
 /* CHAT */
 #s-chat{display:flex;flex-direction:column}
-.chat-bar{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+.chat-bar{display:flex;align-items:center;gap:12px;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
 .back-btn{font-size:22px;color:var(--accent);padding:4px 6px 4px 0;cursor:pointer}
 .chat-av{width:40px;height:40px;border-radius:50%;background:var(--card);border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:20px;overflow:hidden;flex-shrink:0}
 .chat-info{flex:1;min-width:0}
@@ -1297,8 +1353,16 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 </head>
 <body>
 
+<!-- SPLASH (affiché pendant la vérification de connexion) -->
+<div class="screen" id="s-splash" style="align-items:center;justify-content:center;background:var(--bg)">
+  <div class="logo-icon" style="margin-bottom:16px">
+    <svg width="64" height="64" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" rx="18" fill="#ff2d2d"/><path d="M10 18C10 14.686 12.686 12 16 12H48C51.314 12 54 14.686 54 18V38C54 41.314 51.314 44 48 44H36L26 54V44H16C12.686 44 10 41.314 10 38V18Z" fill="#00d4aa"/></svg>
+  </div>
+  <div class="logo-name">Sonia</div>
+</div>
+
 <!-- AUTH -->
-<div class="screen" id="s-auth">
+<div class="screen off" id="s-auth">
   <div style="display:flex;justify-content:flex-end;padding:12px 16px 0;position:absolute;top:0;right:0;z-index:10">
     <button onclick="openLangModal()" style="display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.08);border:1.5px solid rgba(255,255,255,.12);border-radius:20px;padding:7px 14px;color:#e8f0fe;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">
       <span id="auth-lang-flag">🇫🇷</span><span id="auth-lang-name">Français</span><span style="font-size:10px;opacity:.7">▼</span>
@@ -1666,22 +1730,50 @@ window.addEventListener("DOMContentLoaded",()=>{
   window.handlePhotoFile=function(input){
     const f=input.files[0];if(!f||!S.activeId)return;
     const r=new FileReader();r.onload=ev=>{
-      S.pendingPhoto={src:ev.target.result,name:f.name,size:(f.size/1024).toFixed(1)+" Ko"};
-      document.getElementById("ph-prev-img").src=ev.target.result;
-      document.getElementById("ph-prev-name").textContent=f.name;
-      document.getElementById("ph-prev-size").textContent=S.pendingPhoto.size;
-      document.getElementById("normal-row").style.display="none";
-      document.getElementById("photo-preview-bar").style.display="flex";
+      // Compresser l'image pour rester sous la limite Firebase
+      const img=new Image();
+      img.onload=()=>{
+        let w=img.width,h=img.height;
+        const maxDim=1280;
+        if(w>maxDim||h>maxDim){
+          if(w>h){h=Math.round(h*maxDim/w);w=maxDim;}else{w=Math.round(w*maxDim/h);h=maxDim;}
+        }
+        const canvas=document.createElement("canvas");canvas.width=w;canvas.height=h;
+        const ctx=canvas.getContext("2d");ctx.drawImage(img,0,0,w,h);
+        let quality=0.8;
+        let dataUrl=canvas.toDataURL("image/jpeg",quality);
+        // Réduire encore la qualité si toujours trop volumineux
+        while(dataUrl.length>3*1024*1024 && quality>0.3){
+          quality-=0.15;
+          dataUrl=canvas.toDataURL("image/jpeg",quality);
+        }
+        if(dataUrl.length>5*1024*1024){
+          toast("Image trop volumineuse, réessayez avec une autre photo","err");
+          return;
+        }
+        S.pendingPhoto={src:dataUrl,name:f.name,size:(dataUrl.length/1024).toFixed(0)+" Ko"};
+        document.getElementById("ph-prev-img").src=dataUrl;
+        document.getElementById("ph-prev-name").textContent=f.name;
+        document.getElementById("ph-prev-size").textContent=S.pendingPhoto.size;
+        document.getElementById("normal-row").style.display="none";
+        document.getElementById("photo-preview-bar").style.display="flex";
+      };
+      img.onerror=()=>{toast("Image illisible","err");};
+      img.src=ev.target.result;
     };r.readAsDataURL(f);input.value="";
   };
   window.sendPhoto=function(){
     if(!S.pendingPhoto||!S.activeId)return;
-    pushMsg({from:S.myUid,type:"photo",src:S.pendingPhoto.src,text:"",t:nowT(),del:false});
-    S.pendingPhoto=null;document.getElementById("photo-preview-bar").style.display="none";document.getElementById("normal-row").style.display="flex";
+    const p=S.pendingPhoto;
+    pushMsg({from:S.myUid,type:"photo",src:p.src,text:"",t:nowT(),del:false}).then(()=>{
+      S.pendingPhoto=null;document.getElementById("photo-preview-bar").style.display="none";document.getElementById("normal-row").style.display="flex";
+    }).catch(()=>{ /* garder l'aperçu pour permettre une nouvelle tentative */ });
   };
   window.handleVideoFile=function(input){
     const f=input.files[0];if(!f||!S.activeId)return;
-    if(f.size/1024/1024>25){toast("Vidéo trop lourde (max 25 Mo)","err");return;}
+    // La taille en base64 est ~33% plus grande que le fichier original.
+    // pushMsg limite à 6 Mo de base64 ⇒ ~4.3 Mo de fichier original max.
+    if(f.size/1024/1024>4){toast("Vidéo trop lourde (max 4 Mo). Compressez-la ou envoyez une vidéo plus courte.","err");return;}
     const r=new FileReader();r.onload=ev=>{
       S.pendingVideo={src:ev.target.result,name:f.name,size:(f.size/1024/1024).toFixed(1)+" Mo"};
       document.getElementById("vid-prev-name").textContent=f.name;
@@ -1693,8 +1785,10 @@ window.addEventListener("DOMContentLoaded",()=>{
   window.sendVideo=function(){
     if(!S.pendingVideo||!S.activeId)return;
     toast("Envoi...");
-    pushMsg({from:S.myUid,type:"video",src:S.pendingVideo.src,text:"",t:nowT(),del:false});
-    S.pendingVideo=null;document.getElementById("video-preview-bar").style.display="none";document.getElementById("normal-row").style.display="flex";
+    const v=S.pendingVideo;
+    pushMsg({from:S.myUid,type:"video",src:v.src,text:"",t:nowT(),del:false}).then(()=>{
+      S.pendingVideo=null;document.getElementById("video-preview-bar").style.display="none";document.getElementById("normal-row").style.display="flex";
+    }).catch(()=>{});
   };
 
   // ---- VOCAL ----
