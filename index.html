@@ -642,9 +642,9 @@ window.searchUserByPhone=function(){
         '</div>';
       $("nc-found-row").onclick=async ()=>{
         $("newchat-overlay").style.display="none";
-        await ensureMutualContact(found.uid);
         if(!S.contacts.find(c=>c.uid===found.uid)) S.contacts.push(found);
         openChat(found.uid);
+        try{ await ensureMutualContact(found.uid); }catch(e){ console.error("ensureMutualContact:",e); }
       };
     } else {
       result.innerHTML=
@@ -698,6 +698,10 @@ function listenContacts(){
         if(S.activeId===uid) refreshChatHeader(updated);
       });
     });
+  }, err=>{
+    console.error("listenContacts erreur:",err.message);
+    const cc=CACHE.load("contacts");
+    if(cc){S.contacts=cc;renderList();}
   });
 }
 
@@ -950,7 +954,7 @@ function loadStatuses(){
         else{const d=document.createElement("div");d.className="my-status-thumb";d.style.cssText="display:flex;align-items:center;justify-content:center;background:var(--bubble-out);font-size:11px;color:#fff;text-align:center;padding:4px;word-break:break-word;border-radius:10px;cursor:pointer";d.textContent=s.src.slice(0,30);d.onclick=()=>openStatusViewer([s],0,true);strip.appendChild(d);}
       });
     } else {$("my-status-count-el").textContent=t("ajouterStatut");strip.style.display="none";}
-  });
+  }).catch(e=>{console.error("loadStatuses (moi):",e.message);});
   const cl=$("contacts-statuses-list");cl.innerHTML="";let hasAny=false;
   const now24=Date.now()-24*60*60*1000;
   S.contacts.forEach(c=>{
@@ -966,7 +970,7 @@ function loadStatuses(){
       row.onclick=()=>openStatusViewer(items,0,false,c);
       const old=document.getElementById("sr-"+c.uid);if(old)old.remove();
       row.id="sr-"+c.uid;cl.appendChild(row);
-    });
+    }).catch(e=>{console.error("loadStatuses (contact "+c.uid+"):",e.message);});
   });
   if(!hasAny){$("no-contacts-status").style.display="block";$("contacts-statuses-section").style.display="none";}
 }
@@ -1029,37 +1033,7 @@ const APP_MSG="💬 Rejoins-moi sur Sonia !\nL'app de messagerie gratuite 🚀\n
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
 if("serviceWorker" in navigator){
-  navigator.serviceWorker.register("sw.js").then(reg=>{
-    // Vérifier immédiatement s'il y a une mise à jour disponible
-    reg.update().catch(()=>{});
-
-    // Quand un nouveau Service Worker est trouvé et installé, l'activer immédiatement
-    reg.addEventListener("updatefound",()=>{
-      const newWorker=reg.installing;
-      if(!newWorker)return;
-      newWorker.addEventListener("statechange",()=>{
-        if(newWorker.state==="installed" && navigator.serviceWorker.controller){
-          // Une nouvelle version est prête → l'activer puis recharger
-          newWorker.postMessage("SKIP_WAITING");
-        }
-      });
-    });
-  }).catch(()=>{});
-
-  // Quand le nouveau SW prend le contrôle, recharger la page pour afficher la dernière version
-  let refreshing=false;
-  navigator.serviceWorker.addEventListener("controllerchange",()=>{
-    if(refreshing)return;
-    refreshing=true;
-    window.location.reload();
-  });
-
-  // Revérifier les mises à jour chaque fois que l'app revient au premier plan
-  document.addEventListener("visibilitychange",()=>{
-    if(document.visibilityState==="visible"){
-      navigator.serviceWorker.getRegistration().then(reg=>{if(reg)reg.update().catch(()=>{});});
-    }
-  });
+  navigator.serviceWorker.register("sw.js").catch(()=>{});
 }
 </script>
 <style>
@@ -1795,8 +1769,26 @@ window.addEventListener("DOMContentLoaded",()=>{
   window.publishStatus=async function(){
     if(scType==="text"){const txt=document.getElementById("sc-text-in").value.trim();if(!txt){toast("Écrivez quelque chose","err");return;}scSrc=txt;}
     if(!scType||!scSrc){toast("Choisissez un contenu","err");return;}
-    await db.ref("statuses/"+S.myUid).push({uid:S.myUid,name:S.profile.name||S.myPhone,emoji:S.profile.emoji,avType:S.profile.avType,img:S.profile.img||null,type:scType,src:scSrc,ts:Date.now(),viewers:{}});
-    document.getElementById("status-create-modal").style.display="none";toast("Statut publié ✓");loadStatuses();
+
+    // Vérifier la taille (Firebase limite ~10MB par valeur, on reste prudent)
+    if(scSrc.length > 6*1024*1024){
+      toast("Fichier trop volumineux (max ~4 Mo)","err");
+      return;
+    }
+
+    const pubBtn=document.querySelector('#status-create-modal .big-btn[onclick="publishStatus()"]');
+    if(pubBtn){pubBtn.textContent="Publication...";pubBtn.disabled=true;}
+
+    try{
+      await db.ref("statuses/"+S.myUid).push({uid:S.myUid,name:S.profile.name||S.myPhone,emoji:S.profile.emoji,avType:S.profile.avType,img:S.profile.img||null,type:scType,src:scSrc,ts:Date.now(),viewers:{}});
+      document.getElementById("status-create-modal").style.display="none";
+      toast("Statut publié ✓");
+      loadStatuses();
+    }catch(e){
+      toast("Erreur : "+e.message,"err");
+    }finally{
+      if(pubBtn){pubBtn.textContent="Publier";pubBtn.disabled=false;}
+    }
   };
 
   // Tap status viewer nav
