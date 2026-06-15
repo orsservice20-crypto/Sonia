@@ -55,6 +55,7 @@ const S={
   contacts:[],activeId:null,arch:new Set(),tab:"chats",search:"",
   unsubMsgs:null,unsubContacts:null,
   recPaused:false,recSecs:0,recTick:null,
+  recStream:null,recorder:null,recChunks:[],recMimeType:null,
   pendingPhoto:null,pendingVideo:null,pendingPhone:null,
   // WebRTC
   pc:null,localStream:null,remoteStream:null,
@@ -101,19 +102,22 @@ function sendCode(){
   const key=phone.replace(/\+/g,"00").replace(/\D/g,"");
   db.ref("otpCodes/"+key).set({code:code,expires:Date.now()+5*60*1000}).catch(()=>{});
   sendSms(phone,code).then(sent=>{
-    $("auth-sub").textContent = sent ? "SMS envoyé au "+phone : "Code généré pour "+phone;
-    // Toujours afficher le code à l'écran jusqu'à ce que le SMS soit résolu
-    $("otp-hint-el").textContent = "Votre code : " + code;
     $("step-phone").style.display="none";
     $("step-otp").style.display="block";
+    if(sent){
+      $("auth-sub").textContent = "Code envoyé par SMS au "+phone;
+      $("otp-hint-el").textContent = "";
+    } else {
+      $("auth-sub").textContent = "Code pour "+phone;
+      $("otp-hint-el").textContent = "Code de vérification : " + code;
+    }
     if(otpBoxes[0])otpBoxes[0].focus();
     btn.textContent=t("recevoirCode");btn.disabled=false;
   }).catch(()=>{
-    // Même en cas d'erreur réseau, afficher le code
-    $("auth-sub").textContent = "Code généré pour "+phone;
-    $("otp-hint-el").textContent = "Votre code : " + code;
     $("step-phone").style.display="none";
     $("step-otp").style.display="block";
+    $("auth-sub").textContent = "Code pour "+phone;
+    $("otp-hint-el").textContent = "Code de vérification : " + code;
     if(otpBoxes[0])otpBoxes[0].focus();
     btn.textContent=t("recevoirCode");btn.disabled=false;
   });
@@ -619,8 +623,10 @@ window.searchUserByPhone=function(){
           '<div class="row-bot"><span class="row-last">'+esc(found.phone||"")+'</span></div></div>'+
           '<span style="color:var(--accent);font-size:22px;padding:0 4px">›</span>'+
         '</div>';
-      $("nc-found-row").onclick=()=>{
+      $("nc-found-row").onclick=async ()=>{
         $("newchat-overlay").style.display="none";
+        await ensureMutualContact(found.uid);
+        if(!S.contacts.find(c=>c.uid===found.uid)) S.contacts.push(found);
         openChat(found.uid);
       };
     } else {
@@ -638,12 +644,58 @@ window.searchUserByPhone=function(){
 // ---- CONTACTS ----
 function listenContacts(){
   if(S.unsubContacts){S.unsubContacts();S.unsubContacts=null;}
-  S.unsubContacts=db.ref("users").on("value",snap=>{
-    S.contacts=[];
-    snap.forEach(child=>{const u=child.val();if(u.uid!==S.myUid)S.contacts.push(u);});
+  // On écoute la liste personnelle de contacts de l'utilisateur (comme WhatsApp)
+  S.unsubContacts=db.ref("userContacts/"+S.myUid).on("value",async snap=>{
+    const uids=[];
+    snap.forEach(child=>{ if(child.key!==S.myUid) uids.push(child.key); });
+
+    if(!uids.length){
+      S.contacts=[];
+      CACHE.save("contacts",S.contacts);
+      renderList();
+      return;
+    }
+
+    // Récupérer les profils correspondants + écouter leur présence
+    const profiles=[];
+    for(const uid of uids){
+      try{
+        const usnap=await db.ref("users/"+uid).get();
+        if(usnap.exists()) profiles.push(usnap.val());
+      }catch(e){}
+    }
+    S.contacts=profiles;
     CACHE.save("contacts",S.contacts);
     renderList();
+
+    // Mettre à jour en direct le statut en ligne / nom / photo de chaque contact
+    uids.forEach(uid=>{
+      db.ref("users/"+uid).on("value",usnap=>{
+        if(!usnap.exists())return;
+        const updated=usnap.val();
+        const idx=S.contacts.findIndex(c=>c.uid===uid);
+        if(idx>=0){S.contacts[idx]=updated;}
+        else{S.contacts.push(updated);}
+        CACHE.save("contacts",S.contacts);
+        renderList();
+        if(S.activeId===uid) refreshChatHeader(updated);
+      });
+    });
   });
+}
+
+// Ajoute une discussion mutuelle entre 2 utilisateurs (comme WhatsApp : démarrer une conv ajoute le contact pour les 2)
+async function ensureMutualContact(otherUid){
+  if(!S.myUid||!otherUid) return;
+  await db.ref("userContacts/"+S.myUid+"/"+otherUid).set(true);
+  await db.ref("userContacts/"+otherUid+"/"+S.myUid).set(true);
+}
+
+function refreshChatHeader(c){
+  const cav=$("c-av");if(cav)cav.innerHTML=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
+  const cd=$("c-dot");if(cd)cd.className="dot "+(c.online?"online":"offline");
+  const cn=$("c-name");if(cn)cn.textContent=c.name||c.phone||"Inconnu";
+  const cs=$("c-status");if(cs){cs.textContent=c.online?"● En ligne":"⚫ Hors ligne";cs.style.color=c.online?"var(--green)":"var(--sub)";}
 }
 
 function renderList(){
@@ -655,7 +707,12 @@ function renderList(){
     const arch=S.arch.has(c.uid);
     return match&&(S.tab==="archived"?arch:!arch);
   });
-  if(!vis.length){box.innerHTML='<div class="empty-note">'+(S.tab==="archived"?"Aucune conv. archivée":"Aucun contact pour l instant")+"</div>";return;}
+  if(!vis.length){
+    box.innerHTML = S.tab==="archived"
+      ? '<div class="empty-note">Aucune conversation archivée</div>'
+      : '<div class="empty-note">Aucune discussion pour le moment<br/><br/>Appuyez sur ➕ pour trouver un ami par son numéro de téléphone</div>';
+    return;
+  }
   vis.forEach(c=>{
     const ck=chatKey(S.myUid,c.uid);
     const row=document.createElement("div");
@@ -711,15 +768,30 @@ function makeBubble(m){
   if(m.del){bub.className="bubble del";bub.textContent=t("msgSupprime");row.appendChild(bub);return row;}
   bub.className="bubble "+(self?"out":"in");
   if(m.type==="voice"){
-    let playing=false,playTick=null,playSecs=0;
     bub.innerHTML='<div class="vbubble"><button class="vplay" id="vp-'+m.id+'">▶</button><div class="vbar"><div class="vfill" id="vf-'+m.id+'"></div></div><span class="vdur" id="vd-'+m.id+'">'+fmt(m.duration||0)+'</span></div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
     setTimeout(()=>{
       const pb=document.getElementById("vp-"+m.id);const fi=document.getElementById("vf-"+m.id);const dv=document.getElementById("vd-"+m.id);
       if(!pb)return;
+      if(!m.src){ pb.disabled=true; pb.style.opacity="0.4"; return; }
+      let audioEl=null;
       pb.onclick=()=>{
-        if(playing){clearInterval(playTick);playing=false;pb.textContent="▶";}
-        else{if(playSecs>=(m.duration||0)){playSecs=0;fi.style.width="0%";}playing=true;pb.textContent="⏸";
-          playTick=setInterval(()=>{playSecs++;fi.style.width=Math.min(100,(playSecs/(m.duration||1))*100)+"%";dv.textContent=fmt((m.duration||0)-playSecs);if(playSecs>=(m.duration||0)){clearInterval(playTick);playing=false;pb.textContent="▶";playSecs=0;fi.style.width="0%";dv.textContent=fmt(m.duration||0);}},1000);}
+        if(!audioEl){
+          audioEl=new Audio(m.src);
+          audioEl.ontimeupdate=()=>{
+            const dur=audioEl.duration||m.duration||1;
+            const pct=Math.min(100,(audioEl.currentTime/dur)*100);
+            fi.style.width=pct+"%";
+            dv.textContent=fmt(Math.max(0,Math.round(dur-audioEl.currentTime)));
+          };
+          audioEl.onended=()=>{
+            pb.textContent="▶";fi.style.width="0%";dv.textContent=fmt(m.duration||0);
+          };
+        }
+        if(audioEl.paused){
+          audioEl.play();pb.textContent="⏸";
+        } else {
+          audioEl.pause();pb.textContent="▶";
+        }
       };
     },0);
   } else if(m.type==="photo"){
@@ -774,9 +846,34 @@ function startRec(){
   $("rec-dot").classList.add("pulse");
   $("r-pause").style.display="flex";$("r-resume").style.display="none";
   $("normal-row").style.display="none";$("rec-bar").style.display="flex";
+
+  navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
+    S.recStream=stream;
+    S.recChunks=[];
+    let mimeType="audio/webm";
+    if(!MediaRecorder.isTypeSupported(mimeType)){
+      mimeType = MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "";
+    }
+    S.recMimeType = mimeType || "audio/webm";
+    S.recorder = mimeType ? new MediaRecorder(stream,{mimeType}) : new MediaRecorder(stream);
+    S.recorder.ondataavailable = e=>{ if(e.data && e.data.size>0) S.recChunks.push(e.data); };
+    S.recorder.start();
+  }).catch(()=>{
+    toast("Microphone inaccessible","err");
+    stopRec();
+  });
+
   S.recTick=setInterval(()=>{if(!S.recPaused){S.recSecs++;$("rec-time").textContent=fmt(S.recSecs);}},1000);
 }
-function stopRec(){clearInterval(S.recTick);S.recSecs=0;S.recPaused=false;$("rec-bar").style.display="none";$("normal-row").style.display="flex";}
+function stopRec(){
+  clearInterval(S.recTick);S.recSecs=0;S.recPaused=false;
+  $("rec-bar").style.display="none";$("normal-row").style.display="flex";
+  if(S.recorder && S.recorder.state!=="inactive"){
+    try{S.recorder.stop();}catch(e){}
+  }
+  if(S.recStream){ S.recStream.getTracks().forEach(t=>t.stop()); S.recStream=null; }
+  S.recorder=null;S.recChunks=[];
+}
 
 // ---- VIEWERS ----
 function openViewer(src){$("photo-viewer-img").src=src;$("photo-viewer").style.display="flex";}
@@ -1529,9 +1626,48 @@ window.addEventListener("DOMContentLoaded",()=>{
   };
 
   // ---- VOCAL ----
-  window.pauseRec=function(){clearInterval(S.recTick);S.recPaused=true;document.getElementById("rec-dot").classList.remove("pulse");document.getElementById("rec-state").textContent=t("recPause");document.getElementById("r-pause").style.display="none";document.getElementById("r-resume").style.display="flex";};
-  window.resumeRec=function(){S.recPaused=false;document.getElementById("rec-dot").classList.add("pulse");document.getElementById("rec-state").textContent=t("recEnCours");document.getElementById("r-resume").style.display="none";document.getElementById("r-pause").style.display="flex";S.recTick=setInterval(()=>{if(!S.recPaused){S.recSecs++;document.getElementById("rec-time").textContent=fmt(S.recSecs);}},1000);};
-  window.sendVoice=function(){clearInterval(S.recTick);pushMsg({from:S.myUid,type:"voice",duration:S.recSecs,text:"",t:nowT(),del:false});stopRec();};
+  window.pauseRec=function(){
+    clearInterval(S.recTick);S.recPaused=true;
+    document.getElementById("rec-dot").classList.remove("pulse");
+    document.getElementById("rec-state").textContent=t("recPause");
+    document.getElementById("r-pause").style.display="none";
+    document.getElementById("r-resume").style.display="flex";
+    if(S.recorder && S.recorder.state==="recording"){ try{S.recorder.pause();}catch(e){} }
+  };
+  window.resumeRec=function(){
+    S.recPaused=false;
+    document.getElementById("rec-dot").classList.add("pulse");
+    document.getElementById("rec-state").textContent=t("recEnCours");
+    document.getElementById("r-resume").style.display="none";
+    document.getElementById("r-pause").style.display="flex";
+    if(S.recorder && S.recorder.state==="paused"){ try{S.recorder.resume();}catch(e){} }
+    S.recTick=setInterval(()=>{if(!S.recPaused){S.recSecs++;document.getElementById("rec-time").textContent=fmt(S.recSecs);}},1000);
+  };
+  window.sendVoice=function(){
+    clearInterval(S.recTick);
+    const finalDuration=S.recSecs;
+    if(!S.recorder || S.recorder.state==="inactive"){
+      // Pas d'enregistreur actif → annuler proprement
+      stopRec();
+      return;
+    }
+    const recorder=S.recorder;
+    const mimeType=S.recMimeType||"audio/webm";
+    recorder.onstop=()=>{
+      const blob=new Blob(S.recChunks,{type:mimeType});
+      const reader=new FileReader();
+      reader.onloadend=()=>{
+        pushMsg({from:S.myUid,type:"voice",src:reader.result,duration:finalDuration,mime:mimeType,text:"",t:nowT(),del:false});
+        if(S.recStream){ S.recStream.getTracks().forEach(tr=>tr.stop()); S.recStream=null; }
+        S.recorder=null;S.recChunks=[];
+        S.recSecs=0;S.recPaused=false;
+        document.getElementById("rec-bar").style.display="none";
+        document.getElementById("normal-row").style.display="flex";
+      };
+      reader.readAsDataURL(blob);
+    };
+    try{recorder.stop();}catch(e){ stopRec(); }
+  };
 
   // ---- STATUS CREATE ----
   let scType=null,scSrc=null;
