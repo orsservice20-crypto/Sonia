@@ -354,311 +354,298 @@ auth.onAuthStateChanged(async user=>{
 });
 
 // ==================== APPELS WEBRTC ====================
-const ICE_SERVERS = {
-  iceServers: [
-    {urls:"stun:stun.l.google.com:19302"},
-    {urls:"stun:stun1.l.google.com:19302"}
-  ]
-};
-
-function callKey(a,b){ return chatKey(a,b); }
+const ICE_SERVERS={iceServers:[{urls:"stun:stun.l.google.com:19302"},{urls:"stun:stun1.l.google.com:19302"}]};
 
 function setCallUI(contact){
   const av=$("call-av-big");av.innerHTML="";
-  if(contact && contact.avType==="img" && contact.img){
-    const img=document.createElement("img");img.src=contact.img;av.appendChild(img);
-  } else {
-    av.textContent = (contact && contact.emoji) || "🧑🏾";
-  }
-  $("call-name-big").textContent = (contact && (contact.name||contact.phone)) || "Inconnu";
+  if(contact&&contact.avType==="img"&&contact.img){const img=document.createElement("img");img.src=contact.img;av.appendChild(img);}
+  else{av.textContent=(contact&&contact.emoji)||"🧑🏾";}
+  const nick=contact&&contact.uid?CACHE.load("nick_"+contact.uid):null;
+  $("call-name-big").textContent=nick||(contact&&(contact.name||contact.phone))||"Inconnu";
 }
 
 function resetCallOverlay(){
-  $("call-overlay").style.display="none";
-  $("call-remote-video").style.display="none";
-  $("call-remote-video").srcObject=null;
-  $("call-local-video").style.display="none";
-  $("call-local-video").srcObject=null;
-  $("call-active-actions").style.display="none";
-  $("call-incoming-actions").style.display="none";
-  $("call-state-text").textContent="";
-  $("call-mute-btn").className="cb-btn";$("call-mute-btn").textContent="🎤";
-  $("call-cam-btn").className="cb-btn";$("call-cam-btn").textContent="📷";
-  $("call-cam-wrap").style.display="flex";
+  const co=$("call-overlay");if(co)co.style.display="none";
+  const rv=$("call-remote-video");if(rv){rv.style.display="none";rv.srcObject=null;}
+  const lv=$("call-local-video");if(lv){lv.style.display="none";lv.srcObject=null;}
+  const aa=$("call-active-actions");if(aa)aa.style.display="none";
+  const ia=$("call-incoming-actions");if(ia)ia.style.display="none";
+  const st=$("call-state-text");if(st)st.textContent="";
+  const mb=$("call-mute-btn");if(mb){mb.className="cb-btn";mb.textContent="🎤";}
+  const cb=$("call-cam-btn");if(cb){cb.className="cb-btn";cb.textContent="📷";}
+  const cw=$("call-cam-wrap");if(cw)cw.style.display="flex";
   clearInterval(S.callTick);S.callTick=null;S.callSecs=0;
   S.callMuted=false;S.callCamOff=false;
 }
 
-async function getLocalStream(type){
-  const constraints = type==="video" ? {audio:true,video:{facingMode:"user"}} : {audio:true,video:false};
-  return navigator.mediaDevices.getUserMedia(constraints);
+function getLocalStream(type){
+  return navigator.mediaDevices.getUserMedia(
+    type==="video"?{audio:true,video:{facingMode:"user",width:{ideal:640},height:{ideal:480}}}:{audio:true,video:false}
+  );
 }
 
-function createPeerConnection(otherUid){
-  const pc = new RTCPeerConnection(ICE_SERVERS);
-  pc.onicecandidate = e=>{
-    if(e.candidate && S.callRef){
-      db.ref(S.callRef+"/iceCandidates/"+S.myUid).push(e.candidate.toJSON());
-    }
+function createPC(otherUid){
+  const pc=new RTCPeerConnection(ICE_SERVERS);
+  pc.onicecandidate=e=>{
+    if(e.candidate&&S.callRef)
+      db.ref(S.callRef+"/ice/"+S.myUid).push(e.candidate.toJSON()).catch(()=>{});
   };
-  pc.ontrack = e=>{
-    if(!S.remoteStream){S.remoteStream=new MediaStream();}
+  pc.ontrack=e=>{
+    if(!S.remoteStream)S.remoteStream=new MediaStream();
     e.streams[0].getTracks().forEach(tr=>S.remoteStream.addTrack(tr));
-    const rv=$("call-remote-video");
-    rv.srcObject=S.remoteStream;
-    rv.style.display="block";
+    const rv=$("call-remote-video");rv.srcObject=S.remoteStream;rv.style.display="block";
   };
-  pc.onconnectionstatechange = ()=>{
-    if(pc.connectionState==="connected"){
+  pc.onconnectionstatechange=()=>{
+    const st=pc.connectionState;
+    if(st==="connected"){
       $("call-state-text").textContent="";
-      if(!S.callTick){
-        S.callTick=setInterval(()=>{S.callSecs++;$("call-state-text").textContent=fmt(S.callSecs);},1000);
-      }
-    } else if(pc.connectionState==="disconnected"||pc.connectionState==="failed"){
+      if(!S.callTick) S.callTick=setInterval(()=>{S.callSecs++;$("call-state-text").textContent=fmt(S.callSecs);},1000);
+    } else if(st==="failed"||st==="disconnected"){
       endCall();
     }
   };
   return pc;
 }
 
-function listenRemoteIce(otherUid){
-  if(S.unsubIce) S.unsubIce();
-  const ref=db.ref(S.callRef+"/iceCandidates/"+otherUid);
-  ref.on("child_added", snap=>{
-    const cand=snap.val();
-    if(S.pc && cand){
-      S.pc.addIceCandidate(new RTCIceCandidate(cand)).catch(()=>{});
-    }
+function listenIce(otherUid){
+  if(S.unsubIce){try{S.unsubIce();}catch(e){}}
+  const ref=db.ref(S.callRef+"/ice/"+otherUid);
+  ref.on("child_added",snap=>{
+    const c=snap.val();
+    if(S.pc&&c){S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{});}
   });
   S.unsubIce=()=>ref.off();
 }
 
-// ---- Démarrer un appel (appelant) ----
-window.startCall = async function(type){
-  if(!S.activeId) return;
-  const contact = S.contacts.find(c=>c.uid===S.activeId);
-  S.callType=type;S.callDir="out";S.callPeer=S.activeId;
-  S.callRef = "callSignals/" + callKey(S.myUid, S.activeId);
+// ---- APPEL SORTANT ----
+window.startCall=async function(type){
+  if(!S.activeId||S.callDir){return;}
+  const contact=S.contacts.find(c=>c.uid===S.activeId)||{uid:S.activeId,phone:S.activeId};
 
+  // 1. Afficher l'UI immédiatement
+  S.callType=type;S.callDir="out";S.callPeer=S.activeId;
+  // Clé d'appel : dossier propre à cet utilisateur pour la sonnerie
+  S.callRef="callSignals/"+S.activeId+"/"+S.myUid;
   resetCallOverlay();
   setCallUI(contact);
   $("call-overlay").style.display="flex";
-  $("call-state-text").textContent="Appel en cours...";
+  $("call-state-text").textContent="Sonnerie...";
   $("call-active-actions").style.display="flex";
-  if(type!=="video") $("call-cam-wrap").style.display="none";
+  if(type!=="video")$("call-cam-wrap").style.display="none";
 
+  // 2. Écrire la sonnerie dans Firebase IMMÉDIATEMENT (avant getUserMedia)
+  // Cela permet au receveur d'être notifié tout de suite
+  const ringData={
+    type,from:S.myUid,
+    fromName:S.profile.name||S.myPhone||"Inconnu",
+    fromEmoji:S.profile.emoji||"🧑🏾",
+    fromAvType:S.profile.avType||"emoji",
+    fromImg:S.profile.img||null,
+    to:S.activeId,
+    status:"ringing",
+    ts:Date.now()
+  };
   try{
-    S.localStream = await getLocalStream(type);
+    await db.ref(S.callRef).set(ringData);
   }catch(e){
-    toast("Impossible d'accéder au micro/caméra","err");
+    toast("Impossible de démarrer l'appel : "+e.message,"err");
     endCall(true);return;
   }
 
-  const lv=$("call-local-video");
-  if(type==="video"){lv.srcObject=S.localStream;lv.style.display="block";}
+  // 3. Obtenir le micro/caméra localement
+  try{
+    S.localStream=await getLocalStream(type);
+  }catch(e){
+    toast("Micro/caméra inaccessible","err");
+    endCall();return;
+  }
+  if(type==="video"){const lv=$("call-local-video");lv.srcObject=S.localStream;lv.style.display="block";}
 
-  S.pc = createPeerConnection(S.activeId);
+  // 4. Créer l'offre WebRTC
+  S.pc=createPC(S.activeId);
   S.localStream.getTracks().forEach(tr=>S.pc.addTrack(tr,S.localStream));
-
-  const offer = await S.pc.createOffer();
+  const offer=await S.pc.createOffer();
   await S.pc.setLocalDescription(offer);
 
-  await db.ref(S.callRef).set({
-    type: type,
-    from: S.myUid,
-    fromName: S.profile.name||S.myPhone||"Inconnu",
-    fromEmoji: S.profile.emoji||"🧑🏾",
-    fromAvType: S.profile.avType||"emoji",
-    fromImg: S.profile.img||null,
-    to: S.activeId,
-    offer: {type:offer.type, sdp:offer.sdp},
-    status: "ringing",
-    ts: Date.now()
-  });
+  // 5. Mettre à jour Firebase avec l'offre
+  await db.ref(S.callRef).update({offer:{type:offer.type,sdp:offer.sdp}}).catch(()=>{});
 
-  listenRemoteIce(S.activeId);
+  // 6. Écouter les ICE du receveur
+  listenIce(S.activeId);
 
-  if(S.unsubCall) S.unsubCall();
+  // 7. Écouter la réponse/statut
+  if(S.unsubCall){try{S.unsubCall();}catch(e){}}
   const ref=db.ref(S.callRef);
-  const handler = async snap=>{
+  const handler=async snap=>{
     const data=snap.val();
-    if(!data){
-      // Le nœud a été supprimé → l'appel est terminé
-      endCall(true);
+    if(!data||data.status==="ended"||data.status==="rejected"){
+      const msg=(!data||data.status==="ended")?"Appel terminé":"Appel refusé";
+      $("call-state-text").textContent=msg;
+      setTimeout(()=>endCall(true),1500);
       return;
     }
-    if(data.status==="rejected"){
-      $("call-state-text").textContent="Appel refusé";
-      setTimeout(()=>endCall(true),1200);
-    } else if(data.status==="ended"){
-      endCall(true);
-    } else if(data.answer && S.pc && !S.pc.currentRemoteDescription){
+    if(data.answer&&S.pc&&!S.pc.currentRemoteDescription){
       try{
         await S.pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-        $("call-state-text").textContent="Connexion...";
-      }catch(e){ console.error("setRemoteDescription:",e); }
+        $("call-state-text").textContent="Connexion établie...";
+      }catch(e){console.error("SRD:",e);}
     }
   };
   ref.on("value",handler);
   S.unsubCall=()=>ref.off("value",handler);
 
+  // 8. Timeout 45s sans réponse
   setTimeout(()=>{
-    if(S.callRef && $("call-overlay").style.display==="flex" && S.callSecs===0 && (!S.pc || !S.pc.currentRemoteDescription)){
-      db.ref(S.callRef).update({status:"ended"});
+    if(S.callRef&&S.callDir==="out"&&S.callSecs===0){
       $("call-state-text").textContent="Pas de réponse";
-      setTimeout(()=>endCall(true),1200);
+      endCall();
     }
   },45000);
 };
 
-// ---- Écouter les appels entrants ----
+// ---- SONNERIE ENTRANTE ----
 function listenIncomingCalls(){
-  if(!S.myUid) return;
-
-  // Vérifier immédiatement s'il y a un appel en attente (cas où le receiver se connecte après l'appel)
-  db.ref("callSignals").get().then(snap=>{
-    snap.forEach(child=>{
-      const data=child.val();
-      if(data && data.to===S.myUid && data.status==="ringing" && Date.now()-data.ts < 45000){
-        handleIncomingSignal(child.key, data);
-      }
-    });
+  if(!S.myUid)return;
+  // Écouter les sonneries arrivant POUR cet utilisateur : callSignals/{myUid}/{callerUid}
+  db.ref("callSignals/"+S.myUid).on("child_added",snap=>{
+    handleRing(snap.key,snap.val());
+  });
+  db.ref("callSignals/"+S.myUid).on("child_changed",snap=>{
+    handleRing(snap.key,snap.val());
+  });
+  // Vérifier appels en attente au démarrage
+  db.ref("callSignals/"+S.myUid).get().then(snap=>{
+    snap.forEach(child=>handleRing(child.key,child.val()));
   }).catch(()=>{});
-
-  // Écouter les nouveaux signaux en temps réel
-  db.ref("callSignals").on("child_added", snap=>{
-    handleIncomingSignal(snap.key, snap.val());
-  });
-  db.ref("callSignals").on("child_changed", snap=>{
-    handleIncomingSignal(snap.key, snap.val());
-  });
 }
 
-function handleIncomingSignal(key, data){
-  if(!data || data.to!==S.myUid) return;
-  if(!data.ts || Date.now()-data.ts > 45000) return; // Ignorer les signaux expirés
-  if(data.status==="ringing" && S.callDir!=="out" && $("call-overlay").style.display!=="flex"){
-    S.callType=data.type;S.callDir="in";S.callPeer=data.from;
-    S.callRef="callSignals/"+key;
-    S.incomingOffer=data.offer;
+function handleRing(callerUid,data){
+  if(!data||!data.status)return;
+  if(data.status!=="ringing")return;
+  if(!data.ts||Date.now()-data.ts>45000)return; // Expiré
+  if(S.callDir){return;} // Déjà en appel
+  if($("call-overlay").style.display==="flex")return;
 
-    resetCallOverlay();
-    const fakeContact={
-      name:data.fromName,emoji:data.fromEmoji,avType:data.fromAvType,img:data.fromImg
+  S.callType=data.type;
+  S.callDir="in";
+  S.callPeer=callerUid;
+  S.callRef="callSignals/"+S.myUid+"/"+callerUid;
+  S.incomingOffer=data.offer; // peut être null si l'offre n'est pas encore arrivée
+
+  resetCallOverlay();
+  setCallUI({name:data.fromName,emoji:data.fromEmoji,avType:data.fromAvType,img:data.fromImg});
+  $("call-overlay").style.display="flex";
+  $("call-state-text").textContent=data.type==="video"?"📹 Appel vidéo":"🎙 Appel audio";
+  $("call-incoming-actions").style.display="flex";
+
+  // Si l'offre n'est pas encore là, écouter jusqu'à ce qu'elle arrive
+  if(!S.incomingOffer){
+    const waitRef=db.ref(S.callRef);
+    const waitHandler=snap=>{
+      const d=snap.val();
+      if(!d){endCall(true);return;}
+      if(d.offer&&!S.incomingOffer){S.incomingOffer=d.offer;}
+      if(d.status==="ended"||d.status==="rejected"){endCall(true);}
     };
-    setCallUI(fakeContact);
-    $("call-overlay").style.display="flex";
-    $("call-state-text").textContent = data.type==="video" ? "Appel vidéo entrant" : "Appel audio entrant";
-    $("call-incoming-actions").style.display="flex";
-
-    setTimeout(()=>{
-      if(S.callDir==="in" && $("call-incoming-actions").style.display==="flex"){
-        rejectCall();
-      }
-    },45000);
+    waitRef.on("value",waitHandler);
+    S.unsubCall=()=>waitRef.off("value",waitHandler);
   }
+
+  // Auto-refus après 45s
+  setTimeout(()=>{
+    if(S.callDir==="in"&&$("call-incoming-actions").style.display==="flex"){
+      rejectCall();
+    }
+  },45000);
 }
 
-// ---- Accepter un appel entrant ----
-window.acceptCall = async function(){
+// ---- ACCEPTER ----
+window.acceptCall=async function(){
   $("call-incoming-actions").style.display="none";
-  $("call-active-actions").style.display="flex";
-  if(S.callType!=="video") $("call-cam-wrap").style.display="none";
   $("call-state-text").textContent="Connexion...";
 
-  try{
-    S.localStream = await getLocalStream(S.callType);
-  }catch(e){
-    toast("Impossible d'accéder au micro/caméra","err");
-    rejectCall();return;
+  // Attendre l'offre si pas encore reçue
+  if(!S.incomingOffer){
+    $("call-state-text").textContent="En attente de l'offre...";
+    await new Promise(resolve=>{
+      const check=setInterval(()=>{if(S.incomingOffer){clearInterval(check);resolve();}},200);
+      setTimeout(()=>{clearInterval(check);resolve();},8000);
+    });
   }
 
-  const lv=$("call-local-video");
-  if(S.callType==="video"){lv.srcObject=S.localStream;lv.style.display="block";}
+  if(!S.incomingOffer){toast("Erreur : offre non reçue","err");endCall(true);return;}
 
-  S.pc = createPeerConnection(S.callPeer);
+  try{S.localStream=await getLocalStream(S.callType);}
+  catch(e){toast("Micro/caméra inaccessible","err");rejectCall();return;}
+
+  if(S.callType==="video"){const lv=$("call-local-video");lv.srcObject=S.localStream;lv.style.display="block";}
+  $("call-active-actions").style.display="flex";
+  if(S.callType!=="video")$("call-cam-wrap").style.display="none";
+
+  S.pc=createPC(S.callPeer);
   S.localStream.getTracks().forEach(tr=>S.pc.addTrack(tr,S.localStream));
 
   await S.pc.setRemoteDescription(new RTCSessionDescription(S.incomingOffer));
-  const answer = await S.pc.createAnswer();
+  const answer=await S.pc.createAnswer();
   await S.pc.setLocalDescription(answer);
 
-  await db.ref(S.callRef).update({
-    answer:{type:answer.type, sdp:answer.sdp},
-    status:"connected"
-  });
+  await db.ref(S.callRef).update({answer:{type:answer.type,sdp:answer.sdp},status:"connected"}).catch(()=>{});
 
-  listenRemoteIce(S.callPeer);
+  listenIce(S.callPeer);
 
-  if(S.unsubCall) S.unsubCall();
+  // Écouter si le caller raccroche
+  if(S.unsubCall){try{S.unsubCall();}catch(e){}}
   const ref=db.ref(S.callRef);
   const handler=snap=>{
-    const data=snap.val();
-    // Si le nœud est supprimé ou statut terminé → raccrocher
-    if(!data || data.status==="ended" || data.status==="rejected"){
-      endCall(true);
-    }
+    const d=snap.val();
+    if(!d||d.status==="ended"){endCall(true);}
   };
   ref.on("value",handler);
   S.unsubCall=()=>ref.off("value",handler);
 };
 
-// ---- Refuser un appel entrant ----
-window.rejectCall = function(){
-  if(S.callRef){
-    db.ref(S.callRef).update({status:"rejected"}).then(()=>{
-      setTimeout(()=>{ if(S.callRef) db.ref(S.callRef).remove().catch(()=>{}); }, 1000);
+// ---- REFUSER ----
+window.rejectCall=function(){
+  const refPath=S.callRef;
+  if(refPath){
+    db.ref(refPath).update({status:"rejected"}).then(()=>{
+      setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),1500);
     }).catch(()=>{});
   }
   endCall(true);
 };
 
-// ---- Terminer l'appel ----
-window.endCall = function(silent){
-  // Éviter double-exécution
-  if(!S.callRef && !S.pc && !S.localStream) return;
-
-  // Notifier l'autre côté AVANT de nettoyer S.callRef
-  const refPath = S.callRef;
-  if(!silent && refPath){
-    db.ref(refPath).update({status:"ended"}).catch(()=>{});
+// ---- RACCROCHER ----
+window.endCall=function(silent){
+  if(!S.callRef&&!S.pc&&!S.localStream)return;
+  const refPath=S.callRef;
+  if(!silent&&refPath){
+    db.ref(refPath).update({status:"ended"}).then(()=>{
+      setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),2000);
+    }).catch(()=>{});
+  } else if(refPath){
+    setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),2500);
   }
-
-  // Supprimer le signal Firebase après un délai (laisser l'autre côté voir "ended")
-  if(refPath){
-    setTimeout(()=>{ db.ref(refPath).remove().catch(()=>{}); }, 2000);
-  }
-
-  // Nettoyer la connexion WebRTC
-  if(S.unsubCall){ try{S.unsubCall();}catch(e){} S.unsubCall=null; }
-  if(S.unsubIce){ try{S.unsubIce();}catch(e){} S.unsubIce=null; }
-  if(S.pc){ try{S.pc.close();}catch(e){} S.pc=null; }
-  if(S.localStream){ S.localStream.getTracks().forEach(t=>{ try{t.stop();}catch(e){} }); S.localStream=null; }
+  if(S.unsubCall){try{S.unsubCall();}catch(e){} S.unsubCall=null;}
+  if(S.unsubIce){try{S.unsubIce();}catch(e){} S.unsubIce=null;}
+  if(S.pc){try{S.pc.close();}catch(e){} S.pc=null;}
+  if(S.localStream){S.localStream.getTracks().forEach(t=>{try{t.stop();}catch(e){}});S.localStream=null;}
   S.remoteStream=null;
-
-  // Réinitialiser l'état
-  S.callRef=null; S.callDir=null; S.callPeer=null; S.incomingOffer=null;
-
-  // Réinitialiser l'UI
+  S.callRef=null;S.callDir=null;S.callPeer=null;S.incomingOffer=null;
   resetCallOverlay();
 };
 
-window.callToggleMute = function(){
-  if(!S.localStream) return;
+window.callToggleMute=function(){
+  if(!S.localStream)return;
   S.callMuted=!S.callMuted;
   S.localStream.getAudioTracks().forEach(t=>t.enabled=!S.callMuted);
-  const b=$("call-mute-btn");
-  b.className="cb-btn"+(S.callMuted?" on":"");
-  b.textContent=S.callMuted?"🔇":"🎤";
+  const b=$("call-mute-btn");b.className="cb-btn"+(S.callMuted?" on":"");b.textContent=S.callMuted?"🔇":"🎤";
 };
-
-window.callToggleCam = function(){
-  if(!S.localStream) return;
+window.callToggleCam=function(){
+  if(!S.localStream)return;
   S.callCamOff=!S.callCamOff;
   S.localStream.getVideoTracks().forEach(t=>t.enabled=!S.callCamOff);
-  const b=$("call-cam-btn");
-  b.className="cb-btn"+(S.callCamOff?" on":"");
-  b.textContent="📷";
+  const b=$("call-cam-btn");b.className="cb-btn"+(S.callCamOff?" on":"");b.textContent="📷";
 };
 // ==================== FIN APPELS WEBRTC ====================
 
@@ -924,34 +911,56 @@ function openChat(uid){
 function listenMsgs(){
   if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}
   const key=chatKey(S.myUid,S.activeId);
-  // Afficher le cache immédiatement (hors-ligne ou en attendant Firebase)
-  try{
-    const cached=CACHE.load("msgs_"+key);
-    if(cached&&cached.length){
-      const box=$("msg-list");
-      if(box){box.innerHTML="";cached.forEach(m=>{try{box.appendChild(makeBubble(m));}catch(e){console.error("makeBubble cache:",e);}});box.scrollTop=box.scrollHeight;}
-    }
-  }catch(e){console.error("cache msgs:",e);}
-  if(!isOnline)return;
-  // Écouter Firebase en temps réel
-  S.unsubMsgs=db.ref("chats/"+key+"/messages").on("value",snap=>{
-    try{
-      const msgs=[];
-      const box=$("msg-list");
-      if(!box)return;
-      box.innerHTML="";
-      snap.forEach(child=>{
+  const box=$("msg-list");
+  if(!box)return;
+  box.innerHTML="";
+
+  // Charger tous les messages existants d'abord, puis écouter les nouveaux
+  db.ref("chats/"+key+"/messages").once("value",snap=>{
+    box.innerHTML="";
+    snap.forEach(child=>{
+      try{
+        const m={id:child.key,...child.val()};
+        box.appendChild(makeBubble(m));
+      }catch(e){console.error("bubble:",e);}
+    });
+    box.scrollTop=box.scrollHeight;
+
+    // Maintenant écouter uniquement les NOUVEAUX messages (child_added après le dernier)
+    const lastKey=snap.size>0?Array.from(snap.forEach).pop():null;
+    const q=db.ref("chats/"+key+"/messages").orderByKey().limitToLast(1);
+    // En fait on utilise startAfter sur la dernière clé si elle existe
+    const ref=db.ref("chats/"+key+"/messages");
+    const childHandler=childSnap=>{
+      // Éviter de dupliquer les messages déjà affichés
+      if(document.getElementById("bub-"+childSnap.key))return;
+      try{
+        const m={id:childSnap.key,...childSnap.val()};
+        const bub=makeBubble(m);
+        bub.id="bub-"+m.id;
+        box.appendChild(bub);
+        box.scrollTop=box.scrollHeight;
+      }catch(e){console.error("new bubble:",e);}
+    };
+    // Écouter les changements (suppressions de messages)
+    const changeHandler=childSnap=>{
+      const existing=document.getElementById("bub-"+childSnap.key);
+      if(existing){
         try{
-          const m={id:child.key,...child.val()};
-          if(m.type!=="photo"&&m.type!=="video") msgs.push(m);
-          box.appendChild(makeBubble(m));
-        }catch(e){console.error("makeBubble live:",e);}
-      });
-      CACHE.save("msgs_"+key,msgs);
-      box.scrollTop=box.scrollHeight;
-    }catch(e){console.error("listenMsgs snap:",e);}
-  }, err=>{
-    console.error("listenMsgs Firebase erreur:",err.message);
+          const m={id:childSnap.key,...childSnap.val()};
+          const newBub=makeBubble(m);
+          newBub.id="bub-"+m.id;
+          existing.replaceWith(newBub);
+        }catch(e){}
+      }
+    };
+    ref.on("child_added",childHandler);
+    ref.on("child_changed",changeHandler);
+    S.unsubMsgs=()=>{
+      ref.off("child_added",childHandler);
+      ref.off("child_changed",changeHandler);
+    };
+  }).catch(err=>{
     toast("Erreur messages : "+err.message,"err");
   });
 }
@@ -960,6 +969,7 @@ function makeBubble(m){
   const self=m.from===S.myUid;
   const row=document.createElement("div");
   row.className="bubble-row "+(self?"out":"in");
+  if(m.id) row.id="bub-"+m.id;
   const bub=document.createElement("div");
   if(m.del){bub.className="bubble del";bub.textContent=t("msgSupprime");row.appendChild(bub);return row;}
   bub.className="bubble "+(self?"out":"in");
