@@ -536,50 +536,41 @@ window.startCall=async function(type){
 // ---- SONNERIE ENTRANTE ----
 function listenIncomingCalls(){
   if(!S.myUid)return;
-  // Écouter les sonneries arrivant POUR cet utilisateur : callSignals/{myUid}/{callerUid}
+  // child_added suffit : Firebase le déclenche pour les existants + nouveaux
   db.ref("callSignals/"+S.myUid).on("child_added",snap=>{
     handleRing(snap.key,snap.val());
   });
+  // child_changed : mise à jour du signal (ex: offre ajoutée par le caller)
   db.ref("callSignals/"+S.myUid).on("child_changed",snap=>{
-    handleRing(snap.key,snap.val());
+    const data=snap.val();
+    // Si on attend l'offre pour cet appel, la récupérer
+    if(data&&data.offer&&!S.incomingOffer&&S.callPeer===snap.key){
+      S.incomingOffer=data.offer;
+    }
+    // Si l'appel est terminé/refusé depuis l'autre côté
+    if(data&&(data.status==="ended"||data.status==="rejected")&&S.callPeer===snap.key){
+      endCall(true);
+    }
   });
-  // Vérifier appels en attente au démarrage
-  db.ref("callSignals/"+S.myUid).get().then(snap=>{
-    snap.forEach(child=>handleRing(child.key,child.val()));
-  }).catch(()=>{});
 }
 
 function handleRing(callerUid,data){
-  if(!data||!data.status)return;
-  if(data.status!=="ringing")return;
+  if(!data||data.status!=="ringing")return;
   if(!data.ts||Date.now()-data.ts>45000)return; // Expiré
-  if(S.callDir){return;} // Déjà en appel
-  if($("call-overlay").style.display==="flex")return;
+  if(S.callDir)return; // Déjà en appel
+  if($("call-overlay").style.display==="flex")return; // Déjà visible
 
   S.callType=data.type;
   S.callDir="in";
   S.callPeer=callerUid;
   S.callRef="callSignals/"+S.myUid+"/"+callerUid;
-  S.incomingOffer=data.offer; // peut être null si l'offre n'est pas encore arrivée
+  S.incomingOffer=data.offer||null;
 
   resetCallOverlay();
   setCallUI({name:data.fromName,emoji:data.fromEmoji,avType:data.fromAvType,img:data.fromImg});
   $("call-overlay").style.display="flex";
-  $("call-state-text").textContent=data.type==="video"?"📹 Appel vidéo":"🎙 Appel audio";
+  $("call-state-text").textContent=data.type==="video"?"📹 Appel vidéo entrant":"🎙 Appel audio entrant";
   $("call-incoming-actions").style.display="flex";
-
-  // Si l'offre n'est pas encore là, écouter jusqu'à ce qu'elle arrive
-  if(!S.incomingOffer){
-    const waitRef=db.ref(S.callRef);
-    const waitHandler=snap=>{
-      const d=snap.val();
-      if(!d){endCall(true);return;}
-      if(d.offer&&!S.incomingOffer){S.incomingOffer=d.offer;}
-      if(d.status==="ended"||d.status==="rejected"){endCall(true);}
-    };
-    waitRef.on("value",waitHandler);
-    S.unsubCall=()=>waitRef.off("value",waitHandler);
-  }
 
   // Auto-refus après 45s
   setTimeout(()=>{
@@ -594,32 +585,39 @@ window.acceptCall=async function(){
   $("call-incoming-actions").style.display="none";
   $("call-state-text").textContent="Connexion...";
 
-  // Attendre l'offre si pas encore reçue
+  // Attendre l'offre si pas encore reçue (max 5s)
   if(!S.incomingOffer){
-    $("call-state-text").textContent="En attente de l'offre...";
     await new Promise(resolve=>{
-      const check=setInterval(()=>{if(S.incomingOffer){clearInterval(check);resolve();}},200);
-      setTimeout(()=>{clearInterval(check);resolve();},8000);
+      const check=setInterval(()=>{if(S.incomingOffer){clearInterval(check);resolve();}},100);
+      setTimeout(()=>{clearInterval(check);resolve();},5000);
     });
   }
-
-  if(!S.incomingOffer){toast("Erreur : offre non reçue","err");endCall(true);return;}
+  if(!S.incomingOffer){
+    toast("Erreur : offre d'appel non reçue","err");
+    endCall(true);return;
+  }
 
   try{S.localStream=await getLocalStream(S.callType);}
   catch(e){toast("Micro/caméra inaccessible","err");rejectCall();return;}
 
-  if(S.callType==="video"){const lv=$("call-local-video");lv.srcObject=S.localStream;lv.style.display="block";}
+  if(S.callType==="video"){
+    const lv=$("call-local-video");lv.srcObject=S.localStream;lv.style.display="block";
+  }
   $("call-active-actions").style.display="flex";
   if(S.callType!=="video")$("call-cam-wrap").style.display="none";
 
   S.pc=createPC(S.callPeer);
   S.localStream.getTracks().forEach(tr=>S.pc.addTrack(tr,S.localStream));
 
-  await S.pc.setRemoteDescription(new RTCSessionDescription(S.incomingOffer));
-  const answer=await S.pc.createAnswer();
-  await S.pc.setLocalDescription(answer);
-
-  await db.ref(S.callRef).update({answer:{type:answer.type,sdp:answer.sdp},status:"connected"}).catch(()=>{});
+  try{
+    await S.pc.setRemoteDescription(new RTCSessionDescription(S.incomingOffer));
+    const answer=await S.pc.createAnswer();
+    await S.pc.setLocalDescription(answer);
+    await db.ref(S.callRef).update({answer:{type:answer.type,sdp:answer.sdp},status:"connected"});
+  }catch(e){
+    toast("Erreur connexion appel : "+e.message,"err");
+    endCall(true);return;
+  }
 
   listenIce(S.callPeer);
 
@@ -917,6 +915,7 @@ function renderList(){
     const displayName=nick||c.name||c.phone||"Inconnu";
     const ck=chatKey(S.myUid,c.uid);
     const row=document.createElement("div");
+    row.id="row-"+ck;
     row.className="contact-row"+(S.activeId===c.uid?" active-row":"");
     const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
     const subStatus=c.online?"● En ligne":(c.lastSeen?"Vu à "+c.lastSeen:"");
@@ -937,10 +936,10 @@ function renderList(){
         lm.type==="photo"?"📷 Photo":
         lm.type==="video"?"🎥 Vidéo":
         (lm.text||"");
-      // Sauvegarder le timestamp pour le tri
-      if(lm.ts) CACHE.save("lastTs_"+ck, lm.ts);
-      // Re-trier la liste si nécessaire (nouveau message = remonter en haut)
-      const rowEl=document.querySelector('[id="lt-'+ck+'"]')?.closest(".contact-row");
+      // Sauvegarder le timestamp et remonter la conversation en haut
+      const ts=lm.ts||Date.now();
+      CACHE.save("lastTs_"+ck, ts);
+      const rowEl=document.getElementById("row-"+ck);
       if(rowEl&&box.firstChild&&rowEl!==box.firstChild){
         box.insertBefore(rowEl,box.firstChild);
       }
@@ -962,7 +961,6 @@ function openChat(uid){
 }
 
 function listenMsgs(){
-  // Nettoyer l'ancien listener
   if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}
   const key=chatKey(S.myUid,S.activeId);
   const box=$("msg-list");
@@ -970,27 +968,44 @@ function listenMsgs(){
   box.innerHTML="";
 
   const ref=db.ref("chats/"+key+"/messages");
+  const rendered=new Set(); // Suivre les IDs déjà rendus
 
-  // Utiliser SEULEMENT .on("value") — plus simple, plus fiable
-  // Firebase envoie toute la liste puis met à jour à chaque changement
-  // Pour les grandes conversations, on limite aux 100 derniers messages
-  const listener=ref.orderByKey().on("value",snap=>{
-    box.innerHTML=""; // Redessiner proprement à chaque mise à jour
-    snap.forEach(child=>{
-      try{
-        const m={id:child.key,...child.val()};
-        const row=makeBubble(m);
-        box.appendChild(row);
-      }catch(e){console.error("bubble err:",e);}
-    });
-    // Scroll vers le bas
-    requestAnimationFrame(()=>{ box.scrollTop=box.scrollHeight; });
-  },err=>{
-    console.error("listenMsgs err:",err.code,err.message);
-    toast("Erreur messages : "+err.message,"err");
+  // child_added : déclenché pour tous les existants + nouveaux
+  const onAdded=ref.on("child_added",snap=>{
+    if(rendered.has(snap.key))return;
+    rendered.add(snap.key);
+    try{
+      const m={id:snap.key,...snap.val()};
+      const row=makeBubble(m);
+      box.appendChild(row);
+      // Scroll uniquement si déjà en bas (±100px)
+      if(box.scrollHeight - box.scrollTop - box.clientHeight < 100){
+        requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
+      }
+    }catch(e){console.error("bubble add:",e);}
+  },err=>{toast("Erreur messages : "+err.message,"err");});
+
+  // child_changed : message modifié (suppression, etc.)
+  const onChanged=ref.on("child_changed",snap=>{
+    try{
+      const m={id:snap.key,...snap.val()};
+      const existing=document.getElementById("bub-"+snap.key);
+      if(existing){
+        const newRow=makeBubble(m);
+        existing.replaceWith(newRow);
+      }
+    }catch(e){console.error("bubble change:",e);}
   });
 
-  S.unsubMsgs=()=>ref.off("value",listener);
+  // Scroll initial vers le bas après le premier chargement
+  ref.once("value",()=>{
+    requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
+  });
+
+  S.unsubMsgs=()=>{
+    ref.off("child_added",onAdded);
+    ref.off("child_changed",onChanged);
+  };
 }
 
 function makeBubble(m){
@@ -1082,15 +1097,15 @@ function delMsg(msgId, forEveryone){
 
 function pushMsg(m){
   const key=chatKey(S.myUid,S.activeId);
+  if(!m.ts) m.ts=Date.now(); // timestamp pour tri
 
-  // Vérifier la taille des médias (Firebase RTDB n'accepte pas de très grosses valeurs)
   if(m.src && m.src.length > 6*1024*1024){
     toast("Fichier trop volumineux (max ~4 Mo). Message non envoyé.","err");
     return Promise.reject(new Error("trop volumineux"));
   }
 
-  return db.ref("chats/"+key+"/messages").push(m).then(()=>{
-    return db.ref("chats/"+key+"/lastMsg").set({text:m.text||"",t:m.t,type:m.type,del:false,ts:Date.now()});
+  return db.ref("chats/"+key+"/messages").push(m).then(ref=>{
+    return db.ref("chats/"+key+"/lastMsg").set({text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts});
   }).catch(e=>{
     toast("Échec de l'envoi : "+e.message,"err");
     throw e;
@@ -1651,10 +1666,8 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       <button class="in-icon" onclick="openMediaPicker()">📎</button>
       <input type="file" id="photo-file-in" accept="image/*" style="display:none" onchange="handlePhotoFile(this)"/>
       <input type="file" id="video-file-in" accept="video/*" style="display:none" onchange="handleVideoFile(this)"/>
-      <div class="mic-send-wrap" style="position:relative">
-        <button class="send-btn-el" id="send-btn" onclick="doSend()" style="display:none">➤</button>
-        <button class="mic-btn-el" id="mic-btn">🎙</button>
-      </div>
+      <button class="send-btn-el" id="send-btn" onclick="doSend()" style="display:none">➤</button>
+      <button class="mic-btn-el" id="mic-btn" style="display:flex">🎙</button>
     </div>
   </div>
 </div>
@@ -1884,12 +1897,14 @@ window.addEventListener("DOMContentLoaded",()=>{
 
   function updateSendMicBtn(){
     const hasText = txtIn && txtIn.value.trim().length > 0;
-    if(micBtn) micBtn.style.display = hasText ? "none" : "flex";
-    if(sendBtn) sendBtn.style.display = hasText ? "flex" : "none";
+    if(micBtn){ micBtn.style.display = hasText ? "none" : "flex"; micBtn.style.visibility="visible"; }
+    if(sendBtn){ sendBtn.style.display = hasText ? "flex" : "none"; }
   }
   if(txtIn){
     txtIn.addEventListener("input", updateSendMicBtn);
-    updateSendMicBtn();
+    // Initialiser avec mic visible
+    if(micBtn) micBtn.style.display="flex";
+    if(sendBtn) sendBtn.style.display="none";
   }
 
   // ==================== MIC : APPUI LONG = ENREGISTRER (comme WhatsApp) ====================
