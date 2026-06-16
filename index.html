@@ -80,54 +80,84 @@ function showScreen(id){
   S.currentScreen=id;
 }
 
-// ---- BOUTON RETOUR DU TÉLÉPHONE ----
-// On garde toujours UNE SEULE entrée "app" dans l'historique.
-// Quand Android pop cette entrée, on la remet et on gère le retour nous-mêmes.
-history.replaceState({app:true},"","");
-window.addEventListener("popstate",function(){
-  // Remettre immédiatement l'entrée pour garder le contrôle
-  history.pushState({app:true},"","");
+// ---- BOUTON RETOUR ANDROID ----
+// Stratégie : garder 2 entrées dans l'historique.
+// Page ouverte → history = [base, app].
+// Bouton retour Android → popstate → on gère nous-mêmes → on repousse "app".
+// Ainsi le bouton retour ne quitte jamais l'app (sauf si on est sur la liste principale
+// et qu'il n'y a rien à fermer → on laisse Android minimiser l'app).
+history.replaceState({sonia:"base"},"","");
+history.pushState({sonia:"app"},"","");
 
-  // Fermer les modales/overlays visibles en priorité
-  const allOverlays=document.querySelectorAll('.overlay,[id="photo-viewer"],[id="video-viewer"],[id="status-viewer"],[id="call-overlay"],[id="status-create-modal"]');
-  for(const el of allOverlays){
-    const d=el.style.display;
-    if(d==="flex"||d==="block"){
-      if(el.id==="call-overlay"){
-        // Ne jamais fermer un appel en cours avec le bouton retour
-        return;
-      }
-      if(el.id==="video-viewer"){
-        const v=document.getElementById("video-viewer-el");
-        if(v){v.pause();v.src="";}
-      }
-      if(el.id==="status-viewer" && typeof closeStatusViewer==="function"){
-        closeStatusViewer();
-      } else {
-        el.style.display="none";
-      }
+window.addEventListener("popstate",function(e){
+  const state=e.state;
+  // Si ce n'est pas notre état "app", reconstruire
+  if(!state||state.sonia!=="app"){
+    history.pushState({sonia:"app"},"","");
+  }
+
+  // 1. Appel en cours → ne rien faire (protéger l'appel)
+  const callOv=$("call-overlay");
+  if(callOv&&callOv.style.display==="flex"){
+    history.pushState({sonia:"app"},"","");
+    return;
+  }
+
+  // 2. Viewer photo/vidéo ouvert
+  const pv=$("photo-viewer");
+  if(pv&&pv.style.display==="flex"){
+    pv.style.display="none";
+    history.pushState({sonia:"app"},"","");
+    return;
+  }
+  const vv=$("video-viewer");
+  if(vv&&(vv.style.display==="flex"||vv.style.display==="block")){
+    const vel=$("video-viewer-el");if(vel){vel.pause();vel.src="";}
+    vv.style.display="none";
+    history.pushState({sonia:"app"},"","");
+    return;
+  }
+
+  // 3. Status viewer ouvert
+  const sv=$("status-viewer");
+  if(sv&&sv.style.display==="flex"){
+    if(typeof closeStatusViewer==="function")closeStatusViewer();
+    history.pushState({sonia:"app"},"","");
+    return;
+  }
+
+  // 4. Overlay visible (modales)
+  const overlays=document.querySelectorAll(".overlay");
+  for(const ov of overlays){
+    if(ov.style.display==="flex"||ov.style.display==="block"){
+      ov.style.display="none";
+      history.pushState({sonia:"app"},"","");
       return;
     }
   }
 
-  // Aucune modale ouverte → naviguer entre écrans
-  const cur=S.currentScreen||"s-list";
-  if(cur==="s-chat"){
-    // Chat → liste
-    S.activeId=null;
+  // 5. Dans le chat → revenir à la liste
+  if(S.currentScreen==="s-chat"){
     if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}
+    S.activeId=null;
     showScreen("s-list");
+    history.pushState({sonia:"app"},"","");
     return;
   }
-  if(cur==="s-status"){
-    // Statuts → liste
+
+  // 6. Dans les statuts → revenir à la liste
+  if(S.currentScreen==="s-status"){
     showScreen("s-list");
-    if(typeof setNav==="function") setNav("nav-chats");
-    else if(window.setNav) window.setNav("nav-chats");
+    if(window.setNav)window.setNav("nav-chats");
+    history.pushState({sonia:"app"},"","");
     return;
   }
-  // Sur la liste principale → minimiser l'app (Android fait ça automatiquement si on ne fait rien)
-  // On ne fait rien de plus ici.
+
+  // 7. Sur la liste principale → laisser Android minimiser l'app
+  // Ne pas repousser l'état → Android fera son travail (minimiser)
+  // Mais on remet quand même la base pour le prochain retour
+  history.replaceState({sonia:"base"},"","");
+  history.pushState({sonia:"app"},"","");
 });
 
 function toast(msg,type){const t=document.createElement("div");t.className="toast"+(type==="err"?" toast-err":"");t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.classList.add("show"),10);setTimeout(()=>{t.classList.remove("show");setTimeout(()=>t.remove(),400);},3000);}
@@ -861,7 +891,7 @@ function renderList(){
   const box=$("contact-list");if(!box)return;
   box.innerHTML="";
   const term=S.search.toLowerCase();
-  const vis=S.contacts.filter(c=>{
+  let vis=S.contacts.filter(c=>{
     const nick=CACHE.load("nick_"+c.uid)||"";
     const displayName=(nick||c.name||c.phone||"").toLowerCase();
     const match=displayName.includes(term)||(c.phone||"").includes(term);
@@ -874,6 +904,14 @@ function renderList(){
       : '<div class="empty-note">Aucune discussion pour le moment<br/><br/>Appuyez sur ➕ pour trouver un ami par son numéro ou son nom</div>';
     return;
   }
+
+  // Trier par timestamp du dernier message (plus récent en haut)
+  vis.sort((a,b)=>{
+    const ta=CACHE.load("lastTs_"+chatKey(S.myUid,a.uid))||0;
+    const tb=CACHE.load("lastTs_"+chatKey(S.myUid,b.uid))||0;
+    return tb-ta;
+  });
+
   vis.forEach(c=>{
     const nick=CACHE.load("nick_"+c.uid)||"";
     const displayName=nick||c.name||c.phone||"Inconnu";
@@ -886,11 +924,26 @@ function renderList(){
     row.querySelector(".arch-btn").onclick=ev=>{ev.stopPropagation();toggleArch(c.uid);};
     row.onclick=()=>openChat(c.uid);
     box.appendChild(row);
+
+    // Écouter le dernier message pour mise à jour en temps réel
     db.ref("chats/"+ck+"/lastMsg").on("value",snap2=>{
       const lm=snap2.val();
-      const lt=document.getElementById("lt-"+ck);const ll=document.getElementById("ll-"+ck);
-      if(lt&&lm)lt.textContent=lm.t||"";
-      if(ll&&lm)ll.textContent=lm.del?"🚫":lm.type==="voice"?"🎵 Vocal":lm.type==="photo"?"📷 Photo":lm.type==="video"?"🎥 Vidéo":(lm.text||"");
+      if(!lm)return;
+      const lt=document.getElementById("lt-"+ck);
+      const ll=document.getElementById("ll-"+ck);
+      if(lt)lt.textContent=lm.t||"";
+      if(ll)ll.textContent=lm.del?"🚫 Message supprimé":
+        lm.type==="voice"?"🎵 Vocal":
+        lm.type==="photo"?"📷 Photo":
+        lm.type==="video"?"🎥 Vidéo":
+        (lm.text||"");
+      // Sauvegarder le timestamp pour le tri
+      if(lm.ts) CACHE.save("lastTs_"+ck, lm.ts);
+      // Re-trier la liste si nécessaire (nouveau message = remonter en haut)
+      const rowEl=document.querySelector('[id="lt-'+ck+'"]')?.closest(".contact-row");
+      if(rowEl&&box.firstChild&&rowEl!==box.firstChild){
+        box.insertBefore(rowEl,box.firstChild);
+      }
     });
   });
 }
@@ -909,60 +962,35 @@ function openChat(uid){
 }
 
 function listenMsgs(){
+  // Nettoyer l'ancien listener
   if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}
   const key=chatKey(S.myUid,S.activeId);
   const box=$("msg-list");
   if(!box)return;
   box.innerHTML="";
 
-  // Charger tous les messages existants d'abord, puis écouter les nouveaux
-  db.ref("chats/"+key+"/messages").once("value",snap=>{
-    box.innerHTML="";
+  const ref=db.ref("chats/"+key+"/messages");
+
+  // Utiliser SEULEMENT .on("value") — plus simple, plus fiable
+  // Firebase envoie toute la liste puis met à jour à chaque changement
+  // Pour les grandes conversations, on limite aux 100 derniers messages
+  const listener=ref.orderByKey().on("value",snap=>{
+    box.innerHTML=""; // Redessiner proprement à chaque mise à jour
     snap.forEach(child=>{
       try{
         const m={id:child.key,...child.val()};
-        box.appendChild(makeBubble(m));
-      }catch(e){console.error("bubble:",e);}
+        const row=makeBubble(m);
+        box.appendChild(row);
+      }catch(e){console.error("bubble err:",e);}
     });
-    box.scrollTop=box.scrollHeight;
-
-    // Maintenant écouter uniquement les NOUVEAUX messages (child_added après le dernier)
-    const lastKey=snap.size>0?Array.from(snap.forEach).pop():null;
-    const q=db.ref("chats/"+key+"/messages").orderByKey().limitToLast(1);
-    // En fait on utilise startAfter sur la dernière clé si elle existe
-    const ref=db.ref("chats/"+key+"/messages");
-    const childHandler=childSnap=>{
-      // Éviter de dupliquer les messages déjà affichés
-      if(document.getElementById("bub-"+childSnap.key))return;
-      try{
-        const m={id:childSnap.key,...childSnap.val()};
-        const bub=makeBubble(m);
-        bub.id="bub-"+m.id;
-        box.appendChild(bub);
-        box.scrollTop=box.scrollHeight;
-      }catch(e){console.error("new bubble:",e);}
-    };
-    // Écouter les changements (suppressions de messages)
-    const changeHandler=childSnap=>{
-      const existing=document.getElementById("bub-"+childSnap.key);
-      if(existing){
-        try{
-          const m={id:childSnap.key,...childSnap.val()};
-          const newBub=makeBubble(m);
-          newBub.id="bub-"+m.id;
-          existing.replaceWith(newBub);
-        }catch(e){}
-      }
-    };
-    ref.on("child_added",childHandler);
-    ref.on("child_changed",changeHandler);
-    S.unsubMsgs=()=>{
-      ref.off("child_added",childHandler);
-      ref.off("child_changed",changeHandler);
-    };
-  }).catch(err=>{
+    // Scroll vers le bas
+    requestAnimationFrame(()=>{ box.scrollTop=box.scrollHeight; });
+  },err=>{
+    console.error("listenMsgs err:",err.code,err.message);
     toast("Erreur messages : "+err.message,"err");
   });
+
+  S.unsubMsgs=()=>ref.off("value",listener);
 }
 
 function makeBubble(m){
@@ -1062,7 +1090,7 @@ function pushMsg(m){
   }
 
   return db.ref("chats/"+key+"/messages").push(m).then(()=>{
-    return db.ref("chats/"+key+"/lastMsg").set({text:m.text||"",t:m.t,type:m.type,del:false});
+    return db.ref("chats/"+key+"/lastMsg").set({text:m.text||"",t:m.t,type:m.type,del:false,ts:Date.now()});
   }).catch(e=>{
     toast("Échec de l'envoi : "+e.message,"err");
     throw e;
