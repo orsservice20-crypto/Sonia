@@ -76,44 +76,64 @@ const chatKey=(a,b)=>[a,b].sort().join("_");
 function showScreen(id,pushHistory){
   document.querySelectorAll(".screen").forEach(s=>s.classList.add("off"));
   $(id).classList.remove("off");
+  // Gestion de l'historique pour le bouton retour du téléphone
   if(pushHistory!==false){
-    if(id==="s-list"){
-      // Écran racine : on remplace l'historique pour éviter d'empiler
-      history.replaceState({screen:"s-list"},"","#");
+    if(id==="s-list"||id==="s-auth"||id==="s-splash"){
+      history.replaceState({screen:id},"","");
     } else {
-      history.pushState({screen:id},"","#"+id);
+      history.pushState({screen:id},"","");
     }
   }
 }
 
-// ---- BOUTON RETOUR DU TÉLÉPHONE : navigation interne au lieu de quitter l'app ----
-history.replaceState({screen:"s-list"},"","#");
-window.addEventListener("popstate",e=>{
-  // Fermer en priorité les overlays/modales ouverts
-  const openOverlay=document.querySelector(".overlay:not([style*='display: none']):not([style*='display:none'])");
-  if(openOverlay){ openOverlay.style.display="none"; history.pushState({screen:"s-list"},"","#"); return; }
-  if($("photo-viewer").style.display==="flex"){$("photo-viewer").style.display="none";history.pushState({screen:"s-list"},"","#");return;}
-  if($("video-viewer").style.display==="flex"||$("video-viewer").style.display==="block"){const v=$("video-viewer-el");v.pause();v.src="";$("video-viewer").style.display="none";history.pushState({screen:"s-list"},"","#");return;}
-  if($("status-viewer").style.display==="flex"){closeStatusViewer();history.pushState({screen:"s-list"},"","#");return;}
-  if($("status-create-modal").style.display==="flex"){$("status-create-modal").style.display="none";history.pushState({screen:"s-list"},"","#");return;}
-  if($("call-overlay").style.display==="flex"){
-    // Ne pas fermer un appel en cours via le bouton retour
-    history.pushState({screen:"s-chat"},"","#s-chat");return;
+// ---- BOUTON RETOUR DU TÉLÉPHONE ----
+history.replaceState({screen:"s-splash"},"","");
+window.addEventListener("popstate",function(e){
+  // Priorité 1 : fermer une overlay/modale ouverte
+  const modals=["call-overlay","status-create-modal","status-viewer","photo-viewer","video-viewer"];
+  for(const id of modals){
+    const el=$(id);
+    if(el && (el.style.display==="flex"||el.style.display==="block")){
+      if(id==="video-viewer"){const v=$("video-viewer-el");if(v){v.pause();v.src="";}el.style.display="none";}
+      else if(id==="status-viewer"){closeStatusViewer();}
+      else if(id==="call-overlay"){
+        // Ne pas fermer l'appel avec le bouton retour — juste repousser l'état
+        history.pushState({screen:"call"},"","");
+        return;
+      }
+      else {el.style.display="none";}
+      history.pushState({screen:"current"},"","");
+      return;
+    }
   }
-
-  // Navigation entre écrans principaux
-  if($("s-chat") && !$("s-chat").classList.contains("off")){
-    S.activeId=null;if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}
+  // Fermer les overlays .overlay visibles
+  const overlays=document.querySelectorAll('.overlay');
+  for(const ov of overlays){
+    if(ov.style.display!=="none" && ov.style.display!==""){
+      ov.style.display="none";
+      history.pushState({screen:"current"},"","");
+      return;
+    }
+  }
+  // Priorité 2 : revenir au chat → liste
+  const chatScreen=$("s-chat");
+  if(chatScreen && !chatScreen.classList.contains("off")){
+    S.activeId=null;
+    if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}
     showScreen("s-list",false);
-    history.replaceState({screen:"s-list"},"","#");
+    history.replaceState({screen:"s-list"},"","");
     return;
   }
-  if($("s-status") && !$("s-status").classList.contains("off")){
-    showScreen("s-list",false);setNav("nav-chats");
-    history.replaceState({screen:"s-list"},"","#");
+  // Priorité 3 : revenir du statut → liste
+  const statusScreen=$("s-status");
+  if(statusScreen && !statusScreen.classList.contains("off")){
+    showScreen("s-list",false);
+    if(window.setNav) setNav("nav-chats");
+    history.replaceState({screen:"s-list"},"","");
     return;
   }
-  // Sur l'écran principal : laisser le comportement par défaut (quitter/minimiser) au prochain retour
+  // Sur l'écran principal → ne rien faire (laisser le comportement par défaut = minimiser l'app)
+  history.replaceState({screen:"s-list"},"","");
 });
 
 function toast(msg,type){const t=document.createElement("div");t.className="toast"+(type==="err"?" toast-err":"");t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.classList.add("show"),10);setTimeout(()=>{t.classList.remove("show");setTimeout(()=>t.remove(),400);},3000);}
@@ -468,15 +488,21 @@ window.startCall = async function(type){
   const ref=db.ref(S.callRef);
   const handler = async snap=>{
     const data=snap.val();
-    if(!data){ return; }
+    if(!data){
+      // Le nœud a été supprimé → l'appel est terminé
+      endCall(true);
+      return;
+    }
     if(data.status==="rejected"){
       $("call-state-text").textContent="Appel refusé";
       setTimeout(()=>endCall(true),1200);
     } else if(data.status==="ended"){
       endCall(true);
     } else if(data.answer && S.pc && !S.pc.currentRemoteDescription){
-      await S.pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-      $("call-state-text").textContent="Connexion...";
+      try{
+        await S.pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+        $("call-state-text").textContent="Connexion...";
+      }catch(e){ console.error("setRemoteDescription:",e); }
     }
   };
   ref.on("value",handler);
@@ -574,7 +600,10 @@ window.acceptCall = async function(){
   const ref=db.ref(S.callRef);
   const handler=snap=>{
     const data=snap.val();
-    if(!data || data.status==="ended"){ endCall(true); }
+    // Si le nœud est supprimé ou statut terminé → raccrocher
+    if(!data || data.status==="ended" || data.status==="rejected"){
+      endCall(true);
+    }
   };
   ref.on("value",handler);
   S.unsubCall=()=>ref.off("value",handler);
@@ -582,23 +611,41 @@ window.acceptCall = async function(){
 
 // ---- Refuser un appel entrant ----
 window.rejectCall = function(){
-  if(S.callRef) db.ref(S.callRef).update({status:"rejected"}).catch(()=>{});
+  if(S.callRef){
+    db.ref(S.callRef).update({status:"rejected"}).then(()=>{
+      setTimeout(()=>{ if(S.callRef) db.ref(S.callRef).remove().catch(()=>{}); }, 1000);
+    }).catch(()=>{});
+  }
   endCall(true);
 };
 
 // ---- Terminer l'appel ----
 window.endCall = function(silent){
-  if(!silent && S.callRef) db.ref(S.callRef).update({status:"ended"}).catch(()=>{});
-  if(S.callRef && S.callDir){
-    const refToDelete=S.callRef;
-    setTimeout(()=>{db.ref(refToDelete).remove().catch(()=>{});}, 1500);
+  // Éviter double-exécution
+  if(!S.callRef && !S.pc && !S.localStream) return;
+
+  // Notifier l'autre côté AVANT de nettoyer S.callRef
+  const refPath = S.callRef;
+  if(!silent && refPath){
+    db.ref(refPath).update({status:"ended"}).catch(()=>{});
   }
+
+  // Supprimer le signal Firebase après un délai (laisser l'autre côté voir "ended")
+  if(refPath){
+    setTimeout(()=>{ db.ref(refPath).remove().catch(()=>{}); }, 2000);
+  }
+
+  // Nettoyer la connexion WebRTC
+  if(S.unsubCall){ try{S.unsubCall();}catch(e){} S.unsubCall=null; }
+  if(S.unsubIce){ try{S.unsubIce();}catch(e){} S.unsubIce=null; }
   if(S.pc){ try{S.pc.close();}catch(e){} S.pc=null; }
-  if(S.localStream){ S.localStream.getTracks().forEach(t=>t.stop()); S.localStream=null; }
+  if(S.localStream){ S.localStream.getTracks().forEach(t=>{ try{t.stop();}catch(e){} }); S.localStream=null; }
   S.remoteStream=null;
-  if(S.unsubCall){S.unsubCall();S.unsubCall=null;}
-  if(S.unsubIce){S.unsubIce();S.unsubIce=null;}
-  S.callRef=null;S.callDir=null;S.callPeer=null;S.incomingOffer=null;
+
+  // Réinitialiser l'état
+  S.callRef=null; S.callDir=null; S.callPeer=null; S.incomingOffer=null;
+
+  // Réinitialiser l'UI
   resetCallOverlay();
 };
 
@@ -873,11 +920,8 @@ function updateArchBtn(){const b=$("arch-btn");if(b)b.textContent=S.arch.has(S.a
 // ---- CHAT ----
 function openChat(uid){
   S.activeId=uid;
-  const c=S.contacts.find(x=>x.uid===uid)||{};
-  const cav=$("c-av");if(cav)cav.innerHTML=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
-  const cd=$("c-dot");if(cd)cd.className="dot "+(c.online?"online":"offline");
-  const cn=$("c-name");if(cn)cn.textContent=c.name||c.phone||"Inconnu";
-  const cs=$("c-status");if(cs){cs.textContent=c.online?"● En ligne":"⚫ Hors ligne";cs.style.color=c.online?"var(--green)":"var(--sub)";}
+  const c=S.contacts.find(x=>x.uid===uid)||{phone:uid};
+  refreshChatHeader(c);
   updateArchBtn();
   showScreen("s-chat");
   listenMsgs();
@@ -1511,15 +1555,15 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 <!-- CHAT -->
 <div class="screen off" id="s-chat">
   <div class="chat-bar">
-    <button class="back-btn" onclick="S.activeId=null;if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}showScreen('s-list')">‹</button>
-    <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;cursor:pointer" onclick="openContactInfo()">
+    <button class="back-btn" onclick="event.stopPropagation();S.activeId=null;if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}showScreen('s-list')">‹</button>
+    <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;cursor:pointer;overflow:hidden" onclick="openContactInfo()">
       <div style="position:relative;flex-shrink:0"><div class="chat-av" id="c-av"></div><div class="dot" id="c-dot"></div></div>
-      <div class="chat-info"><div class="chat-name" id="c-name"></div><div class="chat-status" id="c-status"></div></div>
+      <div class="chat-info" style="min-width:0;overflow:hidden"><div class="chat-name" id="c-name" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div><div class="chat-status" id="c-status"></div></div>
     </div>
-    <div class="call-btns">
-      <button class="call-btn-sm" onclick="startCall('audio')">📞</button>
-      <button class="call-btn-sm" onclick="startCall('video')">📹</button>
-      <button class="call-btn-sm" id="arch-btn" onclick="if(S.activeId)toggleArch(S.activeId)">🗄</button>
+    <div class="call-btns" style="flex-shrink:0">
+      <button class="call-btn-sm" onclick="event.stopPropagation();startCall('audio')">📞</button>
+      <button class="call-btn-sm" onclick="event.stopPropagation();startCall('video')">📹</button>
+      <button class="call-btn-sm" id="arch-btn" onclick="event.stopPropagation();if(S.activeId)toggleArch(S.activeId)">🗄</button>
     </div>
   </div>
   <div id="msg-list"></div>
