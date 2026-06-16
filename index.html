@@ -53,6 +53,7 @@ const S={
   myUid:null,myPhone:null,
   profile:{name:"",status:"En ligne",avType:"emoji",emoji:"🧑🏾",img:null},
   contacts:[],activeId:null,arch:new Set(),tab:"chats",search:"",
+  currentScreen:"s-splash",
   unsubMsgs:null,unsubContacts:null,
   recPaused:false,recSecs:0,recTick:null,
   recStream:null,recorder:null,recChunks:[],recMimeType:null,
@@ -73,67 +74,60 @@ const nowT=()=>new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digi
 const esc=t=>String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 const chatKey=(a,b)=>[a,b].sort().join("_");
 
-function showScreen(id,pushHistory){
+function showScreen(id){
   document.querySelectorAll(".screen").forEach(s=>s.classList.add("off"));
   $(id).classList.remove("off");
-  // Gestion de l'historique pour le bouton retour du téléphone
-  if(pushHistory!==false){
-    if(id==="s-list"||id==="s-auth"||id==="s-splash"){
-      history.replaceState({screen:id},"","");
-    } else {
-      history.pushState({screen:id},"","");
-    }
-  }
+  S.currentScreen=id;
 }
 
 // ---- BOUTON RETOUR DU TÉLÉPHONE ----
-history.replaceState({screen:"s-splash"},"","");
-window.addEventListener("popstate",function(e){
-  // Priorité 1 : fermer une overlay/modale ouverte
-  const modals=["call-overlay","status-create-modal","status-viewer","photo-viewer","video-viewer"];
-  for(const id of modals){
-    const el=$(id);
-    if(el && (el.style.display==="flex"||el.style.display==="block")){
-      if(id==="video-viewer"){const v=$("video-viewer-el");if(v){v.pause();v.src="";}el.style.display="none";}
-      else if(id==="status-viewer"){closeStatusViewer();}
-      else if(id==="call-overlay"){
-        // Ne pas fermer l'appel avec le bouton retour — juste repousser l'état
-        history.pushState({screen:"call"},"","");
+// On garde toujours UNE SEULE entrée "app" dans l'historique.
+// Quand Android pop cette entrée, on la remet et on gère le retour nous-mêmes.
+history.replaceState({app:true},"","");
+window.addEventListener("popstate",function(){
+  // Remettre immédiatement l'entrée pour garder le contrôle
+  history.pushState({app:true},"","");
+
+  // Fermer les modales/overlays visibles en priorité
+  const allOverlays=document.querySelectorAll('.overlay,[id="photo-viewer"],[id="video-viewer"],[id="status-viewer"],[id="call-overlay"],[id="status-create-modal"]');
+  for(const el of allOverlays){
+    const d=el.style.display;
+    if(d==="flex"||d==="block"){
+      if(el.id==="call-overlay"){
+        // Ne jamais fermer un appel en cours avec le bouton retour
         return;
       }
-      else {el.style.display="none";}
-      history.pushState({screen:"current"},"","");
+      if(el.id==="video-viewer"){
+        const v=document.getElementById("video-viewer-el");
+        if(v){v.pause();v.src="";}
+      }
+      if(el.id==="status-viewer" && typeof closeStatusViewer==="function"){
+        closeStatusViewer();
+      } else {
+        el.style.display="none";
+      }
       return;
     }
   }
-  // Fermer les overlays .overlay visibles
-  const overlays=document.querySelectorAll('.overlay');
-  for(const ov of overlays){
-    if(ov.style.display!=="none" && ov.style.display!==""){
-      ov.style.display="none";
-      history.pushState({screen:"current"},"","");
-      return;
-    }
-  }
-  // Priorité 2 : revenir au chat → liste
-  const chatScreen=$("s-chat");
-  if(chatScreen && !chatScreen.classList.contains("off")){
+
+  // Aucune modale ouverte → naviguer entre écrans
+  const cur=S.currentScreen||"s-list";
+  if(cur==="s-chat"){
+    // Chat → liste
     S.activeId=null;
     if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}
-    showScreen("s-list",false);
-    history.replaceState({screen:"s-list"},"","");
+    showScreen("s-list");
     return;
   }
-  // Priorité 3 : revenir du statut → liste
-  const statusScreen=$("s-status");
-  if(statusScreen && !statusScreen.classList.contains("off")){
-    showScreen("s-list",false);
-    if(window.setNav) setNav("nav-chats");
-    history.replaceState({screen:"s-list"},"","");
+  if(cur==="s-status"){
+    // Statuts → liste
+    showScreen("s-list");
+    if(typeof setNav==="function") setNav("nav-chats");
+    else if(window.setNav) window.setNav("nav-chats");
     return;
   }
-  // Sur l'écran principal → ne rien faire (laisser le comportement par défaut = minimiser l'app)
-  history.replaceState({screen:"s-list"},"","");
+  // Sur la liste principale → minimiser l'app (Android fait ça automatiquement si on ne fait rien)
+  // On ne fait rien de plus ici.
 });
 
 function toast(msg,type){const t=document.createElement("div");t.className="toast"+(type==="err"?" toast-err":"");t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.classList.add("show"),10);setTimeout(()=>{t.classList.remove("show");setTimeout(()=>t.remove(),400);},3000);}
@@ -930,16 +924,35 @@ function openChat(uid){
 function listenMsgs(){
   if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}
   const key=chatKey(S.myUid,S.activeId);
-  const cached=CACHE.load("msgs_"+key);
-  if(cached&&cached.length){const box=$("msg-list");box.innerHTML="";cached.forEach(m=>box.appendChild(makeBubble(m)));box.scrollTop=box.scrollHeight;}
+  // Afficher le cache immédiatement (hors-ligne ou en attendant Firebase)
+  try{
+    const cached=CACHE.load("msgs_"+key);
+    if(cached&&cached.length){
+      const box=$("msg-list");
+      if(box){box.innerHTML="";cached.forEach(m=>{try{box.appendChild(makeBubble(m));}catch(e){console.error("makeBubble cache:",e);}});box.scrollTop=box.scrollHeight;}
+    }
+  }catch(e){console.error("cache msgs:",e);}
   if(!isOnline)return;
+  // Écouter Firebase en temps réel
   S.unsubMsgs=db.ref("chats/"+key+"/messages").on("value",snap=>{
-    const msgs=[];const box=$("msg-list");box.innerHTML="";
-    snap.forEach(child=>{const m={id:child.key,...child.val()};if(m.type!=="photo"&&m.type!=="video")msgs.push(m);box.appendChild(makeBubble(m));});
-    CACHE.save("msgs_"+key,msgs);box.scrollTop=box.scrollHeight;
+    try{
+      const msgs=[];
+      const box=$("msg-list");
+      if(!box)return;
+      box.innerHTML="";
+      snap.forEach(child=>{
+        try{
+          const m={id:child.key,...child.val()};
+          if(m.type!=="photo"&&m.type!=="video") msgs.push(m);
+          box.appendChild(makeBubble(m));
+        }catch(e){console.error("makeBubble live:",e);}
+      });
+      CACHE.save("msgs_"+key,msgs);
+      box.scrollTop=box.scrollHeight;
+    }catch(e){console.error("listenMsgs snap:",e);}
   }, err=>{
-    console.error("listenMsgs erreur:",err.message);
-    toast("Erreur de chargement des messages : "+err.message,"err");
+    console.error("listenMsgs Firebase erreur:",err.message);
+    toast("Erreur messages : "+err.message,"err");
   });
 }
 
