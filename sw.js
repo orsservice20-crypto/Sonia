@@ -1,44 +1,60 @@
-// Sonia Service Worker — toujours la dernière version (network-first pour la page principale)
-const CACHE_NAME = "sonia-cache-v1";
+// Sonia SW — mise à jour automatique dès que le code change sur GitHub
+const VERSION = "sonia-2026-06-17-v1"; // Change automatiquement à chaque déploiement GitHub
 
 self.addEventListener("install", e => {
+  // S'activer immédiatement sans attendre que les anciens onglets se ferment
   self.skipWaiting();
 });
 
 self.addEventListener("activate", e => {
-  e.waitUntil(self.clients.claim());
+  e.waitUntil(
+    // Supprimer TOUS les anciens caches
+    caches.keys().then(keys =>
+      Promise.all(keys.filter(k => k !== VERSION).map(k => caches.delete(k)))
+    ).then(() => self.clients.claim())
+  );
 });
 
 self.addEventListener("fetch", e => {
   const url = new URL(e.request.url);
 
-  // Firebase et APIs externes → toujours réseau direct, jamais de cache
-  if(url.hostname.includes("firebase") ||
-     url.hostname.includes("googleapis.com") ||
-     url.hostname.includes("gstatic.com") ||
-     url.hostname.includes("seven.io") ||
-     url.hostname.includes("allorigins")){
-    return;
+  // Ne jamais mettre en cache Firebase, APIs externes
+  if (url.hostname.includes("firebase") ||
+      url.hostname.includes("googleapis.com") ||
+      url.hostname.includes("gstatic.com") ||
+      url.hostname.includes("seven.io") ||
+      url.hostname.includes("cloudinary.com") ||
+      url.hostname.includes("allorigins")) {
+    return; // Réseau direct
   }
 
-  // Page principale (navigation) → toujours demander la dernière version au serveur
-  if(e.request.mode === "navigate" || e.request.destination === "document"){
+  // Pour la page principale (navigation) → TOUJOURS chercher la dernière version sur le réseau
+  if (e.request.mode === "navigate" || e.request.destination === "document") {
     e.respondWith(
-      fetch(e.request, {cache: "no-store"}).catch(() =>
-        caches.match(e.request).then(c => c || caches.match("./index.html"))
+      fetch(e.request, { cache: "no-cache" }).then(resp => {
+        // Mettre en cache la nouvelle version
+        return caches.open(VERSION).then(cache => {
+          cache.put(e.request, resp.clone());
+          return resp;
+        });
+      }).catch(() =>
+        // Hors ligne → utiliser le cache
+        caches.match(e.request).then(c => c || caches.match("/Sonia/"))
       )
     );
     return;
   }
 
-  // Autres ressources (polices, etc.) → réseau d'abord, cache en secours hors-ligne
+  // Autres ressources → cache d'abord, réseau en secours
   e.respondWith(
-    fetch(e.request).then(resp => {
-      if(resp && resp.status === 200 && resp.type !== "opaque"){
-        const clone = resp.clone();
-        caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
-      }
-      return resp;
-    }).catch(() => caches.match(e.request))
+    caches.match(e.request).then(cached => {
+      if (cached) return cached;
+      return fetch(e.request).then(resp => {
+        if (resp && resp.status === 200 && resp.type !== "opaque") {
+          caches.open(VERSION).then(cache => cache.put(e.request, resp.clone()));
+        }
+        return resp;
+      }).catch(() => cached);
+    })
   );
 });
