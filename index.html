@@ -57,7 +57,7 @@ const S={
   unsubMsgs:null,unsubContacts:null,
   recPaused:false,recSecs:0,recTick:null,
   recStream:null,recorder:null,recChunks:[],recMimeType:null,
-  pendingPhoto:null,pendingVideo:null,pendingPhone:null,
+  pendingPhoto:null,pendingVideo:null,pendingVideoFile:null,pendingPhone:null,
   // WebRTC
   pc:null,localStream:null,remoteStream:null,
   callType:null,callDir:null,callPeer:null,callTick:null,callSecs:0,callMuted:false,callCamOff:false,
@@ -145,8 +145,8 @@ window.addEventListener("popstate",function(e){
     return;
   }
 
-  // 6. Dans les statuts → revenir à la liste
-  if(S.currentScreen==="s-status"){
+  // 6. Dans les statuts ou appels → revenir à la liste
+  if(S.currentScreen==="s-status"||S.currentScreen==="s-calls"){
     showScreen("s-list");
     if(window.setNav)window.setNav("nav-chats");
     history.pushState({sonia:"app"},"","");
@@ -647,6 +647,11 @@ window.rejectCall=function(){
 window.endCall=function(silent){
   if(!S.callRef&&!S.pc&&!S.localStream)return;
   const refPath=S.callRef;
+  const peer=S.callPeer;
+  const dir=S.callDir;
+  const type=S.callType;
+  const secs=S.callSecs;
+
   if(!silent&&refPath){
     db.ref(refPath).update({status:"ended"}).then(()=>{
       setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),2000);
@@ -654,6 +659,7 @@ window.endCall=function(silent){
   } else if(refPath){
     setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),2500);
   }
+
   if(S.unsubCall){try{S.unsubCall();}catch(e){} S.unsubCall=null;}
   if(S.unsubIce){try{S.unsubIce();}catch(e){} S.unsubIce=null;}
   if(S.pc){try{S.pc.close();}catch(e){} S.pc=null;}
@@ -661,6 +667,27 @@ window.endCall=function(silent){
   S.remoteStream=null;
   S.callRef=null;S.callDir=null;S.callPeer=null;S.incomingOffer=null;
   resetCallOverlay();
+
+  // Sauvegarder dans l'historique des appels
+  if(peer&&dir&&S.myUid){
+    const contact=S.contacts.find(c=>c.uid===peer)||{};
+    const nick=CACHE.load("nick_"+peer)||"";
+    const entry={
+      peer,
+      peerName:nick||contact.name||contact.phone||peer,
+      peerEmoji:contact.emoji||"🧑🏾",
+      peerAvType:contact.avType||"emoji",
+      peerImg:contact.img||null,
+      dir, // "out" ou "in"
+      type:type||"audio",
+      duration:secs||0,
+      missed: secs===0 && dir==="in",
+      ts:Date.now(),
+      time:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"}),
+      date:new Date().toLocaleDateString("fr",{day:"2-digit",month:"short"})
+    };
+    db.ref("callLog/"+S.myUid).push(entry).catch(()=>{});
+  }
 };
 
 window.callToggleMute=function(){
@@ -674,6 +701,74 @@ window.callToggleCam=function(){
   S.callCamOff=!S.callCamOff;
   S.localStream.getVideoTracks().forEach(t=>t.enabled=!S.callCamOff);
   const b=$("call-cam-btn");b.className="cb-btn"+(S.callCamOff?" on":"");b.textContent="📷";
+};
+
+// ---- HISTORIQUE D'APPELS ----
+window.loadCallLog=function(){
+  const list=$("call-log-list");
+  const noMsg=$("no-calls-msg");
+  if(!list)return;
+  list.innerHTML="";
+  if(noMsg){list.appendChild(noMsg);noMsg.style.display="block";}
+
+  db.ref("callLog/"+S.myUid).orderByChild("ts").limitToLast(50).get().then(snap=>{
+    if(!snap.exists()||snap.numChildren()===0){
+      if(noMsg)noMsg.style.display="block";
+      return;
+    }
+    if(noMsg)noMsg.style.display="none";
+    const entries=[];
+    snap.forEach(child=>entries.push({id:child.key,...child.val()}));
+    // Plus récent en premier
+    entries.reverse().forEach(entry=>{
+      const item=document.createElement("div");
+      item.className="call-log-item"+(entry.missed?" call-log-missed":"");
+      const avH=(entry.peerAvType==="img"&&entry.peerImg)
+        ?'<img src="'+entry.peerImg+'" />'
+        :'<span>'+(entry.peerEmoji||"🧑🏾")+'</span>';
+      const dirIcon=entry.missed?"📵":entry.dir==="out"?"📤":"📥";
+      const typeIcon=entry.type==="video"?"📹":"📞";
+      const durText=entry.duration>0?fmt(entry.duration):"";
+      const detail=(entry.missed?"Appel manqué · ":"")
+        +(entry.dir==="out"?"Sortant · ":"Entrant · ")
+        +typeIcon+" · "
+        +entry.date+" à "+entry.time
+        +(durText?" · "+durText:"");
+      item.innerHTML=
+        '<div class="call-log-av">'+avH+'</div>'+
+        '<div class="call-log-info">'+
+          '<div class="call-log-name">'+esc(entry.peerName||"Inconnu")+'</div>'+
+          '<div class="call-log-detail">'+dirIcon+' '+detail+'</div>'+
+        '</div>'+
+        '<button class="call-log-icon" title="Rappeler" onclick="event.stopPropagation();recallContact(\''+entry.peer+'\',\''+entry.type+'\')">'+typeIcon+'</button>';
+      item.onclick=()=>{
+        // Ouvrir la discussion avec ce contact
+        if(S.contacts.find(c=>c.uid===entry.peer)){
+          openChat(entry.peer);
+          showScreen("s-list");
+          setNav("nav-chats");
+        }
+      };
+      list.appendChild(item);
+    });
+  }).catch(err=>{
+    console.error("loadCallLog:",err.message);
+  });
+};
+
+window.recallContact=function(uid,type){
+  if(!uid)return;
+  // Ouvrir le chat avec ce contact et lancer l'appel
+  S.activeId=uid;
+  startCall(type||"audio");
+};
+
+window.clearCallLog=function(){
+  if(!confirm("Effacer tout l'historique d'appels ?"))return;
+  db.ref("callLog/"+S.myUid).remove().then(()=>{
+    loadCallLog();
+    toast("Historique effacé");
+  }).catch(e=>toast("Erreur : "+e.message,"err"));
 };
 // ==================== FIN APPELS WEBRTC ====================
 
@@ -1097,14 +1192,15 @@ function delMsg(msgId, forEveryone){
 
 function pushMsg(m){
   const key=chatKey(S.myUid,S.activeId);
-  if(!m.ts) m.ts=Date.now(); // timestamp pour tri
+  if(!m.ts) m.ts=Date.now();
 
-  if(m.src && m.src.length > 6*1024*1024){
-    toast("Fichier trop volumineux (max ~4 Mo). Message non envoyé.","err");
+  // Vérifier taille seulement pour les base64 (pas pour les URLs Firebase Storage)
+  if(m.src && !m.storageUrl && m.src.startsWith("data:") && m.src.length > 6*1024*1024){
+    toast("Fichier trop volumineux (max ~4 Mo). Utilisez une photo plus petite.","err");
     return Promise.reject(new Error("trop volumineux"));
   }
 
-  return db.ref("chats/"+key+"/messages").push(m).then(ref=>{
+  return db.ref("chats/"+key+"/messages").push(m).then(()=>{
     return db.ref("chats/"+key+"/lastMsg").set({text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts});
   }).catch(e=>{
     toast("Échec de l'envoi : "+e.message,"err");
@@ -1240,11 +1336,26 @@ function showStatusItem(idx,isMine){
     $("sv-vid").ontimeupdate=()=>{const pct=($("sv-vid").currentTime/($("sv-vid").duration||1))*100;fill.style.width=pct+"%";};
   }
   if(isMine){
-    const viewers=s.viewers?Object.values(s.viewers):[];
-    $("sv-viewers-count").textContent=viewers.length+" vue"+(viewers.length>1?"s":"");
-    $("sv-viewers-names").textContent=viewers.map(v=>v.name||"?").join(", ");
     $("sv-viewers-el").style.display="flex";
-  } else {$("sv-viewers-el").style.display="none";}
+    // Charger les vues en direct depuis Firebase
+    db.ref("statuses/"+s.uid+"/"+s.id+"/viewers").get().then(snap=>{
+      const viewers=[];
+      snap.forEach(child=>viewers.push(child.val()));
+      const count=viewers.length;
+      $("sv-viewers-count").textContent=count+" vue"+(count>1?"s":"");
+      $("sv-viewers-names").textContent=viewers.length>0
+        ? viewers.map(v=>v.name||v.phone||"?").join(", ")
+        : "Personne n'a encore vu";
+    }).catch(()=>{
+      // Fallback sur les données locales
+      const viewers=s.viewers?Object.values(s.viewers):[];
+      $("sv-viewers-count").textContent=viewers.length+" vue"+(viewers.length>1?"s":"");
+      $("sv-viewers-names").textContent=viewers.map(v=>v.name||"?").join(", ");
+    });
+  } else {
+    $("sv-viewers-el").style.display="none";
+    markViewed(s);
+  }
   for(let i=0;i<idx;i++){const f=document.getElementById("svbar-"+i);if(f)f.style.width="100%";}
 }
 
@@ -1269,18 +1380,16 @@ if("serviceWorker" in navigator){
 </script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-html,body{height:100%;width:100%;overflow:hidden;background:#0b1120}
-body{font-family:'Sora',sans-serif;color:#e8f0fe}
+html,body{height:100%;width:100%;overflow:hidden;background:#f0f2f5}
+body{font-family:'Sora',sans-serif;color:#111827}
 button{font-family:inherit;cursor:pointer;border:none;background:none;padding:0}
 input,textarea{font-family:inherit;border:none;outline:none}
 ::-webkit-scrollbar{width:0}
-:root{--bg:#0b1120;--surface:#111827;--card:#19253a;--accent:#00d4aa;--accent2:#00a882;--glow:rgba(0,212,170,.13);--bubble-in:#1e3a5f;--bubble-out:#004d3e;--text:#e8f0fe;--sub:#7a8ea8;--dim:#3d5068;--danger:#ff4757;--warn:#ffa502;--green:#2ed573;--border:rgba(255,255,255,.07);}
-[data-theme="light"]{--bg:#f0f2f5;--surface:#ffffff;--card:#ffffff;--accent:#00a882;--accent2:#007a63;--glow:rgba(0,168,130,.10);--bubble-in:#d4e8f7;--bubble-out:#d9fdd3;--text:#111827;--sub:#6b7280;--dim:#d1d5db;--danger:#ff4757;--warn:#ffa502;--green:#16a34a;--border:rgba(0,0,0,.09);}
-[data-theme="light"] html,[data-theme="light"] body{background:#f0f2f5;color:#111827}
-[data-theme="light"] .otp-box{background:#f9fafb;border-color:#d1d5db;color:#111827}
-[data-theme="light"] .bubble.in{background:#d4e8f7;color:#111827}
-[data-theme="light"] .bubble.out{background:#d9fdd3;color:#111827}
-[data-theme="light"] .b-time{color:#6b7280}
+/* THÈME BLANC (défaut) */
+:root{--bg:#f0f2f5;--surface:#ffffff;--card:#ffffff;--accent:#00a882;--accent2:#007a63;--glow:rgba(0,168,130,.10);--bubble-in:#e8f4fd;--bubble-out:#d9fdd3;--text:#111827;--sub:#6b7280;--dim:#d1d5db;--danger:#ff4757;--warn:#f59e0b;--green:#16a34a;--border:rgba(0,0,0,.08);--shadow:0 1px 3px rgba(0,0,0,.10);--chat-bg:#e5ddd5;}
+/* THÈME SOMBRE (optionnel) */
+[data-theme="dark"]{--bg:#0b1120;--surface:#111827;--card:#19253a;--accent:#00d4aa;--accent2:#00a882;--glow:rgba(0,212,170,.13);--bubble-in:#1e3a5f;--bubble-out:#004d3e;--text:#e8f0fe;--sub:#7a8ea8;--dim:#3d5068;--danger:#ff4757;--warn:#ffa502;--green:#2ed573;--border:rgba(255,255,255,.07);--shadow:0 1px 3px rgba(0,0,0,.4);--chat-bg:#0b1120;}
+[data-theme="dark"] html,[data-theme="dark"] body{background:#0b1120;color:#e8f0fe}
 .screen{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--bg);transition:transform .3s,opacity .3s}
 .screen.off{transform:translateX(100%);opacity:0;pointer-events:none}
 .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--card);color:var(--text);padding:10px 20px;border-radius:20px;font-size:13px;font-weight:600;border:1px solid var(--border);opacity:0;transition:all .3s;z-index:9999;white-space:nowrap}
@@ -1352,7 +1461,7 @@ input,textarea{font-family:inherit;border:none;outline:none}
 .chat-status{font-size:12px;margin-top:1px}
 .call-btns{display:flex;gap:8px}
 .call-btn-sm{width:38px;height:38px;border-radius:11px;background:var(--card);border:1px solid var(--border);font-size:17px;display:flex;align-items:center;justify-content:center;cursor:pointer}
-#msg-list{flex:1;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:3px;background-image:radial-gradient(var(--glow) 1px,transparent 1px);background-size:28px 28px}
+#msg-list{flex:1;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:3px;background:var(--chat-bg)}
 .bubble-row{display:flex}.bubble-row.out{justify-content:flex-end}.bubble-row.in{justify-content:flex-start}
 .bubble{max-width:78%;padding:9px 13px;font-size:14px;line-height:1.5;position:relative}
 .bubble.out{background:var(--bubble-out);border-radius:18px 18px 4px 18px;color:var(--text)}
@@ -1377,7 +1486,7 @@ input,textarea{font-family:inherit;border:none;outline:none}
 .mic-btn-el.recording{background:var(--danger);transform:scale(1.2)}
 .send-btn-el{width:42px;height:42px;border-radius:50%;background:var(--accent);color:#000;font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 /* INPUT */
-#input-bar{padding:10px 12px;border-top:1px solid var(--border);background:var(--surface);flex-shrink:0;padding-bottom:max(10px,env(safe-area-inset-bottom))}
+#input-bar{padding:10px 12px;border-top:1px solid var(--border);background:var(--surface);flex-shrink:0;padding-bottom:max(10px,env(safe-area-inset-bottom));position:relative}
 .input-row{display:flex;gap:5px;align-items:center}
 .in-icon{width:36px;height:36px;border-radius:11px;background:var(--card);border:1px solid var(--border);font-size:17px;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer}
 .txt-input{flex:1;min-width:0;padding:9px 10px;background:var(--bg);border:1.5px solid var(--border);border-radius:14px;color:var(--text);font-size:14px;resize:none;overflow:hidden;max-height:120px;line-height:1.4}
@@ -1449,7 +1558,18 @@ input,textarea{font-family:inherit;border:none;outline:none}
 .f-input:focus{border-color:var(--accent)}
 /* STATUS */
 #s-status{display:flex;flex-direction:column}
-.status-topbar{display:flex;align-items:center;padding:12px 16px;gap:12px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+#s-calls{display:flex;flex-direction:column}
+.status-topbar{display:flex;align-items:center;padding:calc(12px + env(safe-area-inset-top)) 16px 12px;gap:12px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+.call-log-item{display:flex;align-items:center;gap:14px;padding:14px 16px;border-bottom:1px solid var(--border);background:var(--surface);cursor:pointer}
+.call-log-item:active{background:var(--bg)}
+.call-log-av{width:46px;height:46px;border-radius:50%;background:var(--card);border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;overflow:hidden}
+.call-log-av img{width:100%;height:100%;object-fit:cover;border-radius:50%}
+.call-log-info{flex:1;min-width:0}
+.call-log-name{font-weight:700;font-size:15px;color:var(--text)}
+.call-log-detail{font-size:12px;color:var(--sub);margin-top:2px}
+.call-log-missed .call-log-name{color:var(--danger)}
+.call-log-missed .call-log-detail{color:var(--danger)}
+.call-log-icon{font-size:20px;flex-shrink:0}
 .status-body{flex:1;overflow-y:auto;padding:16px}
 .my-status-card{background:var(--card);border-radius:18px;border:1px solid var(--border);padding:16px;margin-bottom:20px}
 .my-status-top{display:flex;align-items:center;gap:12px;margin-bottom:14px}
@@ -1614,7 +1734,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
   <div class="bottom-nav">
     <button class="nav-btn active" id="nav-chats" onclick="showScreen('s-list');setNav('nav-chats')">💬<span id="nav-chats-lbl">Discussions</span></button>
     <button class="nav-btn" id="nav-status" onclick="showScreen('s-status');setNav('nav-status');loadStatuses()">🔵<span id="nav-status-lbl">Statuts</span></button>
-    <button class="nav-btn" id="nav-calls" onclick="toast('Bientôt disponible')">📞<span id="nav-calls-lbl">Appels</span></button>
+    <button class="nav-btn" id="nav-calls" onclick="showScreen('s-calls');setNav('nav-calls');loadCallLog()">📞<span id="nav-calls-lbl">Appels</span></button>
   </div>
 </div>
 
@@ -1667,7 +1787,11 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       <input type="file" id="photo-file-in" accept="image/*" style="display:none" onchange="handlePhotoFile(this)"/>
       <input type="file" id="video-file-in" accept="video/*" style="display:none" onchange="handleVideoFile(this)"/>
       <button class="send-btn-el" id="send-btn" onclick="doSend()" style="display:none">➤</button>
-      <button class="mic-btn-el" id="mic-btn" style="display:flex">🎙</button>
+    </div>
+    <!-- Bouton vocal sur sa propre ligne séparée -->
+    <div id="mic-row" style="display:flex;align-items:center;justify-content:center;padding:8px 0 2px">
+      <button class="mic-btn-el" id="mic-btn" style="width:54px;height:54px;font-size:24px;box-shadow:0 4px 20px rgba(0,212,170,.4)">🎙</button>
+      <span id="mic-hint" style="color:var(--sub);font-size:11px;margin-left:10px;font-weight:600;user-select:none">Maintenir pour enregistrer</span>
     </div>
   </div>
 </div>
@@ -1695,6 +1819,17 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
     </div>
     <div id="contacts-statuses-section" style="display:none"><p class="status-section-title">Récents</p><div id="contacts-statuses-list"></div></div>
     <div id="no-contacts-status" style="text-align:center;color:var(--sub);font-size:14px;padding:32px 0">Aucun statut pour le moment</div>
+  </div>
+</div>
+
+<!-- CALLS SCREEN -->
+<div class="screen off" id="s-calls">
+  <div class="status-topbar">
+    <span style="color:var(--text);font-weight:800;font-size:18px;flex:1">Appels</span>
+    <button onclick="clearCallLog()" style="color:var(--sub);font-size:13px;font-weight:600;padding:8px">Effacer</button>
+  </div>
+  <div style="flex:1;overflow-y:auto" id="call-log-list">
+    <div style="text-align:center;color:var(--sub);font-size:14px;padding:48px 16px" id="no-calls-msg">Aucun appel pour le moment</div>
   </div>
 </div>
 
@@ -1877,17 +2012,21 @@ window.addEventListener("DOMContentLoaded",()=>{
 
   // ==================== THÈME JOUR/NUIT ====================
   function applyTheme(dark){
-    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    if(dark){
+      document.documentElement.setAttribute("data-theme","dark");
+    } else {
+      document.documentElement.removeAttribute("data-theme");
+    }
     CACHE.save("theme", dark ? "dark" : "light");
+    const btn=document.getElementById("theme-toggle-btn");
+    if(btn) btn.textContent=dark?"☀️ Mode jour":"🌙 Mode nuit";
   }
-  // Charger le thème sauvegardé
-  const savedTheme = CACHE.load("theme") || "dark";
-  applyTheme(savedTheme === "dark");
-  window.toggleTheme = function(){
-    const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+  // Charger le thème sauvegardé (défaut : clair)
+  const savedTheme=CACHE.load("theme")||"light";
+  applyTheme(savedTheme==="dark");
+  window.toggleTheme=function(){
+    const isDark=document.documentElement.getAttribute("data-theme")==="dark";
     applyTheme(!isDark);
-    const btn = document.getElementById("theme-toggle-btn");
-    if(btn) btn.textContent = !isDark ? "☀️ Mode jour" : "🌙 Mode nuit";
   };
 
   // ==================== BARRE DE SAISIE : SEND/MIC TOGGLE ====================
@@ -1897,12 +2036,13 @@ window.addEventListener("DOMContentLoaded",()=>{
 
   function updateSendMicBtn(){
     const hasText = txtIn && txtIn.value.trim().length > 0;
-    if(micBtn){ micBtn.style.display = hasText ? "none" : "flex"; micBtn.style.visibility="visible"; }
+    if(micBtn){ micBtn.style.display = "flex"; } // mic toujours visible
     if(sendBtn){ sendBtn.style.display = hasText ? "flex" : "none"; }
+    const micRow=document.getElementById("mic-row");
+    if(micRow) micRow.style.display = hasText ? "none" : "flex";
   }
   if(txtIn){
     txtIn.addEventListener("input", updateSendMicBtn);
-    // Initialiser avec mic visible
     if(micBtn) micBtn.style.display="flex";
     if(sendBtn) sendBtn.style.display="none";
   }
@@ -2114,24 +2254,85 @@ window.addEventListener("DOMContentLoaded",()=>{
   };
   window.handleVideoFile=function(input){
     const f=input.files[0];if(!f||!S.activeId)return;
-    // La taille en base64 est ~33% plus grande que le fichier original.
-    // pushMsg limite à 6 Mo de base64 ⇒ ~4.3 Mo de fichier original max.
-    if(f.size/1024/1024>4){toast("Vidéo trop lourde (max 4 Mo). Compressez-la ou envoyez une vidéo plus courte.","err");return;}
-    const r=new FileReader();r.onload=ev=>{
-      S.pendingVideo={src:ev.target.result,name:f.name,size:(f.size/1024/1024).toFixed(1)+" Mo"};
-      document.getElementById("vid-prev-name").textContent=f.name;
-      document.getElementById("vid-prev-size").textContent=S.pendingVideo.size;
-      document.getElementById("normal-row").style.display="none";
-      document.getElementById("video-preview-bar").style.display="flex";
-    };r.readAsDataURL(f);input.value="";
+    const sizeMo=f.size/1024/1024;
+    if(sizeMo>25){
+      toast("Vidéo trop lourde (max 25 Mo)","err");
+      input.value="";return;
+    }
+    S.pendingVideoFile=f;
+    document.getElementById("vid-prev-name").textContent=f.name;
+    document.getElementById("vid-prev-size").textContent=sizeMo.toFixed(1)+" Mo";
+    document.getElementById("normal-row").style.display="none";
+    document.getElementById("video-preview-bar").style.display="flex";
+    input.value="";
   };
+
   window.sendVideo=function(){
-    if(!S.pendingVideo||!S.activeId)return;
-    toast("Envoi...");
-    const v=S.pendingVideo;
-    pushMsg({from:S.myUid,type:"video",src:v.src,text:"",t:nowT(),del:false}).then(()=>{
-      S.pendingVideo=null;document.getElementById("video-preview-bar").style.display="none";document.getElementById("normal-row").style.display="flex";
-    }).catch(()=>{});
+    if(!S.pendingVideoFile||!S.activeId)return;
+    const f=S.pendingVideoFile;
+    const sizeMo=f.size/1024/1024;
+    const btn=document.querySelector("#video-preview-bar button:last-child");
+    if(btn){btn.disabled=true;btn.textContent="⏳";}
+
+    const reset=()=>{if(btn){btn.disabled=false;btn.textContent="➤";}};
+
+    // Pour les petites vidéos (≤4 Mo) : base64 direct dans Firebase
+    if(sizeMo<=4){
+      const r=new FileReader();
+      r.onload=ev=>{
+        pushMsg({from:S.myUid,type:"video",src:ev.target.result,text:"",t:nowT(),del:false})
+        .then(()=>{
+          S.pendingVideoFile=null;
+          document.getElementById("video-preview-bar").style.display="none";
+          document.getElementById("normal-row").style.display="flex";
+          reset();
+        }).catch(()=>reset());
+      };
+      r.onerror=()=>{toast("Erreur lecture vidéo","err");reset();};
+      r.readAsDataURL(f);
+      return;
+    }
+
+    // Pour les vidéos de 4-25 Mo : upload via Cloudinary (gratuit, sans carte bancaire)
+    // Compte Cloudinary gratuit : 25 Go/mois
+    const CLOUD_NAME="sonia-app"; // À remplacer par votre cloud_name Cloudinary
+    const UPLOAD_PRESET="sonia_unsigned"; // preset non signé à créer dans Cloudinary
+
+    const formData=new FormData();
+    formData.append("file",f);
+    formData.append("upload_preset",UPLOAD_PRESET);
+    formData.append("folder","sonia_videos");
+
+    const xhr=new XMLHttpRequest();
+    xhr.open("POST","https://api.cloudinary.com/v1_1/"+CLOUD_NAME+"/video/upload");
+
+    xhr.upload.onprogress=e=>{
+      if(e.lengthComputable&&btn){
+        btn.textContent=Math.round(e.loaded/e.total*100)+"%";
+      }
+    };
+    xhr.onload=()=>{
+      try{
+        const res=JSON.parse(xhr.responseText);
+        if(res.secure_url){
+          pushMsg({from:S.myUid,type:"video",src:res.secure_url,cloudinary:true,text:"",t:nowT(),del:false})
+          .then(()=>{
+            S.pendingVideoFile=null;
+            document.getElementById("video-preview-bar").style.display="none";
+            document.getElementById("normal-row").style.display="flex";
+            reset();
+          }).catch(()=>reset());
+        } else {
+          toast("Erreur upload : "+(res.error?.message||"inconnu"),"err");
+          reset();
+        }
+      }catch(e){toast("Erreur serveur upload","err");reset();}
+    };
+    xhr.onerror=()=>{
+      toast("Erreur réseau lors de l'upload","err");
+      reset();
+    };
+    xhr.send(formData);
   };
 
   // ---- VOCAL ----
