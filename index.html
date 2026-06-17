@@ -167,7 +167,17 @@ const otpBoxes=[];
 window.addEventListener("DOMContentLoaded",()=>{
   document.querySelectorAll(".otp-box").forEach((b,i)=>{
     otpBoxes.push(b);
-    b.oninput=()=>{b.value=b.value.replace(/\D/g,"").slice(-1);b.classList.toggle("ok",b.value!=="");if(b.value&&i<5)otpBoxes[i+1].focus();};
+    b.oninput=()=>{
+      b.value=b.value.replace(/\D/g,"").slice(-1);
+      b.classList.toggle("ok",b.value!=="");
+      if(b.value&&i<5){
+        otpBoxes[i+1].focus();
+      }
+      // Auto-confirm quand les 6 cases sont remplies
+      if(otpBoxes.every(box=>box.value!=="")) {
+        setTimeout(()=>verifyCode(),200);
+      }
+    };
     b.onkeydown=e=>{if(e.key==="Backspace"&&!b.value&&i>0)otpBoxes[i-1].focus();};
   });
   applyLang();
@@ -1220,7 +1230,7 @@ function pushMsg(m){
     return Promise.reject(new Error("trop volumineux"));
   }
 
-  // Écrire la notification dans inbox du destinataire (pour les inconnus)
+  // Notifier inbox du destinataire (non-bloquant, en parallèle)
   db.ref("inbox/"+S.activeId+"/"+S.myUid).set({
     from:S.myUid,
     fromPhone:S.myPhone||"",
@@ -1228,10 +1238,12 @@ function pushMsg(m){
     ts:m.ts
   }).catch(()=>{});
 
-  return db.ref("chats/"+key+"/messages").push(m).then(()=>{
-    return db.ref("chats/"+key+"/lastMsg").set({
-      text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts
-    });
+  // Envoyer le message et mettre à jour lastMsg en parallèle
+  const msgRef=db.ref("chats/"+key+"/messages");
+  const lastRef=db.ref("chats/"+key+"/lastMsg");
+
+  return msgRef.push(m).then(()=>{
+    lastRef.set({text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts}).catch(()=>{});
   }).catch(e=>{
     toast("Échec de l'envoi : "+e.message,"err");
     throw e;
@@ -1243,6 +1255,9 @@ function doSend(){
   const ti=$("txt-in");if(!ti)return;
   const v=ti.value.trim();if(!v||!S.activeId)return;
   ti.value="";
+  ti.style.height="auto";
+  // Remettre le bouton mic immédiatement
+  if(window.updateSendMicBtn) window.updateSendMicBtn();
   pushMsg({from:S.myUid,text:v,t:nowT(),type:"text",del:false}).catch(()=>{ti.value=v;});
 }
 
@@ -1415,7 +1430,30 @@ const APP_MSG="💬 Rejoins-moi sur Sonia !\nL'app de messagerie gratuite 🚀\n
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
 if("serviceWorker" in navigator){
-  navigator.serviceWorker.register("sw.js").catch(()=>{});
+  navigator.serviceWorker.register("sw.js").then(reg=>{
+    // Vérifier les mises à jour au chargement
+    reg.update().catch(()=>{});
+
+    // Dès qu'un nouveau SW est installé → l'activer immédiatement
+    reg.addEventListener("updatefound",()=>{
+      const nw=reg.installing;
+      if(!nw)return;
+      nw.addEventListener("statechange",()=>{
+        if(nw.state==="installed"&&navigator.serviceWorker.controller){
+          // Nouvelle version prête → recharger la page automatiquement
+          window.location.reload();
+        }
+      });
+    });
+  }).catch(()=>{});
+
+  // Quand un nouveau SW prend le contrôle → recharger
+  let reloading=false;
+  navigator.serviceWorker.addEventListener("controllerchange",()=>{
+    if(reloading)return;
+    reloading=true;
+    window.location.reload();
+  });
 }
 </script>
 <style>
@@ -1526,8 +1564,8 @@ input,textarea{font-family:inherit;border:none;outline:none}
 .mic-btn-el.recording{background:var(--danger);transform:scale(1.2)}
 .send-btn-el{width:42px;height:42px;border-radius:50%;background:var(--accent);color:#000;font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 /* INPUT */
-#input-bar{padding:10px 12px;border-top:1px solid var(--border);background:var(--surface);flex-shrink:0;padding-bottom:max(10px,env(safe-area-inset-bottom));position:relative}
-.input-row{display:flex;gap:5px;align-items:center}
+#input-bar{padding:6px 6px max(8px,env(safe-area-inset-bottom)) 6px;border-top:1px solid var(--border);background:var(--surface);flex-shrink:0;position:relative}
+.input-row{display:flex;gap:6px;align-items:flex-end}
 .in-icon{width:36px;height:36px;border-radius:11px;background:var(--card);border:1px solid var(--border);font-size:17px;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer}
 .txt-input{flex:1;min-width:0;padding:9px 10px;background:var(--bg);border:1.5px solid var(--border);border-radius:14px;color:var(--text);font-size:14px;resize:none;overflow:hidden;max-height:120px;line-height:1.4}
 .txt-input::placeholder{color:var(--dim)}.txt-input:focus{border-color:rgba(0,212,170,.4)}
@@ -1737,7 +1775,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
         <input class="otp-box" maxlength="1" inputmode="numeric"/>
       </div>
       <p class="otp-hint" id="otp-hint-el"></p>
-      <button class="big-btn" id="verify-btn" onclick="verifyCode()" style="margin-top:10px">Confirmer</button>
+      <button class="big-btn" id="verify-btn" onclick="verifyCode()" style="margin-top:10px;display:none">Confirmer</button>
       <button class="ghost-btn" id="back-btn" onclick="goBackPhone()">← Modifier le numéro</button>
     </div>
     <div class="err-msg" id="auth-err"></div>
@@ -1807,36 +1845,35 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
     <div id="photo-preview-bar">
       <div class="ph-prev-thumb"><img id="ph-prev-img" src="" alt=""/></div>
       <div class="ph-prev-info"><div class="ph-prev-name" id="ph-prev-name"></div><div class="ph-prev-size" id="ph-prev-size"></div></div>
-      <button class="ph-prev-cancel" onclick="S.pendingPhoto=null;$('photo-preview-bar').style.display='none';$('normal-row').style.display='flex'">✕</button>
+      <button class="ph-prev-cancel" onclick="S.pendingPhoto=null;$('photo-preview-bar').style.display='none';$('normal-row').style.display='flex';if(window.updateSendMicBtn)updateSendMicBtn()">✕</button>
       <button class="ph-prev-send" onclick="sendPhoto()">➤</button>
     </div>
     <!-- Aperçu vidéo -->
     <div id="video-preview-bar">
       <div style="width:52px;height:52px;border-radius:10px;background:var(--card);border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0">🎥</div>
       <div style="flex:1;min-width:0"><div id="vid-prev-name" style="color:var(--text);font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div><div id="vid-prev-size" style="color:var(--sub);font-size:11px"></div></div>
-      <button style="color:var(--danger);font-size:20px;flex-shrink:0;padding:4px" onclick="S.pendingVideoFile=null;$('video-preview-bar').style.display='none';$('normal-row').style.display='flex'">✕</button>
+      <button style="color:var(--danger);font-size:20px;flex-shrink:0;padding:4px" onclick="S.pendingVideoFile=null;$('video-preview-bar').style.display='none';$('normal-row').style.display='flex';if(window.updateSendMicBtn)updateSendMicBtn()">✕</button>
       <button style="width:42px;height:42px;border-radius:50%;background:var(--accent);font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:none" onclick="sendVideo()">➤</button>
     </div>
     <!-- Barre principale -->
-    <div class="input-row" id="normal-row" style="display:flex;align-items:flex-end;gap:8px">
-      <!-- Zone de saisie avec emoji + texte + pièce jointe + caméra -->
-      <div style="flex:1;display:flex;align-items:flex-end;background:var(--surface);border-radius:26px;border:1px solid var(--border);padding:6px 10px;gap:6px;min-height:46px">
-        <button class="in-icon" style="flex-shrink:0;align-self:flex-end;margin-bottom:2px">😊</button>
+    <div class="input-row" id="normal-row" style="display:flex;align-items:flex-end;gap:6px;padding:6px 8px">
+      <!-- Zone de saisie -->
+      <div style="flex:1;display:flex;align-items:flex-end;background:var(--surface);border-radius:24px;border:1px solid var(--border);padding:5px 8px;gap:4px;min-height:44px;overflow:hidden">
+        <button class="in-icon" style="flex-shrink:0;align-self:flex-end;margin-bottom:1px;font-size:20px">😊</button>
         <textarea class="txt-input" id="txt-in" placeholder="Message..." rows="1"
           onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();doSend();}"
           oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px';updateSendMicBtn()"
-          style="flex:1;background:transparent;resize:none;border:none;outline:none;max-height:120px;line-height:1.4;font-size:15px;color:var(--text);padding:4px 0;align-self:flex-end"></textarea>
-        <button class="in-icon" onclick="openMediaPicker()" style="flex-shrink:0;align-self:flex-end;margin-bottom:2px">📎</button>
-        <button class="in-icon" onclick="document.getElementById('photo-file-in').click()" style="flex-shrink:0;align-self:flex-end;margin-bottom:2px" id="cam-quick-btn">📷</button>
+          style="flex:1;background:transparent;resize:none;border:none;outline:none;max-height:120px;line-height:1.5;font-size:15px;color:var(--text);padding:3px 0;align-self:flex-end;min-width:0"></textarea>
+        <button class="in-icon" onclick="openMediaPicker()" style="flex-shrink:0;align-self:flex-end;margin-bottom:1px;font-size:20px">📎</button>
+        <button class="in-icon" onclick="document.getElementById('photo-file-in').click()" style="flex-shrink:0;align-self:flex-end;margin-bottom:1px;font-size:20px">📷</button>
         <input type="file" id="photo-file-in" accept="image/*" style="display:none" onchange="handlePhotoFile(this)"/>
         <input type="file" id="video-file-in" accept="video/*" style="display:none" onchange="handleVideoFile(this)"/>
       </div>
-      <!-- Bouton unique mic/send -->
-      <div id="mic-send-outer" style="position:relative;flex-shrink:0">
-        <!-- Indicateur "glisser vers le haut" affiché pendant l'appui -->
-        <div id="mic-slide-hint" style="display:none;position:absolute;bottom:54px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.7);color:#fff;font-size:11px;white-space:nowrap;padding:5px 10px;border-radius:20px;pointer-events:none">⬆ Glisser pour annuler</div>
+      <!-- Bouton mic/send — toujours visible -->
+      <div id="mic-send-outer" style="position:relative;flex-shrink:0;width:46px;height:46px">
+        <div id="mic-slide-hint" style="display:none;position:absolute;bottom:52px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#fff;font-size:11px;white-space:nowrap;padding:5px 10px;border-radius:20px;pointer-events:none;z-index:10">⬆ Glisser pour annuler</div>
         <button id="main-action-btn"
-          style="width:50px;height:50px;border-radius:50%;background:#111;color:#fff;font-size:22px;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:none;cursor:pointer;touch-action:none;user-select:none;transition:transform .15s,background .15s">🎙</button>
+          style="width:46px;height:46px;border-radius:50%;background:#111827;color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center;border:none;cursor:pointer;touch-action:none;user-select:none;transition:transform .15s,background .15s;-webkit-user-select:none">🎙</button>
       </div>
     </div>
   </div>
@@ -2335,90 +2372,53 @@ window.addEventListener("DOMContentLoaded",()=>{
     if(!S.pendingPhoto||!S.activeId)return;
     const p=S.pendingPhoto;
     pushMsg({from:S.myUid,type:"photo",src:p.src,text:"",t:nowT(),del:false}).then(()=>{
-      S.pendingPhoto=null;document.getElementById("photo-preview-bar").style.display="none";document.getElementById("normal-row").style.display="flex";
-    }).catch(()=>{ /* garder l'aperçu pour permettre une nouvelle tentative */ });
+      S.pendingPhoto=null;
+      document.getElementById("photo-preview-bar").style.display="none";
+      document.getElementById("normal-row").style.display="flex";
+      if(window.updateSendMicBtn)window.updateSendMicBtn();
+    }).catch(()=>{});
   };
   window.handleVideoFile=function(input){
     const f=input.files[0];if(!f||!S.activeId)return;
     const sizeMo=f.size/1024/1024;
-    if(sizeMo>25){
-      toast("Vidéo trop lourde (max 25 Mo)","err");
+    if(sizeMo>4){
+      toast("Vidéo trop lourde (max 4 Mo).","err");
       input.value="";return;
     }
     S.pendingVideoFile=f;
-    document.getElementById("vid-prev-name").textContent=f.name;
+    const n=f.name;
+    document.getElementById("vid-prev-name").textContent=n.length>32?n.slice(0,29)+"...":n;
     document.getElementById("vid-prev-size").textContent=sizeMo.toFixed(1)+" Mo";
     document.getElementById("normal-row").style.display="none";
     document.getElementById("video-preview-bar").style.display="flex";
     input.value="";
   };
 
+  function closeVideoPrev(){
+    S.pendingVideoFile=null;
+    const vp=document.getElementById("video-preview-bar");
+    const nr=document.getElementById("normal-row");
+    if(vp)vp.style.display="none";
+    if(nr)nr.style.display="flex";
+    if(window.updateSendMicBtn)window.updateSendMicBtn();
+  }
+
   window.sendVideo=function(){
-    if(!S.pendingVideoFile||!S.activeId)return;
+    if(!S.pendingVideoFile||!S.activeId){closeVideoPrev();return;}
     const f=S.pendingVideoFile;
-    const sizeMo=f.size/1024/1024;
     const btn=document.querySelector("#video-preview-bar button:last-child");
     if(btn){btn.disabled=true;btn.textContent="⏳";}
-
-    const reset=()=>{if(btn){btn.disabled=false;btn.textContent="➤";}};
-
-    // Pour les petites vidéos (≤4 Mo) : base64 direct dans Firebase
-    if(sizeMo<=4){
-      const r=new FileReader();
-      r.onload=ev=>{
-        pushMsg({from:S.myUid,type:"video",src:ev.target.result,text:"",t:nowT(),del:false})
-        .then(()=>{
-          S.pendingVideoFile=null;
-          document.getElementById("video-preview-bar").style.display="none";
-          document.getElementById("normal-row").style.display="flex";
-          reset();
-        }).catch(()=>reset());
-      };
-      r.onerror=()=>{toast("Erreur lecture vidéo","err");reset();};
-      r.readAsDataURL(f);
-      return;
-    }
-
-    // Pour les vidéos de 4-25 Mo : upload via Cloudinary (gratuit, sans carte bancaire)
-    // Compte Cloudinary gratuit : 25 Go/mois
-    const CLOUD_NAME="sonia-app"; // À remplacer par votre cloud_name Cloudinary
-    const UPLOAD_PRESET="sonia_unsigned"; // preset non signé à créer dans Cloudinary
-
-    const formData=new FormData();
-    formData.append("file",f);
-    formData.append("upload_preset",UPLOAD_PRESET);
-    formData.append("folder","sonia_videos");
-
-    const xhr=new XMLHttpRequest();
-    xhr.open("POST","https://api.cloudinary.com/v1_1/"+CLOUD_NAME+"/video/upload");
-
-    xhr.upload.onprogress=e=>{
-      if(e.lengthComputable&&btn){
-        btn.textContent=Math.round(e.loaded/e.total*100)+"%";
-      }
+    const r=new FileReader();
+    r.onload=ev=>{
+      pushMsg({from:S.myUid,type:"video",src:ev.target.result,text:"",t:nowT(),del:false})
+      .then(()=>closeVideoPrev())
+      .catch(e=>{
+        toast("Échec envoi vidéo : "+e.message,"err");
+        if(btn){btn.disabled=false;btn.textContent="➤";}
+      });
     };
-    xhr.onload=()=>{
-      try{
-        const res=JSON.parse(xhr.responseText);
-        if(res.secure_url){
-          pushMsg({from:S.myUid,type:"video",src:res.secure_url,cloudinary:true,text:"",t:nowT(),del:false})
-          .then(()=>{
-            S.pendingVideoFile=null;
-            document.getElementById("video-preview-bar").style.display="none";
-            document.getElementById("normal-row").style.display="flex";
-            reset();
-          }).catch(()=>reset());
-        } else {
-          toast("Erreur upload : "+(res.error?.message||"inconnu"),"err");
-          reset();
-        }
-      }catch(e){toast("Erreur serveur upload","err");reset();}
-    };
-    xhr.onerror=()=>{
-      toast("Erreur réseau lors de l'upload","err");
-      reset();
-    };
-    xhr.send(formData);
+    r.onerror=()=>{toast("Erreur lecture vidéo","err");if(btn){btn.disabled=false;btn.textContent="➤";}};
+    r.readAsDataURL(f);
   };
 
   // ---- VOCAL ----
