@@ -366,7 +366,23 @@ async function completeLogin(user){
   if(isOnline)listenContacts();
   else{const cc=CACHE.load("contacts");if(cc){S.contacts=cc;renderList();}}
   if(isOnline)listenIncomingCalls();
+  if(isOnline)listenIncomingMessages();
   showScreen("s-list");
+}
+
+// Écouter les messages entrants de N'IMPORTE quel utilisateur
+// (même si l'expéditeur n'est pas dans vos contacts)
+function listenIncomingMessages(){
+  if(!S.myUid)return;
+  // Écouter le nœud "inbox/{myUid}" — les expéditeurs y écrivent une notification
+  db.ref("inbox/"+S.myUid).on("child_added",snap=>{
+    const notif=snap.val();
+    if(!notif||!notif.from)return;
+    // Ajouter automatiquement l'expéditeur comme contact
+    ensureMutualContact(notif.from).catch(()=>{});
+    // Supprimer la notification après traitement
+    snap.ref.remove().catch(()=>{});
+  });
 }
 
 auth.onAuthStateChanged(async user=>{
@@ -477,6 +493,11 @@ window.startCall=async function(type){
   };
   try{
     await db.ref(S.callRef).set(ringData);
+    // Notifier aussi dans inbox pour que le destinataire nous ajoute si inconnu
+    db.ref("inbox/"+S.activeId+"/"+S.myUid).set({
+      from:S.myUid,fromPhone:S.myPhone||"",
+      fromName:S.profile.name||S.myPhone||"",ts:Date.now()
+    }).catch(()=>{});
   }catch(e){
     toast("Impossible de démarrer l'appel : "+e.message,"err");
     endCall(true);return;
@@ -1194,14 +1215,23 @@ function pushMsg(m){
   const key=chatKey(S.myUid,S.activeId);
   if(!m.ts) m.ts=Date.now();
 
-  // Vérifier taille seulement pour les base64 (pas pour les URLs Firebase Storage)
   if(m.src && !m.storageUrl && m.src.startsWith("data:") && m.src.length > 6*1024*1024){
-    toast("Fichier trop volumineux (max ~4 Mo). Utilisez une photo plus petite.","err");
+    toast("Fichier trop volumineux (max ~4 Mo).","err");
     return Promise.reject(new Error("trop volumineux"));
   }
 
+  // Écrire la notification dans inbox du destinataire (pour les inconnus)
+  db.ref("inbox/"+S.activeId+"/"+S.myUid).set({
+    from:S.myUid,
+    fromPhone:S.myPhone||"",
+    fromName:S.profile.name||S.myPhone||"",
+    ts:m.ts
+  }).catch(()=>{});
+
   return db.ref("chats/"+key+"/messages").push(m).then(()=>{
-    return db.ref("chats/"+key+"/lastMsg").set({text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts});
+    return db.ref("chats/"+key+"/lastMsg").set({
+      text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts
+    });
   }).catch(e=>{
     toast("Échec de l'envoi : "+e.message,"err");
     throw e;
@@ -1220,37 +1250,47 @@ function doSend(){
 function startRec(){
   if(!S.activeId)return;
   S.recPaused=false;S.recSecs=0;
-  $("rec-time").textContent="00:00";$("rec-state").textContent=t("recEnCours");
-  $("rec-dot").classList.add("pulse");
-  $("r-pause").style.display="flex";$("r-resume").style.display="none";
-  $("normal-row").style.display="none";$("rec-bar").style.display="flex";
+  const rt=$("rec-time");if(rt)rt.textContent="0:00";
+  const rd=$("rec-dot");if(rd)rd.classList.add("pulse");
+  $("normal-row").style.display="none";
+  $("rec-bar").style.display="flex";
 
   navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
     S.recStream=stream;
     S.recChunks=[];
     let mimeType="audio/webm";
     if(!MediaRecorder.isTypeSupported(mimeType)){
-      mimeType = MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "";
+      mimeType=MediaRecorder.isTypeSupported("audio/mp4")?"audio/mp4":"";
     }
-    S.recMimeType = mimeType || "audio/webm";
-    S.recorder = mimeType ? new MediaRecorder(stream,{mimeType}) : new MediaRecorder(stream);
-    S.recorder.ondataavailable = e=>{ if(e.data && e.data.size>0) S.recChunks.push(e.data); };
+    S.recMimeType=mimeType||"audio/webm";
+    S.recorder=mimeType?new MediaRecorder(stream,{mimeType}):new MediaRecorder(stream);
+    S.recorder.ondataavailable=e=>{if(e.data&&e.data.size>0)S.recChunks.push(e.data);};
     S.recorder.start();
   }).catch(()=>{
     toast("Microphone inaccessible","err");
     stopRec();
   });
 
-  S.recTick=setInterval(()=>{if(!S.recPaused){S.recSecs++;$("rec-time").textContent=fmt(S.recSecs);}},1000);
+  S.recTick=setInterval(()=>{
+    if(!S.recPaused){
+      S.recSecs++;
+      const rt=$("rec-time");if(rt)rt.textContent=fmt(S.recSecs);
+    }
+  },1000);
 }
+
 function stopRec(){
   clearInterval(S.recTick);S.recSecs=0;S.recPaused=false;
-  $("rec-bar").style.display="none";$("normal-row").style.display="flex";
-  if(S.recorder && S.recorder.state!=="inactive"){
+  $("rec-bar").style.display="none";
+  $("normal-row").style.display="flex";
+  if(S.recorder&&S.recorder.state!=="inactive"){
     try{S.recorder.stop();}catch(e){}
   }
-  if(S.recStream){ S.recStream.getTracks().forEach(t=>t.stop()); S.recStream=null; }
+  if(S.recStream){S.recStream.getTracks().forEach(t=>t.stop());S.recStream=null;}
   S.recorder=null;S.recChunks=[];
+  // Remettre le bouton principal en mode mic
+  const btn=document.getElementById("main-action-btn");
+  if(btn){btn.textContent="🎙";btn.style.background="#111";btn.style.color="#fff";btn.style.transform="scale(1)";}
 }
 
 // ---- VIEWERS ----
@@ -1754,44 +1794,50 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
   </div>
   <div id="msg-list"></div>
   <div id="input-bar">
-    <div id="rec-bar">
-      <div class="rec-top">
+    <!-- Barre d'enregistrement vocal (cachée par défaut) -->
+    <div id="rec-bar" style="display:none">
+      <div style="display:flex;align-items:center;gap:12px;padding:8px 4px">
+        <button onclick="cancelRec()" style="color:var(--sub);font-size:22px;padding:4px">🗑</button>
+        <span class="rec-time" id="rec-time">0:00</span>
+        <div class="wave" style="flex:1"><span></span><span></span><span></span><span></span><span></span><span></span></div>
         <div class="rec-dot pulse" id="rec-dot"></div>
-        <span class="rec-time" id="rec-time">00:00</span>
-        <div class="wave"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
-        <span class="rec-state" id="rec-state">En cours...</span>
-      </div>
-      <div class="rec-actions">
-        <button class="r-action delete" onclick="stopRec()"><span style="font-size:20px">🗑</span><span>Annuler</span></button>
-        <button class="r-action pause" id="r-pause" onclick="pauseRec()"><span style="font-size:20px">⏸</span><span>Pause</span></button>
-        <button class="r-action resume-a" id="r-resume" style="display:none" onclick="resumeRec()"><span style="font-size:20px">▶</span><span>Reprendre</span></button>
-        <button class="r-action send-a" onclick="sendVoice()"><span style="font-size:20px">➤</span><span>Envoyer</span></button>
       </div>
     </div>
+    <!-- Aperçu photo -->
     <div id="photo-preview-bar">
       <div class="ph-prev-thumb"><img id="ph-prev-img" src="" alt=""/></div>
       <div class="ph-prev-info"><div class="ph-prev-name" id="ph-prev-name"></div><div class="ph-prev-size" id="ph-prev-size"></div></div>
       <button class="ph-prev-cancel" onclick="S.pendingPhoto=null;$('photo-preview-bar').style.display='none';$('normal-row').style.display='flex'">✕</button>
       <button class="ph-prev-send" onclick="sendPhoto()">➤</button>
     </div>
+    <!-- Aperçu vidéo -->
     <div id="video-preview-bar">
       <div style="width:52px;height:52px;border-radius:10px;background:var(--card);border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0">🎥</div>
       <div style="flex:1;min-width:0"><div id="vid-prev-name" style="color:var(--text);font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div><div id="vid-prev-size" style="color:var(--sub);font-size:11px"></div></div>
-      <button style="color:var(--danger);font-size:20px;flex-shrink:0;padding:4px;cursor:pointer" onclick="S.pendingVideo=null;$('video-preview-bar').style.display='none';$('normal-row').style.display='flex'">✕</button>
-      <button style="width:42px;height:42px;border-radius:13px;background:var(--accent);font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;border:none" onclick="sendVideo()">➤</button>
+      <button style="color:var(--danger);font-size:20px;flex-shrink:0;padding:4px" onclick="S.pendingVideoFile=null;$('video-preview-bar').style.display='none';$('normal-row').style.display='flex'">✕</button>
+      <button style="width:42px;height:42px;border-radius:50%;background:var(--accent);font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:none" onclick="sendVideo()">➤</button>
     </div>
-    <div class="input-row" id="normal-row" style="display:flex">
-      <button class="in-icon">😊</button>
-      <textarea class="txt-input" id="txt-in" placeholder="Écrire un message..." rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();doSend();}this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px'"></textarea>
-      <button class="in-icon" onclick="openMediaPicker()">📎</button>
-      <input type="file" id="photo-file-in" accept="image/*" style="display:none" onchange="handlePhotoFile(this)"/>
-      <input type="file" id="video-file-in" accept="video/*" style="display:none" onchange="handleVideoFile(this)"/>
-      <button class="send-btn-el" id="send-btn" onclick="doSend()" style="display:none">➤</button>
-    </div>
-    <!-- Bouton vocal sur sa propre ligne séparée -->
-    <div id="mic-row" style="display:flex;align-items:center;justify-content:center;padding:8px 0 2px">
-      <button class="mic-btn-el" id="mic-btn" style="width:54px;height:54px;font-size:24px;box-shadow:0 4px 20px rgba(0,212,170,.4)">🎙</button>
-      <span id="mic-hint" style="color:var(--sub);font-size:11px;margin-left:10px;font-weight:600;user-select:none">Maintenir pour enregistrer</span>
+    <!-- Barre principale -->
+    <div class="input-row" id="normal-row" style="display:flex;align-items:flex-end;gap:8px">
+      <!-- Zone de saisie avec emoji + texte + pièce jointe + caméra -->
+      <div style="flex:1;display:flex;align-items:flex-end;background:var(--surface);border-radius:26px;border:1px solid var(--border);padding:6px 10px;gap:6px;min-height:46px">
+        <button class="in-icon" style="flex-shrink:0;align-self:flex-end;margin-bottom:2px">😊</button>
+        <textarea class="txt-input" id="txt-in" placeholder="Message..." rows="1"
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();doSend();}"
+          oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px';updateSendMicBtn()"
+          style="flex:1;background:transparent;resize:none;border:none;outline:none;max-height:120px;line-height:1.4;font-size:15px;color:var(--text);padding:4px 0;align-self:flex-end"></textarea>
+        <button class="in-icon" onclick="openMediaPicker()" style="flex-shrink:0;align-self:flex-end;margin-bottom:2px">📎</button>
+        <button class="in-icon" onclick="document.getElementById('photo-file-in').click()" style="flex-shrink:0;align-self:flex-end;margin-bottom:2px" id="cam-quick-btn">📷</button>
+        <input type="file" id="photo-file-in" accept="image/*" style="display:none" onchange="handlePhotoFile(this)"/>
+        <input type="file" id="video-file-in" accept="video/*" style="display:none" onchange="handleVideoFile(this)"/>
+      </div>
+      <!-- Bouton unique mic/send -->
+      <div id="mic-send-outer" style="position:relative;flex-shrink:0">
+        <!-- Indicateur "glisser vers le haut" affiché pendant l'appui -->
+        <div id="mic-slide-hint" style="display:none;position:absolute;bottom:54px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.7);color:#fff;font-size:11px;white-space:nowrap;padding:5px 10px;border-radius:20px;pointer-events:none">⬆ Glisser pour annuler</div>
+        <button id="main-action-btn"
+          style="width:50px;height:50px;border-radius:50%;background:#111;color:#fff;font-size:22px;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:none;cursor:pointer;touch-action:none;user-select:none;transition:transform .15s,background .15s">🎙</button>
+      </div>
     </div>
   </div>
 </div>
@@ -2029,89 +2075,129 @@ window.addEventListener("DOMContentLoaded",()=>{
     applyTheme(!isDark);
   };
 
-  // ==================== BARRE DE SAISIE : SEND/MIC TOGGLE ====================
+  // ==================== BOUTON UNIQUE MIC/SEND (style WhatsApp) ====================
   const txtIn = document.getElementById("txt-in");
-  const micBtn = document.getElementById("mic-btn");
-  const sendBtn = document.getElementById("send-btn");
+  const mainBtn = document.getElementById("main-action-btn");
+  const slideHint = document.getElementById("mic-slide-hint");
+  let isRecording = false;
+  let isCancelling = false;
+  let recStartY = 0;
+  let recTimer = null;
 
-  function updateSendMicBtn(){
+  // Met à jour le bouton selon le contenu du champ texte
+  window.updateSendMicBtn = function(){
+    if(!mainBtn) return;
     const hasText = txtIn && txtIn.value.trim().length > 0;
-    if(micBtn){ micBtn.style.display = "flex"; } // mic toujours visible
-    if(sendBtn){ sendBtn.style.display = hasText ? "flex" : "none"; }
-    const micRow=document.getElementById("mic-row");
-    if(micRow) micRow.style.display = hasText ? "none" : "flex";
-  }
-  if(txtIn){
-    txtIn.addEventListener("input", updateSendMicBtn);
-    if(micBtn) micBtn.style.display="flex";
-    if(sendBtn) sendBtn.style.display="none";
-  }
+    if(hasText){
+      mainBtn.textContent = "➤";
+      mainBtn.style.background = "var(--accent)";
+      mainBtn.style.color = "#000";
+    } else {
+      mainBtn.textContent = "🎙";
+      mainBtn.style.background = "#111";
+      mainBtn.style.color = "#fff";
+    }
+  };
+  if(txtIn) txtIn.addEventListener("input", window.updateSendMicBtn);
+  window.updateSendMicBtn();
 
-  // ==================== MIC : APPUI LONG = ENREGISTRER (comme WhatsApp) ====================
-  let micPressTimer = null;
-  let micDragging = false;
-  let micStartY = 0;
+  // Clic simple sur le bouton
+  if(mainBtn){
+    mainBtn.addEventListener("click", function(e){
+      if(isRecording) return; // pendant enregistrement, ignorer le clic
+      const hasText = txtIn && txtIn.value.trim().length > 0;
+      if(hasText){
+        doSend();
+      }
+      // Si pas de texte : appui court = rien (il faut maintenir)
+    });
 
-  function micPressStart(e){
-    micDragging = false;
-    micStartY = (e.touches ? e.touches[0].clientY : e.clientY);
-    micPressTimer = setTimeout(()=>{
-      if(navigator.vibrate) navigator.vibrate(30);
-      micBtn.textContent = "🔴";
-      micBtn.classList.add("recording");
-      startRec();
-    }, 150);
-  }
-  function micPressEnd(e){
-    clearTimeout(micPressTimer);
-    if(micBtn.classList.contains("recording")){
-      micBtn.textContent = "🎙";
-      micBtn.classList.remove("recording");
-      if(micDragging){
-        // Glisser vers le haut → annuler
-        stopRec();
+    // ---- APPUI LONG + GLISSER VERS LE HAUT pour enregistrer ----
+    function startMicPress(e){
+      const hasText = txtIn && txtIn.value.trim().length > 0;
+      if(hasText) return; // Mode envoi texte → pas d'enregistrement
+      recStartY = e.touches ? e.touches[0].clientY : e.clientY;
+      isCancelling = false;
+      // Démarrer l'enregistrement après 200ms (appui maintenu)
+      recTimer = setTimeout(()=>{
+        isRecording = true;
+        if(navigator.vibrate) navigator.vibrate(40);
+        mainBtn.textContent = "🛑";
+        mainBtn.style.background = "var(--danger)";
+        mainBtn.style.transform = "scale(1.2)";
+        if(slideHint) slideHint.style.display = "block";
+        startRec();
+      }, 200);
+    }
+
+    function endMicPress(e){
+      clearTimeout(recTimer);
+      if(slideHint) slideHint.style.display = "none";
+      mainBtn.style.transform = "scale(1)";
+      if(!isRecording) return;
+      isRecording = false;
+      mainBtn.textContent = "🎙";
+      mainBtn.style.background = "#111";
+      mainBtn.style.color = "#fff";
+      if(isCancelling){
+        cancelRec();
         toast("Enregistrement annulé");
       } else {
         sendVoice();
       }
     }
-    micDragging = false;
-  }
-  function micPressMove(e){
-    if(!micBtn.classList.contains("recording")) return;
-    const currentY = (e.touches ? e.touches[0].clientY : e.clientY);
-    if(micStartY - currentY > 60){
-      micDragging = true;
-      micBtn.textContent = "🗑";
-    } else {
-      micDragging = false;
-      micBtn.textContent = "🔴";
+
+    function moveMicPress(e){
+      if(!isRecording) return;
+      const currentY = e.touches ? e.touches[0].clientY : e.clientY;
+      const diff = recStartY - currentY;
+      if(diff > 80){
+        isCancelling = true;
+        mainBtn.textContent = "🗑";
+        mainBtn.style.background = "#888";
+      } else {
+        isCancelling = false;
+        mainBtn.textContent = "🛑";
+        mainBtn.style.background = "var(--danger)";
+      }
     }
-  }
-  if(micBtn){
-    micBtn.addEventListener("touchstart", micPressStart, {passive:true});
-    micBtn.addEventListener("touchend", micPressEnd);
-    micBtn.addEventListener("touchmove", micPressMove, {passive:true});
-    micBtn.addEventListener("mousedown", micPressStart);
-    micBtn.addEventListener("mouseup", micPressEnd);
-    micBtn.addEventListener("mouseleave", micPressEnd);
-    micBtn.addEventListener("mousemove", micPressMove);
-    // Empêcher le clic simple de déclencher stopRec si on était en mode rec
-    micBtn.addEventListener("click", e=>{ if(micBtn.classList.contains("recording")) e.stopPropagation(); });
+
+    mainBtn.addEventListener("touchstart", startMicPress, {passive:true});
+    mainBtn.addEventListener("touchend", endMicPress, {passive:true});
+    mainBtn.addEventListener("touchmove", moveMicPress, {passive:true});
+    mainBtn.addEventListener("mousedown", startMicPress);
+    mainBtn.addEventListener("mouseup", endMicPress);
+    mainBtn.addEventListener("mouseleave", e=>{ if(isRecording) endMicPress(e); });
+    mainBtn.addEventListener("mousemove", moveMicPress);
+    mainBtn.addEventListener("contextmenu", e=>e.preventDefault());
   }
 
-  // ==================== MEDIA PICKER (photo + vidéo = une seule touche) ====================
+  // cancelRec = stopRec sans envoyer
+  window.cancelRec = function(){
+    if(S.recorder && S.recorder.state !== "inactive"){
+      S.recorder.onstop = null; // ne pas déclencher sendVoice
+      try{ S.recorder.stop(); }catch(e){}
+    }
+    if(S.recStream){ S.recStream.getTracks().forEach(t=>t.stop()); S.recStream=null; }
+    S.recorder=null; S.recChunks=[];
+    clearInterval(S.recTick); S.recSecs=0; S.recPaused=false;
+    $("rec-bar").style.display="none";
+    $("normal-row").style.display="flex";
+    $("rec-time").textContent="0:00";
+  };
+
+  // ==================== MEDIA PICKER ====================
   window.openMediaPicker = function(){
     const existing = document.getElementById("media-picker-menu");
     if(existing){ existing.remove(); return; }
     const menu = document.createElement("div");
     menu.id = "media-picker-menu";
-    menu.style.cssText = "position:fixed;bottom:70px;right:16px;background:var(--card);border:1px solid var(--border);border-radius:16px;padding:8px;z-index:300;display:flex;flex-direction:column;gap:4px;box-shadow:0 8px 32px rgba(0,0,0,.5)";
+    menu.style.cssText = "position:fixed;bottom:80px;right:16px;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:8px;z-index:300;display:flex;flex-direction:column;gap:4px;box-shadow:0 8px 32px rgba(0,0,0,.2)";
     menu.innerHTML =
-      '<button onclick="document.getElementById(\'photo-file-in\').click();document.getElementById(\'media-picker-menu\').remove()" style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:10px;color:var(--text);font-size:14px;font-weight:600;width:100%;text-align:left">📷 Photo</button>'+
-      '<button onclick="document.getElementById(\'video-file-in\').click();document.getElementById(\'media-picker-menu\').remove()" style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:10px;color:var(--text);font-size:14px;font-weight:600;width:100%;text-align:left">🎥 Vidéo</button>';
+      '<button onclick="document.getElementById(\'photo-file-in\').click();document.getElementById(\'media-picker-menu\').remove()" style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:10px;color:var(--text);font-size:14px;font-weight:600;width:100%;text-align:left;background:none;border:none;cursor:pointer">📷 Photo depuis galerie</button>'+
+      '<button onclick="document.getElementById(\'video-file-in\').click();document.getElementById(\'media-picker-menu\').remove()" style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:10px;color:var(--text);font-size:14px;font-weight:600;width:100%;text-align:left;background:none;border:none;cursor:pointer">🎥 Vidéo</button>';
     document.body.appendChild(menu);
-    setTimeout(()=>document.addEventListener("click",()=>menu.remove(),{once:true}),50);
+    setTimeout(()=>document.addEventListener("click",()=>{const m=document.getElementById("media-picker-menu");if(m)m.remove();},{once:true}),50);
   };
 
   // ==================== RECHERCHE PAR NOM ET NUMÉRO ====================
@@ -2336,47 +2422,52 @@ window.addEventListener("DOMContentLoaded",()=>{
   };
 
   // ---- VOCAL ----
-  window.pauseRec=function(){
-    clearInterval(S.recTick);S.recPaused=true;
-    document.getElementById("rec-dot").classList.remove("pulse");
-    document.getElementById("rec-state").textContent=t("recPause");
-    document.getElementById("r-pause").style.display="none";
-    document.getElementById("r-resume").style.display="flex";
-    if(S.recorder && S.recorder.state==="recording"){ try{S.recorder.pause();}catch(e){} }
-  };
-  window.resumeRec=function(){
-    S.recPaused=false;
-    document.getElementById("rec-dot").classList.add("pulse");
-    document.getElementById("rec-state").textContent=t("recEnCours");
-    document.getElementById("r-resume").style.display="none";
-    document.getElementById("r-pause").style.display="flex";
-    if(S.recorder && S.recorder.state==="paused"){ try{S.recorder.resume();}catch(e){} }
-    S.recTick=setInterval(()=>{if(!S.recPaused){S.recSecs++;document.getElementById("rec-time").textContent=fmt(S.recSecs);}},1000);
-  };
+  window.pauseRec=function(){ /* non utilisé dans nouvelle UI */ };
+  window.resumeRec=function(){ /* non utilisé dans nouvelle UI */ };
+
   window.sendVoice=function(){
     clearInterval(S.recTick);
     const finalDuration=S.recSecs;
+
+    // Remettre l'UI normale immédiatement
+    $("rec-bar").style.display="none";
+    $("normal-row").style.display="flex";
+    const btn=document.getElementById("main-action-btn");
+    if(btn){btn.textContent="🎙";btn.style.background="#111";btn.style.color="#fff";btn.style.transform="scale(1)";}
+
     if(!S.recorder || S.recorder.state==="inactive"){
-      // Pas d'enregistreur actif → annuler proprement
+      // Rien à envoyer
       stopRec();
       return;
     }
+    if(finalDuration < 1){
+      toast("Message trop court");
+      stopRec();
+      return;
+    }
+
     const recorder=S.recorder;
     const mimeType=S.recMimeType||"audio/webm";
+    const chunks=[...S.recChunks]; // copie avant nettoyage
+
     recorder.onstop=()=>{
-      const blob=new Blob(S.recChunks,{type:mimeType});
+      const allChunks=[...chunks,...S.recChunks];
+      const blob=new Blob(allChunks,{type:mimeType});
       const reader=new FileReader();
       reader.onloadend=()=>{
+        if(!reader.result||reader.result.length<100){
+          toast("Enregistrement vide","err");
+          return;
+        }
         pushMsg({from:S.myUid,type:"voice",src:reader.result,duration:finalDuration,mime:mimeType,text:"",t:nowT(),del:false});
-        if(S.recStream){ S.recStream.getTracks().forEach(tr=>tr.stop()); S.recStream=null; }
-        S.recorder=null;S.recChunks=[];
-        S.recSecs=0;S.recPaused=false;
-        document.getElementById("rec-bar").style.display="none";
-        document.getElementById("normal-row").style.display="flex";
       };
       reader.readAsDataURL(blob);
+      // Nettoyer
+      if(S.recStream){S.recStream.getTracks().forEach(tr=>tr.stop());S.recStream=null;}
+      S.recorder=null;S.recChunks=[];S.recSecs=0;S.recPaused=false;
     };
-    try{recorder.stop();}catch(e){ stopRec(); }
+
+    try{recorder.stop();}catch(e){stopRec();}
   };
 
   // ---- STATUS CREATE ----
