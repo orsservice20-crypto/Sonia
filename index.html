@@ -410,7 +410,17 @@ auth.onAuthStateChanged(async user=>{
 });
 
 // ==================== APPELS WEBRTC ====================
-const ICE_SERVERS={iceServers:[{urls:"stun:stun.l.google.com:19302"},{urls:"stun:stun1.l.google.com:19302"}]};
+const ICE_SERVERS={iceServers:[
+  {urls:"stun:stun.l.google.com:19302"},
+  {urls:"stun:stun1.l.google.com:19302"},
+  {urls:"stun:stun2.l.google.com:19302"},
+  {urls:"stun:stun3.l.google.com:19302"},
+  // Serveurs TURN publics (relais pour connexions difficiles Afrique↔Europe)
+  {urls:"turn:openrelay.metered.ca:80",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turn:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turn:openrelay.metered.ca:443?transport=tcp",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turn:openrelay.metered.ca:80?transport=tcp",username:"openrelayproject",credential:"openrelayproject"}
+]};
 
 function setCallUI(contact){
   const av=$("call-av-big");av.innerHTML="";
@@ -898,45 +908,38 @@ window.searchUserByPhone=function(){
 // ---- CONTACTS ----
 function listenContacts(){
   if(S.unsubContacts){S.unsubContacts();S.unsubContacts=null;}
-  // On écoute la liste personnelle de contacts de l'utilisateur (comme WhatsApp)
   S.unsubContacts=db.ref("userContacts/"+S.myUid).on("value",async snap=>{
     const uids=[];
     snap.forEach(child=>{ if(child.key!==S.myUid) uids.push(child.key); });
-
     if(!uids.length){
       S.contacts=[];
       CACHE.save("contacts",S.contacts);
       renderList();
       return;
     }
-
-    // Récupérer les profils correspondants + écouter leur présence
-    const profiles=[];
-    for(const uid of uids){
-      try{
-        const usnap=await db.ref("users/"+uid).get();
-        if(usnap.exists()) profiles.push(usnap.val());
-      }catch(e){}
-    }
-    S.contacts=profiles;
+    // Charger tous les profils en PARALLÈLE (beaucoup plus rapide)
+    const fetches=uids.map(uid=>
+      db.ref("users/"+uid).get().then(s=>s.exists()?s.val():null).catch(()=>null)
+    );
+    const results=await Promise.all(fetches);
+    S.contacts=results.filter(Boolean);
     CACHE.save("contacts",S.contacts);
     renderList();
-
-    // Mettre à jour en direct le statut en ligne / nom / photo de chaque contact
+    // Écouter les changements de statut/présence en temps réel
     uids.forEach(uid=>{
       db.ref("users/"+uid).on("value",usnap=>{
         if(!usnap.exists())return;
         const updated=usnap.val();
         const idx=S.contacts.findIndex(c=>c.uid===uid);
-        if(idx>=0){S.contacts[idx]=updated;}
-        else{S.contacts.push(updated);}
+        if(idx>=0) S.contacts[idx]=updated;
+        else S.contacts.push(updated);
         CACHE.save("contacts",S.contacts);
         renderList();
         if(S.activeId===uid) refreshChatHeader(updated);
       });
     });
-  }, err=>{
-    console.error("listenContacts erreur:",err.message);
+  },err=>{
+    console.error("listenContacts:",err.message);
     const cc=CACHE.load("contacts");
     if(cc){S.contacts=cc;renderList();}
   });
@@ -1563,6 +1566,10 @@ input,textarea{font-family:inherit;border:none;outline:none}
 .mic-btn-el{width:42px;height:42px;border-radius:50%;background:var(--accent);color:#000;font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:transform .15s;user-select:none;touch-action:none}
 .mic-btn-el.recording{background:var(--danger);transform:scale(1.2)}
 .send-btn-el{width:42px;height:42px;border-radius:50%;background:var(--accent);color:#000;font-size:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.emoji-tab-btn{width:38px;height:34px;border-radius:8px;font-size:18px;display:flex;align-items:center;justify-content:center;background:none;border:none;cursor:pointer;opacity:.5}
+.emoji-tab-btn.active{background:var(--bg);opacity:1}
+.emoji-cell{width:40px;height:40px;border-radius:8px;font-size:24px;display:flex;align-items:center;justify-content:center;cursor:pointer;border:none;background:none}
+.emoji-cell:active{background:var(--bg)}
 /* INPUT */
 #input-bar{padding:6px 6px max(8px,env(safe-area-inset-bottom)) 6px;border-top:1px solid var(--border);background:var(--surface);flex-shrink:0;position:relative}
 .input-row{display:flex;gap:6px;align-items:flex-end}
@@ -1859,7 +1866,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
     <div class="input-row" id="normal-row" style="display:flex;align-items:flex-end;gap:6px;padding:6px 8px">
       <!-- Zone de saisie -->
       <div style="flex:1;display:flex;align-items:flex-end;background:var(--surface);border-radius:24px;border:1px solid var(--border);padding:5px 8px;gap:4px;min-height:44px;overflow:hidden">
-        <button class="in-icon" style="flex-shrink:0;align-self:flex-end;margin-bottom:1px;font-size:20px">😊</button>
+        <button class="in-icon" onclick="toggleEmojiPanel()" style="flex-shrink:0;align-self:flex-end;margin-bottom:1px;font-size:20px" id="emoji-btn">😊</button>
         <textarea class="txt-input" id="txt-in" placeholder="Message..." rows="1"
           onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();doSend();}"
           oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px';updateSendMicBtn()"
@@ -1877,6 +1884,21 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       </div>
     </div>
   </div>
+</div>
+
+<!-- EMOJI/STICKER PANEL -->
+<div id="emoji-panel" style="display:none;position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);z-index:200;height:280px;overflow-y:auto;padding:10px">
+  <div style="display:flex;gap:8px;margin-bottom:10px;position:sticky;top:0;background:var(--surface);padding-bottom:6px">
+    <button onclick="showEmojiTab('smileys')" class="emoji-tab-btn active" id="etab-smileys">😊</button>
+    <button onclick="showEmojiTab('people')" class="emoji-tab-btn" id="etab-people">👋</button>
+    <button onclick="showEmojiTab('nature')" class="emoji-tab-btn" id="etab-nature">🌿</button>
+    <button onclick="showEmojiTab('food')" class="emoji-tab-btn" id="etab-food">🍎</button>
+    <button onclick="showEmojiTab('activity')" class="emoji-tab-btn" id="etab-activity">⚽</button>
+    <button onclick="showEmojiTab('travel')" class="emoji-tab-btn" id="etab-travel">✈️</button>
+    <button onclick="showEmojiTab('objects')" class="emoji-tab-btn" id="etab-objects">💡</button>
+    <button onclick="showEmojiTab('symbols')" class="emoji-tab-btn" id="etab-symbols">❤️</button>
+  </div>
+  <div id="emoji-grid" style="display:flex;flex-wrap:wrap;gap:4px"></div>
 </div>
 
 <!-- STATUS SCREEN -->
@@ -2012,7 +2034,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       <input type="file" id="file-in-camera" accept="image/*" capture="user" style="display:none" onchange="handleProfilePhoto(this)"/>
       <div class="prof-sep"></div>
       <p class="f-label" style="margin-bottom:9px">Ou choisir un avatar</p>
-      <div class="emoji-grid" id="emoji-grid"></div>
+      <div class="emoji-grid" id="avatar-emoji-grid"></div>
       <label class="f-label">Nom d'affichage</label>
       <input class="f-input" id="f-name" placeholder="Votre nom"/>
       <label class="f-label">Statut</label>
@@ -2116,111 +2138,185 @@ window.addEventListener("DOMContentLoaded",()=>{
   const txtIn = document.getElementById("txt-in");
   const mainBtn = document.getElementById("main-action-btn");
   const slideHint = document.getElementById("mic-slide-hint");
-  let isRecording = false;
-  let isCancelling = false;
-  let recStartY = 0;
-  let recTimer = null;
 
-  // Met à jour le bouton selon le contenu du champ texte
+  // ---- État enregistrement ----
+  let micActive = false;   // Enregistrement en cours (bouton maintenu)
+  let micLocked = false;   // Mode verrouillé (après glissement vers le haut)
+  let micCancelling = false;
+  let micStartY = 0;
+  let micTimer = null;
+
+  // ---- Met à jour le bouton selon le contexte ----
   window.updateSendMicBtn = function(){
-    if(!mainBtn) return;
+    if(!mainBtn || micActive || micLocked) return;
     const hasText = txtIn && txtIn.value.trim().length > 0;
     if(hasText){
       mainBtn.textContent = "➤";
       mainBtn.style.background = "var(--accent)";
       mainBtn.style.color = "#000";
+      mainBtn.style.transform = "scale(1)";
     } else {
       mainBtn.textContent = "🎙";
-      mainBtn.style.background = "#111";
+      mainBtn.style.background = "#111827";
       mainBtn.style.color = "#fff";
+      mainBtn.style.transform = "scale(1)";
     }
   };
   if(txtIn) txtIn.addEventListener("input", window.updateSendMicBtn);
   window.updateSendMicBtn();
 
-  // Clic simple sur le bouton
+  function setMicRecordingUI(){
+    mainBtn.textContent = "🔴";
+    mainBtn.style.background = "var(--danger)";
+    mainBtn.style.color = "#fff";
+    mainBtn.style.transform = "scale(1.15)";
+    if(slideHint) slideHint.style.display = "block";
+  }
+  function resetMicUI(){
+    micActive = false;
+    micLocked = false;
+    micCancelling = false;
+    mainBtn.style.transform = "scale(1)";
+    if(slideHint) slideHint.style.display = "none";
+    window.updateSendMicBtn();
+  }
+
   if(mainBtn){
+    // ---- CLIC SIMPLE ----
     mainBtn.addEventListener("click", function(e){
-      if(isRecording) return; // pendant enregistrement, ignorer le clic
+      if(micActive || micLocked) return;
       const hasText = txtIn && txtIn.value.trim().length > 0;
-      if(hasText){
-        doSend();
-      }
-      // Si pas de texte : appui court = rien (il faut maintenir)
+      if(hasText) doSend();
     });
 
-    // ---- APPUI LONG + GLISSER VERS LE HAUT pour enregistrer ----
-    function startMicPress(e){
+    // ---- DÉBUT APPUI ----
+    function onMicStart(e){
+      if(e.type==="touchstart") e.preventDefault();
       const hasText = txtIn && txtIn.value.trim().length > 0;
-      if(hasText) return; // Mode envoi texte → pas d'enregistrement
-      recStartY = e.touches ? e.touches[0].clientY : e.clientY;
-      isCancelling = false;
-      // Démarrer l'enregistrement après 200ms (appui maintenu)
-      recTimer = setTimeout(()=>{
-        isRecording = true;
-        if(navigator.vibrate) navigator.vibrate(40);
-        mainBtn.textContent = "🛑";
-        mainBtn.style.background = "var(--danger)";
-        mainBtn.style.transform = "scale(1.2)";
-        if(slideHint) slideHint.style.display = "block";
+      if(hasText) return;
+      micStartY = e.touches ? e.touches[0].clientY : e.clientY;
+      micCancelling = false;
+      clearTimeout(micTimer);
+      micTimer = setTimeout(()=>{
+        micActive = true;
+        if(navigator.vibrate) navigator.vibrate(50);
+        setMicRecordingUI();
         startRec();
-      }, 200);
+      }, 150);
     }
 
-    function endMicPress(e){
-      clearTimeout(recTimer);
-      if(slideHint) slideHint.style.display = "none";
-      mainBtn.style.transform = "scale(1)";
-      if(!isRecording) return;
-      isRecording = false;
-      mainBtn.textContent = "🎙";
-      mainBtn.style.background = "#111";
-      mainBtn.style.color = "#fff";
-      if(isCancelling){
-        cancelRec();
-        toast("Enregistrement annulé");
-      } else {
-        sendVoice();
-      }
-    }
-
-    function moveMicPress(e){
-      if(!isRecording) return;
+    // ---- MOUVEMENT (glisser vers le haut = annuler, glisser vers le bas = lock) ----
+    function onMicMove(e){
+      if(!micActive) return;
       const currentY = e.touches ? e.touches[0].clientY : e.clientY;
-      const diff = recStartY - currentY;
-      if(diff > 80){
-        isCancelling = true;
+      const diffY = micStartY - currentY;
+      if(diffY > 60){
+        // Glisser vers le haut → annuler
+        micCancelling = true;
         mainBtn.textContent = "🗑";
-        mainBtn.style.background = "#888";
+        mainBtn.style.background = "#9ca3af";
+        if(slideHint) slideHint.textContent = "⬆ Relâcher pour annuler";
+      } else if(diffY < -40){
+        // Glisser vers le bas → verrouiller (mode lock comme WA)
+        if(!micLocked){
+          micLocked = true;
+          micActive = false;
+          if(navigator.vibrate) navigator.vibrate(30);
+          mainBtn.textContent = "🔒";
+          mainBtn.style.background = "var(--accent)";
+          mainBtn.style.color = "#000";
+          mainBtn.style.transform = "scale(1)";
+          if(slideHint) slideHint.style.display = "none";
+          // Afficher la barre d'enregistrement étendue avec pause
+          showLockedRecBar();
+        }
       } else {
-        isCancelling = false;
-        mainBtn.textContent = "🛑";
+        micCancelling = false;
+        mainBtn.textContent = "🔴";
         mainBtn.style.background = "var(--danger)";
+        if(slideHint) slideHint.textContent = "⬆ Glisser pour annuler";
       }
     }
 
-    mainBtn.addEventListener("touchstart", startMicPress, {passive:true});
-    mainBtn.addEventListener("touchend", endMicPress, {passive:true});
-    mainBtn.addEventListener("touchmove", moveMicPress, {passive:true});
-    mainBtn.addEventListener("mousedown", startMicPress);
-    mainBtn.addEventListener("mouseup", endMicPress);
-    mainBtn.addEventListener("mouseleave", e=>{ if(isRecording) endMicPress(e); });
-    mainBtn.addEventListener("mousemove", moveMicPress);
+    // ---- FIN APPUI ----
+    function onMicEnd(e){
+      clearTimeout(micTimer);
+      if(slideHint) slideHint.style.display = "none";
+      if(micLocked) return; // Mode verrouillé → géré par les boutons de la barre
+      if(!micActive){ resetMicUI(); return; }
+      micActive = false;
+      if(micCancelling){
+        window.cancelRec();
+      } else {
+        window.sendVoice();
+      }
+      resetMicUI();
+    }
+
+    mainBtn.addEventListener("touchstart", onMicStart, {passive:false});
+    mainBtn.addEventListener("touchmove", onMicMove, {passive:true});
+    mainBtn.addEventListener("touchend", onMicEnd, {passive:true});
+    mainBtn.addEventListener("mousedown", onMicStart);
+    document.addEventListener("mousemove", e=>{ if(micActive) onMicMove(e); });
+    document.addEventListener("mouseup", e=>{ if(micActive) onMicEnd(e); });
     mainBtn.addEventListener("contextmenu", e=>e.preventDefault());
   }
 
-  // cancelRec = stopRec sans envoyer
-  window.cancelRec = function(){
-    if(S.recorder && S.recorder.state !== "inactive"){
-      S.recorder.onstop = null; // ne pas déclencher sendVoice
-      try{ S.recorder.stop(); }catch(e){}
+  // Afficher barre de contrôle en mode verrouillé (pause/envoyer/supprimer)
+  function showLockedRecBar(){
+    const rb=$("rec-bar");
+    if(rb){
+      rb.style.display="flex";
+      rb.style.flexDirection="column";
+      rb.innerHTML=
+        '<div style="display:flex;align-items:center;gap:12px;padding:6px 4px">'+
+          '<button onclick="window.cancelRec();resetMicAfterLock()" style="color:var(--sub);font-size:22px;padding:4px;background:none;border:none;cursor:pointer">🗑</button>'+
+          '<span id="rec-time" style="color:var(--danger);font-weight:700;font-size:15px;min-width:40px">0:00</span>'+
+          '<div class="wave" style="flex:1"><span></span><span></span><span></span><span></span><span></span><span></span></div>'+
+          '<div class="rec-dot pulse" id="rec-dot" style="width:10px;height:10px;border-radius:50%;background:var(--danger)"></div>'+
+          '<button id="rec-pause-btn" onclick="toggleRecPause()" style="font-size:22px;padding:4px;background:none;border:none;cursor:pointer;color:var(--text)">⏸</button>'+
+          '<button onclick="window.sendVoice();resetMicAfterLock()" style="width:42px;height:42px;border-radius:50%;background:var(--accent);color:#000;font-size:20px;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center">➤</button>'+
+        '</div>';
+      // Relancer le timer avec le nouveau rec-time
+      clearInterval(S.recTick);
+      S.recTick=setInterval(()=>{
+        if(!S.recPaused){S.recSecs++;const rt=$("rec-time");if(rt)rt.textContent=fmt(S.recSecs);}
+      },1000);
     }
-    if(S.recStream){ S.recStream.getTracks().forEach(t=>t.stop()); S.recStream=null; }
-    S.recorder=null; S.recChunks=[];
-    clearInterval(S.recTick); S.recSecs=0; S.recPaused=false;
+    $("normal-row").style.display="none";
+  }
+
+  window.resetMicAfterLock = function(){
+    micLocked=false;micActive=false;micCancelling=false;
+    window.updateSendMicBtn();
+  };
+
+  window.toggleRecPause = function(){
+    const btn=$("rec-pause-btn");
+    if(!S.recorder) return;
+    if(S.recPaused){
+      S.recPaused=false;
+      if(S.recorder.state==="paused") try{S.recorder.resume();}catch(e){}
+      const rd=$("rec-dot");if(rd)rd.classList.add("pulse");
+      if(btn) btn.textContent="⏸";
+    } else {
+      S.recPaused=true;
+      if(S.recorder.state==="recording") try{S.recorder.pause();}catch(e){}
+      const rd=$("rec-dot");if(rd)rd.classList.remove("pulse");
+      if(btn) btn.textContent="▶";
+    }
+  };
+
+  window.cancelRec = function(){
+    if(S.recorder && S.recorder.state!=="inactive"){
+      S.recorder.onstop=null;
+      try{S.recorder.stop();}catch(e){}
+    }
+    if(S.recStream){S.recStream.getTracks().forEach(t=>t.stop());S.recStream=null;}
+    S.recorder=null;S.recChunks=[];
+    clearInterval(S.recTick);S.recSecs=0;S.recPaused=false;
     $("rec-bar").style.display="none";
     $("normal-row").style.display="flex";
-    $("rec-time").textContent="0:00";
   };
 
   // ==================== MEDIA PICKER ====================
@@ -2237,7 +2333,71 @@ window.addEventListener("DOMContentLoaded",()=>{
     setTimeout(()=>document.addEventListener("click",()=>{const m=document.getElementById("media-picker-menu");if(m)m.remove();},{once:true}),50);
   };
 
-  // ==================== RECHERCHE PAR NOM ET NUMÉRO ====================
+  // ==================== EMOJI / STICKER PICKER ====================
+  const EMOJIS = {
+    smileys:["😀","😁","😂","🤣","😃","😄","😅","😆","😉","😊","😋","😎","😍","🥰","😘","😗","😙","😚","🙂","🤗","🤩","🤔","🤨","😐","😑","😶","🙄","😏","😣","😥","😮","🤐","😯","😪","😫","🥱","😴","😌","😛","😜","😝","🤤","😒","😓","😔","😕","🙃","🤑","😲","☹️","🙁","😖","😞","😟","😤","😢","😭","😦","😧","😨","😩","🤯","😬","😰","😱","🥵","🥶","😳","🤪","😵","🥴","😷","🤒","🤕","🤢","🤧","🤠"],
+    people:["👋","🤚","🖐️","✋","🤙","👌","🤌","🤏","✌️","🤞","🤟","🤘","👈","👉","👆","👇","☝️","👍","👎","✊","👊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏","💪","🦵","🦶","👂","👃","🫀","🫁","🧠","🦷","🦴","👀","👁️","👅","👄","🫦","💋","💘","💝","💖","💗","💓","💞","💕","💟","❣️","💔","❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎"],
+    nature:["🐶","🐱","🐭","🐹","🐰","🦊","🐻","🐼","🐨","🐯","🦁","🐮","🐷","🐸","🐵","🐔","🐧","🐦","🦆","🦅","🦉","🦇","🐺","🐗","🐴","🦄","🐝","🐛","🦋","🐌","🐞","🐜","🦗","🦟","🌸","🌺","🌻","🌹","🌷","🌱","🌿","☘️","🍀","🎋","🍃","🍂","🍁","🌾","🌵","🌴","🌳","🌲","🍄","🐚","🌊","🌈","☀️","🌤️","⛅","🌦️","🌧️","⛈️","🌩️","🌨️","❄️","☃️","⛄","🌬️","💨","🌪️","🌫️","🌡️","🌂","☂️","🔥","💧","🌊"],
+    food:["🍎","🍊","🍋","🍇","🍓","🫐","🍈","🍑","🍒","🍍","🥭","🍅","🥝","🍆","🥑","🥦","🥬","🥒","🌽","🌶️","🫑","🧄","🧅","🥔","🍠","🥐","🥖","🍞","🥨","🧀","🥚","🍳","🧇","🥞","🧈","🍗","🍖","🌭","🍔","🍟","🍕","🫓","🥪","🥙","🌮","🌯","🫔","🥗","🥘","🍲","🍛","🍜","🍝","🍠","🍢","🍣","🍤","🍙","🍚","🍘","🍥","🥮","🍡","🧁","🍰","🎂","🍮","🍭","🍬","🍫","🍿","🍩","🍪","🌰","🥜","🍯","🧃","🥤","🧋","☕","🍵","🍺","🥂","🍷"],
+    activity:["⚽","🏀","🏈","⚾","🥎","🎾","🏐","🏉","🥏","🎱","🏓","🏸","🏒","🥍","🏑","🏏","🥅","⛳","🎿","🛷","🥌","⛸️","🤺","🏋️","🤸","🤼","🤽","🤾","🤹","🧗","🏇","⛷️","🏂","🏄","🚣","🧘","🎯","🏆","🥇","🥈","🥉","🏅","🎖️","🎳","🎮","🎰","🧩","🎭","🎨","🎬","🎤","🎧","🎼","🎵","🎶","🎸","🥁","🎹","🎷","🎺","🎻","🪕","🎲","♟️"],
+    travel:["🚗","🚕","🚙","🚌","🚎","🏎️","🚓","🚑","🚒","🚐","🛻","🚚","🚛","🚜","🛵","🏍️","🛺","🚲","🛴","🛹","🛼","🚏","🛣️","🛤️","⛽","🚧","🚦","🚥","🛳️","⛴️","🚢","✈️","🛩️","💺","🛺","🚁","🚟","🚠","🚡","🛰️","🚀","🛸","🚔","🌍","🌎","🌏","🗺️","🧭","🏔️","⛰️","🌋","🗻","🏕️","🏖️","🏜️","🏝️","🏞️","🏟️","🏛️","🏗️","🧱","🏘️","🏚️","🏠","🏡","🏢","🏣","🏤","🏥","🏦","🏨","🏩","🏪","🏫","🏬","🏭","🏯","🗼","🗽","🗿"],
+    objects:["⌚","📱","💻","⌨️","🖥️","🖨️","🖱️","🖲️","💾","💿","📀","📷","📸","📹","🎥","📽️","🎞️","📞","☎️","📟","📺","📻","🧭","⏱️","⏲️","⏰","⌛","⏳","🔋","🔌","💡","🔦","🕯️","🪔","🧯","🛢️","💰","💴","💵","💶","💷","💸","💳","🪙","💎","⚖️","🔑","🗝️","🔨","🪓","⛏️","⚒️","🛠️","🗡️","⚔️","🛡️","🔧","🔩","⚙️","🗜️","🔗","⛓️","🪝","🔫","🧲","🔮","🪄","🎩","🪅","🎀","🎁","🎗️","🎟️","🎫","🏷️"],
+    symbols:["❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎","💔","❣️","💕","💞","💓","💗","💖","💘","💝","💟","☮️","✝️","☪️","🕉️","☸️","✡️","🔯","🕎","☯️","☦️","🛐","⛎","♈","♉","♊","♋","♌","♍","♎","♏","♐","♑","♒","♓","🆔","⚛️","🉑","☢️","☣️","📴","📳","🈶","🈚","🈸","🈺","🈷️","✴️","🆚","💮","🉐","㊙️","㊗️","🈴","🈵","🈹","🈲","🅰️","🅱️","🆎","🆑","🅾️","🆘","❌","⭕","🛑","⛔","📛","🚫","✅","☑️","✔️","❎","🔰","♻️","💯","🔱","📛","🔰","⭕","✅","❌","❓","❔","❕","❗","‼️","⁉️","🔅","🔆","〽️","⚠️","🚸","🔰","🈳","🈲"]
+  };
+
+  let emojiPanelOpen=false;
+  let currentEmojiTab="smileys";
+
+  window.toggleEmojiPanel=function(){
+    const panel=$("emoji-panel");
+    if(!panel)return;
+    emojiPanelOpen=!emojiPanelOpen;
+    panel.style.display=emojiPanelOpen?"block":"none";
+    if(emojiPanelOpen){
+      showEmojiTab("smileys");
+      // Fermer quand on clique en dehors
+      setTimeout(()=>document.addEventListener("click",closeEmojiOnOutside,{once:true}),100);
+    }
+  };
+
+  function closeEmojiOnOutside(e){
+    const panel=$("emoji-panel");
+    const btn=$("emoji-btn");
+    if(panel&&!panel.contains(e.target)&&e.target!==btn){
+      panel.style.display="none";
+      emojiPanelOpen=false;
+    } else if(emojiPanelOpen){
+      setTimeout(()=>document.addEventListener("click",closeEmojiOnOutside,{once:true}),100);
+    }
+  }
+
+  window.showEmojiTab=function(tab){
+    currentEmojiTab=tab;
+    document.querySelectorAll(".emoji-tab-btn").forEach(b=>b.classList.remove("active"));
+    const tabBtn=document.getElementById("etab-"+tab);
+    if(tabBtn) tabBtn.classList.add("active");
+    const grid=$("emoji-grid");
+    if(!grid)return;
+    grid.innerHTML="";
+    (EMOJIS[tab]||[]).forEach(emoji=>{
+      const btn=document.createElement("button");
+      btn.className="emoji-cell";
+      btn.textContent=emoji;
+      btn.onclick=()=>{
+        const ti=$("txt-in");
+        if(ti){
+          const pos=ti.selectionStart||ti.value.length;
+          ti.value=ti.value.slice(0,pos)+emoji+ti.value.slice(pos);
+          ti.dispatchEvent(new Event("input"));
+          ti.focus();
+          ti.selectionStart=ti.selectionEnd=pos+emoji.length;
+        }
+      };
+      grid.appendChild(btn);
+    });
+  };
+
+
   // (override la fonction dans block 1 pour gérer la recherche par nom)
   const origSearch = window.searchUserByPhone;
   window.searchUserByPhoneOrName = async function(){
@@ -2295,9 +2455,9 @@ window.addEventListener("DOMContentLoaded",()=>{
   }
 
   // ---- PROFILE ----
-  const EMOJIS=["🧑🏾","👨🏿","👩🏽","🧔🏻","👧🏾","👦🏽","🧕🏾","🧓🏿"];
-  const eg=document.getElementById("emoji-grid");
-  EMOJIS.forEach(e=>{
+  const AVATAR_EMOJIS=["🧑🏾","👨🏿","👩🏽","🧔🏻","👧🏾","👦🏽","🧕🏾","🧓🏿"];
+  const eg=document.getElementById("avatar-emoji-grid");
+  AVATAR_EMOJIS.forEach(e=>{
     const b=document.createElement("button");b.className="em-btn"+(e===S.profile.emoji?" sel":"");b.textContent=e;
     b.onclick=()=>{S.profile.avType="emoji";S.profile.emoji=e;S.profile.img=null;document.querySelectorAll(".em-btn").forEach(x=>x.classList.toggle("sel",x===b));renderProfAv();syncRemoveBtn();};
     eg.appendChild(b);
