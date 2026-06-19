@@ -952,6 +952,49 @@ async function ensureMutualContact(otherUid){
   await db.ref("userContacts/"+otherUid+"/"+S.myUid).set(true);
 }
 
+function showDeleteConvMenu(c,ck,row){
+  // Supprimer tout menu existant
+  const old=document.getElementById("conv-del-menu");if(old)old.remove();
+  const nick=CACHE.load("nick_"+c.uid)||"";
+  const name=nick||c.name||c.phone||"Inconnu";
+  const menu=document.createElement("div");
+  menu.id="conv-del-menu";
+  menu.style.cssText="position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.4);display:flex;align-items:flex-end";
+  menu.innerHTML=
+    '<div style="width:100%;background:var(--surface);border-radius:20px 20px 0 0;padding:20px 20px 36px;box-shadow:0 -4px 32px rgba(0,0,0,.2)">'+
+      '<div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px">'+esc(name)+'</div>'+
+      '<div style="font-size:13px;color:var(--sub);margin-bottom:20px">Appui long sur la discussion</div>'+
+      '<button onclick="archOrUnarchConv(\''+c.uid+'\',\''+ck+'\')" style="display:flex;align-items:center;gap:14px;width:100%;padding:14px 0;border-bottom:1px solid var(--border);background:none;border-top:none;border-left:none;border-right:none;color:var(--text);font-size:15px;font-family:inherit;cursor:pointer">'+
+        '<span style="font-size:22px">'+(S.arch.has(c.uid)?"📤":"🗄")+'</span>'+(S.arch.has(c.uid)?"Désarchiver":"Archiver")+'</button>'+
+      '<button onclick="deleteConversation(\''+c.uid+'\',\''+ck+'\')" style="display:flex;align-items:center;gap:14px;width:100%;padding:14px 0;border:none;background:none;color:var(--danger);font-size:15px;font-family:inherit;cursor:pointer">'+
+        '<span style="font-size:22px">🗑</span>Supprimer la discussion</button>'+
+      '<button onclick="document.getElementById(\'conv-del-menu\').remove()" style="display:flex;align-items:center;justify-content:center;width:100%;padding:14px 0;margin-top:8px;border:none;background:var(--bg);border-radius:14px;color:var(--sub);font-size:15px;font-family:inherit;cursor:pointer;font-weight:600">Annuler</button>'+
+    '</div>';
+  menu.onclick=e=>{if(e.target===menu)menu.remove();};
+  document.body.appendChild(menu);
+}
+
+window.archOrUnarchConv=function(uid,ck){
+  const menu=document.getElementById("conv-del-menu");if(menu)menu.remove();
+  toggleArch(uid);
+};
+
+window.deleteConversation=function(uid,ck){
+  const menu=document.getElementById("conv-del-menu");if(menu)menu.remove();
+  // Supprimer les messages de la discussion dans Firebase
+  db.ref("chats/"+ck).remove().catch(()=>{});
+  // Retirer le contact de userContacts (les deux sens)
+  db.ref("userContacts/"+S.myUid+"/"+uid).remove().catch(()=>{});
+  // Retirer de la liste locale
+  S.contacts=S.contacts.filter(c=>c.uid!==uid);
+  CACHE.save("contacts",S.contacts);
+  // Supprimer le cache des messages
+  try{localStorage.removeItem("msgs_"+ck);}catch(e){}
+  toast("Discussion supprimée");
+  renderList();
+};
+
+
 function refreshChatHeader(c){
   const nick=CACHE.load("nick_"+c.uid);
   const displayName=nick||c.name||c.phone||"Inconnu";
@@ -1051,6 +1094,24 @@ function renderList(){
     row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span><span class="row-time" id="lt-'+ck+'"></span></div><div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+(subStatus||"...")+'</span><button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button></div></div>';
     row.querySelector(".arch-btn").onclick=ev=>{ev.stopPropagation();toggleArch(c.uid);};
     row.onclick=()=>openChat(c.uid);
+
+    // Appui long → supprimer la discussion
+    let rowPressTimer=null;
+    const startRowPress=()=>{
+      rowPressTimer=setTimeout(()=>{
+        if(navigator.vibrate)navigator.vibrate(40);
+        showDeleteConvMenu(c,ck,row);
+      },600);
+    };
+    const cancelRowPress=()=>clearTimeout(rowPressTimer);
+    row.addEventListener("touchstart",startRowPress,{passive:true});
+    row.addEventListener("touchend",cancelRowPress);
+    row.addEventListener("touchmove",cancelRowPress);
+    row.addEventListener("mousedown",startRowPress);
+    row.addEventListener("mouseup",cancelRowPress);
+    row.addEventListener("mouseleave",cancelRowPress);
+    row.addEventListener("contextmenu",e=>{e.preventDefault();showDeleteConvMenu(c,ck,row);});
+
     box.appendChild(row);
 
     // Écouter le dernier message pour mise à jour en temps réel
@@ -2140,10 +2201,11 @@ window.addEventListener("DOMContentLoaded",()=>{
   const slideHint = document.getElementById("mic-slide-hint");
 
   // ---- État enregistrement ----
-  let micActive = false;   // Enregistrement en cours (bouton maintenu)
-  let micLocked = false;   // Mode verrouillé (après glissement vers le haut)
+  let micActive = false;
+  let micLocked = false;
   let micCancelling = false;
   let micStartY = 0;
+  let micStartX = 0;
   let micTimer = null;
 
   // ---- Met à jour le bouton selon le contexte ----
@@ -2152,38 +2214,18 @@ window.addEventListener("DOMContentLoaded",()=>{
     const hasText = txtIn && txtIn.value.trim().length > 0;
     if(hasText){
       mainBtn.textContent = "➤";
-      mainBtn.style.background = "var(--accent)";
-      mainBtn.style.color = "#000";
-      mainBtn.style.transform = "scale(1)";
+      mainBtn.style.cssText = "width:46px;height:46px;border-radius:50%;background:var(--accent);color:#000;font-size:20px;display:flex;align-items:center;justify-content:center;border:none;cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none;transition:transform .15s,background .15s;transform:scale(1)";
     } else {
       mainBtn.textContent = "🎙";
-      mainBtn.style.background = "#111827";
-      mainBtn.style.color = "#fff";
-      mainBtn.style.transform = "scale(1)";
+      mainBtn.style.cssText = "width:46px;height:46px;border-radius:50%;background:#111827;color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center;border:none;cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none;transition:transform .15s,background .15s;transform:scale(1)";
     }
   };
   if(txtIn) txtIn.addEventListener("input", window.updateSendMicBtn);
   window.updateSendMicBtn();
 
-  function setMicRecordingUI(){
-    mainBtn.textContent = "🔴";
-    mainBtn.style.background = "var(--danger)";
-    mainBtn.style.color = "#fff";
-    mainBtn.style.transform = "scale(1.15)";
-    if(slideHint) slideHint.style.display = "block";
-  }
-  function resetMicUI(){
-    micActive = false;
-    micLocked = false;
-    micCancelling = false;
-    mainBtn.style.transform = "scale(1)";
-    if(slideHint) slideHint.style.display = "none";
-    window.updateSendMicBtn();
-  }
-
   if(mainBtn){
-    // ---- CLIC SIMPLE ----
-    mainBtn.addEventListener("click", function(e){
+    // Clic simple → envoyer texte si texte présent
+    mainBtn.addEventListener("click", function(){
       if(micActive || micLocked) return;
       const hasText = txtIn && txtIn.value.trim().length > 0;
       if(hasText) doSend();
@@ -2193,48 +2235,57 @@ window.addEventListener("DOMContentLoaded",()=>{
     function onMicStart(e){
       if(e.type==="touchstart") e.preventDefault();
       const hasText = txtIn && txtIn.value.trim().length > 0;
-      if(hasText) return;
-      micStartY = e.touches ? e.touches[0].clientY : e.clientY;
+      if(hasText) return; // Texte → le clic suffit
+      const pt = e.touches ? e.touches[0] : e;
+      micStartY = pt.clientY;
+      micStartX = pt.clientX;
       micCancelling = false;
       clearTimeout(micTimer);
+      // Démarrer après 100ms d'appui
       micTimer = setTimeout(()=>{
         micActive = true;
-        if(navigator.vibrate) navigator.vibrate(50);
-        setMicRecordingUI();
-        startRec();
-      }, 150);
-    }
-
-    // ---- MOUVEMENT (glisser vers le haut = annuler, glisser vers le bas = lock) ----
-    function onMicMove(e){
-      if(!micActive) return;
-      const currentY = e.touches ? e.touches[0].clientY : e.clientY;
-      const diffY = micStartY - currentY;
-      if(diffY > 60){
-        // Glisser vers le haut → annuler
-        micCancelling = true;
-        mainBtn.textContent = "🗑";
-        mainBtn.style.background = "#9ca3af";
-        if(slideHint) slideHint.textContent = "⬆ Relâcher pour annuler";
-      } else if(diffY < -40){
-        // Glisser vers le bas → verrouiller (mode lock comme WA)
-        if(!micLocked){
-          micLocked = true;
-          micActive = false;
-          if(navigator.vibrate) navigator.vibrate(30);
-          mainBtn.textContent = "🔒";
-          mainBtn.style.background = "var(--accent)";
-          mainBtn.style.color = "#000";
-          mainBtn.style.transform = "scale(1)";
-          if(slideHint) slideHint.style.display = "none";
-          // Afficher la barre d'enregistrement étendue avec pause
-          showLockedRecBar();
-        }
-      } else {
-        micCancelling = false;
+        if(navigator.vibrate) navigator.vibrate(40);
         mainBtn.textContent = "🔴";
         mainBtn.style.background = "var(--danger)";
-        if(slideHint) slideHint.textContent = "⬆ Glisser pour annuler";
+        mainBtn.style.color = "#fff";
+        mainBtn.style.transform = "scale(1.2)";
+        if(slideHint){
+          slideHint.textContent = "⬆ Glisser haut pour verrouiller • ← Pour annuler";
+          slideHint.style.display = "block";
+        }
+        startRec();
+      }, 100);
+    }
+
+    // ---- MOUVEMENT ----
+    function onMicMove(e){
+      if(!micActive) return;
+      const pt = e.touches ? e.touches[0] : e;
+      const dy = micStartY - pt.clientY; // positif = vers le haut
+      const dx = micStartX - pt.clientX; // positif = vers la gauche
+
+      if(dy > 80){
+        // Glisser vers le HAUT → verrouiller (continuer sans maintenir)
+        micActive = false;
+        micLocked = true;
+        if(navigator.vibrate) navigator.vibrate([20,20,20]);
+        if(slideHint) slideHint.style.display = "none";
+        showLockedRecBar();
+        return;
+      }
+
+      if(dx > 80 && dy < 30){
+        // Glisser vers la GAUCHE → annuler
+        if(!micCancelling){
+          micCancelling = true;
+          mainBtn.textContent = "🗑";
+          mainBtn.style.background = "#9ca3af";
+          if(slideHint) slideHint.textContent = "← Relâcher pour annuler";
+        }
+      } else if(!micCancelling){
+        mainBtn.textContent = "🔴";
+        mainBtn.style.background = "var(--danger)";
+        if(slideHint) slideHint.textContent = "⬆ Glisser haut pour verrouiller • ← Pour annuler";
       }
     }
 
@@ -2242,81 +2293,104 @@ window.addEventListener("DOMContentLoaded",()=>{
     function onMicEnd(e){
       clearTimeout(micTimer);
       if(slideHint) slideHint.style.display = "none";
-      if(micLocked) return; // Mode verrouillé → géré par les boutons de la barre
-      if(!micActive){ resetMicUI(); return; }
+      if(micLocked) return; // Mode verrouillé → géré par les boutons
+      if(!micActive){
+        micActive = false; micCancelling = false;
+        window.updateSendMicBtn();
+        return;
+      }
       micActive = false;
       if(micCancelling){
         window.cancelRec();
+        toast("Enregistrement annulé");
       } else {
         window.sendVoice();
       }
-      resetMicUI();
+      micCancelling = false;
+      window.updateSendMicBtn();
     }
 
     mainBtn.addEventListener("touchstart", onMicStart, {passive:false});
     mainBtn.addEventListener("touchmove", onMicMove, {passive:true});
     mainBtn.addEventListener("touchend", onMicEnd, {passive:true});
     mainBtn.addEventListener("mousedown", onMicStart);
-    document.addEventListener("mousemove", e=>{ if(micActive) onMicMove(e); });
+    document.addEventListener("mousemove", e=>{ if(micActive||micLocked) onMicMove(e); });
     document.addEventListener("mouseup", e=>{ if(micActive) onMicEnd(e); });
     mainBtn.addEventListener("contextmenu", e=>e.preventDefault());
   }
 
-  // Afficher barre de contrôle en mode verrouillé (pause/envoyer/supprimer)
+  // ---- BARRE VERROUILLÉE (enregistrement sans maintenir) ----
   function showLockedRecBar(){
     const rb=$("rec-bar");
-    if(rb){
-      rb.style.display="flex";
-      rb.style.flexDirection="column";
-      rb.innerHTML=
-        '<div style="display:flex;align-items:center;gap:12px;padding:6px 4px">'+
-          '<button onclick="window.cancelRec();resetMicAfterLock()" style="color:var(--sub);font-size:22px;padding:4px;background:none;border:none;cursor:pointer">🗑</button>'+
-          '<span id="rec-time" style="color:var(--danger);font-weight:700;font-size:15px;min-width:40px">0:00</span>'+
-          '<div class="wave" style="flex:1"><span></span><span></span><span></span><span></span><span></span><span></span></div>'+
-          '<div class="rec-dot pulse" id="rec-dot" style="width:10px;height:10px;border-radius:50%;background:var(--danger)"></div>'+
-          '<button id="rec-pause-btn" onclick="toggleRecPause()" style="font-size:22px;padding:4px;background:none;border:none;cursor:pointer;color:var(--text)">⏸</button>'+
-          '<button onclick="window.sendVoice();resetMicAfterLock()" style="width:42px;height:42px;border-radius:50%;background:var(--accent);color:#000;font-size:20px;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center">➤</button>'+
-        '</div>';
-      // Relancer le timer avec le nouveau rec-time
-      clearInterval(S.recTick);
-      S.recTick=setInterval(()=>{
-        if(!S.recPaused){S.recSecs++;const rt=$("rec-time");if(rt)rt.textContent=fmt(S.recSecs);}
-      },1000);
-    }
+    if(!rb) return;
     $("normal-row").style.display="none";
+    rb.style.display="flex";
+    rb.innerHTML=
+      '<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;width:100%">'+
+        '<button onclick="window.cancelRec();window.resetMicAfterLock()" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--sub);flex-shrink:0">🗑</button>'+
+        '<span id="rec-time" style="color:var(--danger);font-weight:700;font-size:15px;min-width:38px;flex-shrink:0">0:00</span>'+
+        '<div style="flex:1;height:3px;background:var(--border);border-radius:2px;overflow:hidden">'+
+          '<div id="rec-wave-bar" style="height:100%;background:var(--danger);width:0%;transition:width .5s linear"></div>'+
+        '</div>'+
+        '<div class="rec-dot pulse" id="rec-dot" style="width:10px;height:10px;border-radius:50%;background:var(--danger);flex-shrink:0"></div>'+
+        '<button id="rec-pause-btn" onclick="window.toggleRecPause()" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--text);flex-shrink:0">⏸</button>'+
+        '<button onclick="window.sendVoice();window.resetMicAfterLock()" style="width:42px;height:42px;border-radius:50%;background:var(--accent);color:#000;font-size:20px;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0">➤</button>'+
+      '</div>';
+    // Reprendre le timer
+    clearInterval(S.recTick);
+    S.recTick=setInterval(()=>{
+      if(!S.recPaused){
+        S.recSecs++;
+        const rt=$("rec-time");if(rt)rt.textContent=fmt(S.recSecs);
+      }
+    },1000);
+    // Animer la barre de progression
+    const wb=$("rec-wave-bar");
+    if(wb) setTimeout(()=>{wb.style.width="100%";wb.style.transition="width 300s linear";},100);
+    // Mettre le bouton principal en mode lock
+    if(mainBtn){
+      mainBtn.textContent="🔒";
+      mainBtn.style.background="var(--accent)";
+      mainBtn.style.color="#000";
+      mainBtn.style.transform="scale(1)";
+    }
   }
 
   window.resetMicAfterLock = function(){
-    micLocked=false;micActive=false;micCancelling=false;
+    micLocked=false; micActive=false; micCancelling=false;
     window.updateSendMicBtn();
   };
 
   window.toggleRecPause = function(){
     const btn=$("rec-pause-btn");
-    if(!S.recorder) return;
+    const rd=$("rec-dot");
     if(S.recPaused){
       S.recPaused=false;
-      if(S.recorder.state==="paused") try{S.recorder.resume();}catch(e){}
-      const rd=$("rec-dot");if(rd)rd.classList.add("pulse");
-      if(btn) btn.textContent="⏸";
+      if(S.recorder&&S.recorder.state==="paused")try{S.recorder.resume();}catch(e){}
+      if(rd)rd.classList.add("pulse");
+      if(btn)btn.textContent="⏸";
+      const wb=$("rec-wave-bar");
+      if(wb){wb.style.transition="width 300s linear";wb.style.width="100%";}
     } else {
       S.recPaused=true;
-      if(S.recorder.state==="recording") try{S.recorder.pause();}catch(e){}
-      const rd=$("rec-dot");if(rd)rd.classList.remove("pulse");
-      if(btn) btn.textContent="▶";
+      if(S.recorder&&S.recorder.state==="recording")try{S.recorder.pause();}catch(e){}
+      if(rd)rd.classList.remove("pulse");
+      if(btn)btn.textContent="▶";
+      const wb=$("rec-wave-bar");
+      if(wb){wb.style.transition="none";const cur=wb.style.width;wb.style.width=cur;}
     }
   };
 
   window.cancelRec = function(){
-    if(S.recorder && S.recorder.state!=="inactive"){
+    clearInterval(S.recTick);
+    if(S.recorder&&S.recorder.state!=="inactive"){
       S.recorder.onstop=null;
       try{S.recorder.stop();}catch(e){}
     }
     if(S.recStream){S.recStream.getTracks().forEach(t=>t.stop());S.recStream=null;}
-    S.recorder=null;S.recChunks=[];
-    clearInterval(S.recTick);S.recSecs=0;S.recPaused=false;
-    $("rec-bar").style.display="none";
-    $("normal-row").style.display="flex";
+    S.recorder=null;S.recChunks=[];S.recSecs=0;S.recPaused=false;
+    const rb=$("rec-bar");if(rb)rb.style.display="none";
+    const nr=$("normal-row");if(nr)nr.style.display="flex";
   };
 
   // ==================== MEDIA PICKER ====================
