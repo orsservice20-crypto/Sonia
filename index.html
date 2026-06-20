@@ -71,6 +71,15 @@ window.addEventListener("offline",()=>{isOnline=false;});
 const $=id=>document.getElementById(id);
 const fmt=s=>String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
 const nowT=()=>new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"});
+const nowDate=()=>{
+  const d=new Date();const today=new Date();
+  const isToday=d.toDateString()===today.toDateString();
+  const yest=new Date();yest.setDate(yest.getDate()-1);
+  const isYest=d.toDateString()===yest.toDateString();
+  if(isToday)return"";
+  if(isYest)return"Hier";
+  return d.toLocaleDateString("fr",{day:"2-digit",month:"short"});
+};
 const esc=t=>String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 const chatKey=(a,b)=>[a,b].sort().join("_");
 
@@ -727,7 +736,10 @@ window.endCall=function(silent){
       time:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"}),
       date:new Date().toLocaleDateString("fr",{day:"2-digit",month:"short"})
     };
-    db.ref("callLog/"+S.myUid).push(entry).catch(()=>{});
+    db.ref("callLog/"+S.myUid).push(entry).then(()=>{
+      // Rafraîchir l'écran Appels si actuellement affiché
+      if(S.currentScreen==="s-calls" && typeof loadCallLog==="function") loadCallLog();
+    }).catch(()=>{});
   }
 };
 
@@ -1207,22 +1219,57 @@ function makeBubble(m){
   if(m.del){bub.className="bubble del";bub.textContent=t("msgSupprime");row.appendChild(bub);return row;}
   bub.className="bubble "+(self?"out":"in");
   if(m.type==="voice"){
-    bub.innerHTML='<div class="vbubble"><button class="vplay" id="vp-'+m.id+'">▶</button><div class="vbar"><div class="vfill" id="vf-'+m.id+'"></div></div><span class="vdur" id="vd-'+m.id+'">'+fmt(m.duration||0)+'</span></div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+    // Générer une forme d'onde (barres de hauteurs variées pour un look réaliste)
+    const barCount=28;
+    let bars="";
+    for(let i=0;i<barCount;i++){
+      const h=18+Math.round(Math.sin(i*0.7)*10+Math.random()*14);
+      bars+='<span style="height:'+Math.max(6,h)+'%"></span>';
+    }
+    bub.innerHTML=
+      '<div class="vbubble">'+
+        '<button class="vplay" id="vp-'+m.id+'">▶</button>'+
+        '<div class="vwave" id="vw-'+m.id+'">'+bars+'<div class="vwave-progress" id="vwp-'+m.id+'"></div></div>'+
+        '<div class="vmeta-col">'+
+          '<span class="vdur" id="vd-'+m.id+'">'+fmt(m.duration||0)+'</span>'+
+          '<button class="vspeed" id="vs-'+m.id+'">1×</button>'+
+        '</div>'+
+      '</div>'+
+      '<div class="b-meta"><span class="b-time">'+(m.dateStr?m.dateStr+' · ':'')+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
     setTimeout(()=>{
-      const pb=document.getElementById("vp-"+m.id);const fi=document.getElementById("vf-"+m.id);const dv=document.getElementById("vd-"+m.id);
+      const pb=document.getElementById("vp-"+m.id);
+      const wp=document.getElementById("vwp-"+m.id);
+      const dv=document.getElementById("vd-"+m.id);
+      const sb=document.getElementById("vs-"+m.id);
       if(!pb)return;
       if(!m.src){ pb.disabled=true; pb.style.opacity="0.4"; return; }
       let audioEl=null;
+      let speeds=[1,1.5,2];
+      let speedIdx=0;
+
+      sb.onclick=e=>{
+        e.stopPropagation();
+        speedIdx=(speedIdx+1)%speeds.length;
+        sb.textContent=speeds[speedIdx]+"×";
+        if(audioEl) audioEl.playbackRate=speeds[speedIdx];
+      };
+
       pb.onclick=e=>{
         e.stopPropagation();
         if(!audioEl){
           audioEl=new Audio(m.src);
+          audioEl.playbackRate=speeds[speedIdx];
           audioEl.ontimeupdate=()=>{
             const dur=audioEl.duration||m.duration||1;
-            fi.style.width=Math.min(100,(audioEl.currentTime/dur)*100)+"%";
+            const pct=Math.min(100,(audioEl.currentTime/dur)*100);
+            if(wp) wp.style.width=pct+"%";
             dv.textContent=fmt(Math.max(0,Math.round(dur-audioEl.currentTime)));
           };
-          audioEl.onended=()=>{ pb.textContent="▶";fi.style.width="0%";dv.textContent=fmt(m.duration||0); };
+          audioEl.onended=()=>{
+            pb.textContent="▶";
+            if(wp) wp.style.width="0%";
+            dv.textContent=fmt(m.duration||0);
+          };
         }
         if(audioEl.paused){audioEl.play();pb.textContent="⏸";}
         else{audioEl.pause();pb.textContent="▶";}
@@ -1611,11 +1658,15 @@ input,textarea{font-family:inherit;border:none;outline:none}
 .bubble.del{background:rgba(255,255,255,.04)!important;border:1px dashed var(--border)!important;border-radius:14px!important;color:var(--dim)!important;font-style:italic}
 .b-text{margin-bottom:4px}.b-meta{display:flex;justify-content:flex-end;align-items:center;gap:4px}
 .b-time{color:rgba(255,255,255,.35);font-size:11px}.b-check{color:var(--accent);font-size:11px}
-.vbubble{display:flex;align-items:center;gap:8px;margin-bottom:4px;min-width:180px}
-.vplay{font-size:18px;flex-shrink:0;width:28px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer}
-.vbar{flex:1;height:4px;background:rgba(255,255,255,.15);border-radius:4px;overflow:hidden}
-.vfill{height:100%;width:0%;background:var(--accent);border-radius:4px}
-.vdur{color:rgba(255,255,255,.5);font-size:11px;flex-shrink:0;min-width:36px;text-align:right}
+.vbubble{display:flex;align-items:center;gap:8px;margin-bottom:4px;min-width:200px}
+.vplay{font-size:16px;flex-shrink:0;width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,.12);display:flex;align-items:center;justify-content:center;cursor:pointer;border:none;color:inherit}
+.vwave{position:relative;flex:1;height:28px;display:flex;align-items:center;gap:2px;overflow:hidden}
+.vwave span{display:inline-block;width:3px;border-radius:2px;background:rgba(0,0,0,.28);flex-shrink:0}
+.vwave-progress{position:absolute;top:0;left:0;bottom:0;width:0%;background:rgba(0,212,170,.22);pointer-events:none;transition:width .1s linear}
+[data-theme="dark"] .vwave span{background:rgba(255,255,255,.3)}
+.vmeta-col{display:flex;flex-direction:column;align-items:center;gap:3px;flex-shrink:0;min-width:34px}
+.vdur{color:var(--sub);font-size:10px;text-align:center}
+.vspeed{font-size:10px;font-weight:700;color:var(--accent);background:rgba(0,212,170,.15);border-radius:8px;padding:2px 6px;border:none;cursor:pointer}
 .photo-bub{margin-bottom:4px}
 .video-bub{position:relative;display:inline-block;margin-bottom:4px;border-radius:12px;overflow:hidden;cursor:pointer;background:#000}
 .video-bub video{display:block;max-width:220px;max-height:220px;border-radius:12px}
@@ -2233,9 +2284,9 @@ window.addEventListener("DOMContentLoaded",()=>{
 
     // ---- DÉBUT APPUI ----
     function onMicStart(e){
-      if(e.type==="touchstart") e.preventDefault();
       const hasText = txtIn && txtIn.value.trim().length > 0;
-      if(hasText) return; // Texte → le clic suffit
+      if(hasText) return; // Mode texte → laisser le click natif gérer l'envoi
+      if(e.type==="touchstart") e.preventDefault();
       const pt = e.touches ? e.touches[0] : e;
       micStartY = pt.clientY;
       micStartX = pt.clientX;
@@ -2693,7 +2744,7 @@ window.addEventListener("DOMContentLoaded",()=>{
           toast("Enregistrement vide","err");
           return;
         }
-        pushMsg({from:S.myUid,type:"voice",src:reader.result,duration:finalDuration,mime:mimeType,text:"",t:nowT(),del:false});
+        pushMsg({from:S.myUid,type:"voice",src:reader.result,duration:finalDuration,mime:mimeType,text:"",t:nowT(),dateStr:nowDate(),del:false});
       };
       reader.readAsDataURL(blob);
       // Nettoyer
