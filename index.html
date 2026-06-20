@@ -61,7 +61,7 @@ const S={
   // WebRTC
   pc:null,localStream:null,remoteStream:null,
   callType:null,callDir:null,callPeer:null,callTick:null,callSecs:0,callMuted:false,callCamOff:false,
-  callRef:null,unsubCall:null,unsubIce:null,
+  callRef:null,unsubCall:null,unsubIce:null,iceQueue:[],
 };
 
 let isOnline=navigator.onLine;
@@ -470,13 +470,34 @@ function createPC(otherUid){
     e.streams[0].getTracks().forEach(tr=>S.remoteStream.addTrack(tr));
     const rv=$("call-remote-video");rv.srcObject=S.remoteStream;rv.style.display="block";
   };
+  let disconnectTimer=null;
   pc.onconnectionstatechange=()=>{
     const st=pc.connectionState;
     if(st==="connected"){
+      clearTimeout(disconnectTimer);disconnectTimer=null;
       $("call-state-text").textContent="";
       if(!S.callTick) S.callTick=setInterval(()=>{S.callSecs++;$("call-state-text").textContent=fmt(S.callSecs);},1000);
-    } else if(st==="failed"||st==="disconnected"){
-      endCall();
+    } else if(st==="disconnected"){
+      // État transitoire normal (réseau instable) → attendre avant de raccrocher
+      $("call-state-text").textContent="Reconnexion...";
+      clearTimeout(disconnectTimer);
+      disconnectTimer=setTimeout(()=>{
+        if(pc.connectionState==="disconnected"||pc.connectionState==="failed"){
+          endCall();
+        }
+      },10000); // 10s de grâce pour se reconnecter
+    } else if(st==="failed"){
+      // Tentative de relance ICE avant d'abandonner
+      try{ pc.restartIce(); }catch(e){}
+      clearTimeout(disconnectTimer);
+      disconnectTimer=setTimeout(()=>{
+        if(pc.connectionState==="failed") endCall();
+      },6000);
+    }
+  };
+  pc.oniceconnectionstatechange=()=>{
+    if(pc.iceConnectionState==="connected"||pc.iceConnectionState==="completed"){
+      clearTimeout(disconnectTimer);disconnectTimer=null;
     }
   };
   return pc;
@@ -484,12 +505,28 @@ function createPC(otherUid){
 
 function listenIce(otherUid){
   if(S.unsubIce){try{S.unsubIce();}catch(e){}}
+  S.iceQueue=S.iceQueue||[];
   const ref=db.ref(S.callRef+"/ice/"+otherUid);
   ref.on("child_added",snap=>{
     const c=snap.val();
-    if(S.pc&&c){S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{});}
+    if(!c)return;
+    if(S.pc && S.pc.remoteDescription){
+      S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{});
+    } else {
+      // PC pas encore prêt → mettre en attente
+      S.iceQueue.push(c);
+    }
   });
   S.unsubIce=()=>ref.off();
+}
+
+function flushIceQueue(){
+  if(!S.pc || !S.iceQueue || !S.iceQueue.length) return;
+  const queue=S.iceQueue;
+  S.iceQueue=[];
+  queue.forEach(c=>{
+    S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{});
+  });
 }
 
 // ---- APPEL SORTANT ----
@@ -497,19 +534,40 @@ window.startCall=async function(type){
   if(!S.activeId||S.callDir){return;}
   const contact=S.contacts.find(c=>c.uid===S.activeId)||{uid:S.activeId,phone:S.activeId};
 
-  // 1. Afficher l'UI immédiatement
   S.callType=type;S.callDir="out";S.callPeer=S.activeId;
-  // Clé d'appel : dossier propre à cet utilisateur pour la sonnerie
   S.callRef="callSignals/"+S.activeId+"/"+S.myUid;
   resetCallOverlay();
   setCallUI(contact);
   $("call-overlay").style.display="flex";
-  $("call-state-text").textContent="Sonnerie...";
+  $("call-state-text").textContent="Préparation...";
   $("call-active-actions").style.display="flex";
   if(type!=="video")$("call-cam-wrap").style.display="none";
 
-  // 2. Écrire la sonnerie dans Firebase IMMÉDIATEMENT (avant getUserMedia)
-  // Cela permet au receveur d'être notifié tout de suite
+  // 1. Obtenir le micro/caméra D'ABORD
+  try{
+    S.localStream=await getLocalStream(type);
+  }catch(e){
+    toast("Micro/caméra inaccessible","err");
+    endCall(true);return;
+  }
+  if(type==="video"){const lv=$("call-local-video");lv.srcObject=S.localStream;lv.style.display="block";}
+
+  // 2. Créer la connexion + l'offre WebRTC AVANT d'écrire dans Firebase
+  S.pc=createPC(S.activeId);
+  S.localStream.getTracks().forEach(tr=>S.pc.addTrack(tr,S.localStream));
+  let offer;
+  try{
+    offer=await S.pc.createOffer();
+    await S.pc.setLocalDescription(offer);
+  }catch(e){
+    toast("Erreur création de l'appel : "+e.message,"err");
+    endCall(true);return;
+  }
+
+  $("call-state-text").textContent="Sonnerie...";
+
+  // 3. Écrire le signal COMPLET (avec l'offre déjà incluse) en une seule fois
+  // → élimine toute race condition côté receveur
   const ringData={
     type,from:S.myUid,
     fromName:S.profile.name||S.myPhone||"Inconnu",
@@ -517,12 +575,12 @@ window.startCall=async function(type){
     fromAvType:S.profile.avType||"emoji",
     fromImg:S.profile.img||null,
     to:S.activeId,
+    offer:{type:offer.type,sdp:offer.sdp},
     status:"ringing",
     ts:Date.now()
   };
   try{
     await db.ref(S.callRef).set(ringData);
-    // Notifier aussi dans inbox pour que le destinataire nous ajoute si inconnu
     db.ref("inbox/"+S.activeId+"/"+S.myUid).set({
       from:S.myUid,fromPhone:S.myPhone||"",
       fromName:S.profile.name||S.myPhone||"",ts:Date.now()
@@ -532,28 +590,10 @@ window.startCall=async function(type){
     endCall(true);return;
   }
 
-  // 3. Obtenir le micro/caméra localement
-  try{
-    S.localStream=await getLocalStream(type);
-  }catch(e){
-    toast("Micro/caméra inaccessible","err");
-    endCall();return;
-  }
-  if(type==="video"){const lv=$("call-local-video");lv.srcObject=S.localStream;lv.style.display="block";}
-
-  // 4. Créer l'offre WebRTC
-  S.pc=createPC(S.activeId);
-  S.localStream.getTracks().forEach(tr=>S.pc.addTrack(tr,S.localStream));
-  const offer=await S.pc.createOffer();
-  await S.pc.setLocalDescription(offer);
-
-  // 5. Mettre à jour Firebase avec l'offre
-  await db.ref(S.callRef).update({offer:{type:offer.type,sdp:offer.sdp}}).catch(()=>{});
-
-  // 6. Écouter les ICE du receveur
+  // 4. Écouter les ICE du receveur
   listenIce(S.activeId);
 
-  // 7. Écouter la réponse/statut
+  // 5. Écouter la réponse/statut
   if(S.unsubCall){try{S.unsubCall();}catch(e){}}
   const ref=db.ref(S.callRef);
   const handler=async snap=>{
@@ -567,14 +607,15 @@ window.startCall=async function(type){
     if(data.answer&&S.pc&&!S.pc.currentRemoteDescription){
       try{
         await S.pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-        $("call-state-text").textContent="Connexion établie...";
+        flushIceQueue();
+        $("call-state-text").textContent="Connexion...";
       }catch(e){console.error("SRD:",e);}
     }
   };
   ref.on("value",handler);
   S.unsubCall=()=>ref.off("value",handler);
 
-  // 8. Timeout 45s sans réponse
+  // 6. Timeout 45s sans réponse
   setTimeout(()=>{
     if(S.callRef&&S.callDir==="out"&&S.callSecs===0){
       $("call-state-text").textContent="Pas de réponse";
@@ -586,18 +627,12 @@ window.startCall=async function(type){
 // ---- SONNERIE ENTRANTE ----
 function listenIncomingCalls(){
   if(!S.myUid)return;
-  // child_added suffit : Firebase le déclenche pour les existants + nouveaux
   db.ref("callSignals/"+S.myUid).on("child_added",snap=>{
     handleRing(snap.key,snap.val());
   });
-  // child_changed : mise à jour du signal (ex: offre ajoutée par le caller)
+  // Toujours utile pour détecter une fin d'appel pendant la sonnerie
   db.ref("callSignals/"+S.myUid).on("child_changed",snap=>{
     const data=snap.val();
-    // Si on attend l'offre pour cet appel, la récupérer
-    if(data&&data.offer&&!S.incomingOffer&&S.callPeer===snap.key){
-      S.incomingOffer=data.offer;
-    }
-    // Si l'appel est terminé/refusé depuis l'autre côté
     if(data&&(data.status==="ended"||data.status==="rejected")&&S.callPeer===snap.key){
       endCall(true);
     }
@@ -606,6 +641,7 @@ function listenIncomingCalls(){
 
 function handleRing(callerUid,data){
   if(!data||data.status!=="ringing")return;
+  if(!data.offer)return; // Signal incomplet, ignorer (ne devrait plus arriver)
   if(!data.ts||Date.now()-data.ts>45000)return; // Expiré
   if(S.callDir)return; // Déjà en appel
   if($("call-overlay").style.display==="flex")return; // Déjà visible
@@ -614,7 +650,7 @@ function handleRing(callerUid,data){
   S.callDir="in";
   S.callPeer=callerUid;
   S.callRef="callSignals/"+S.myUid+"/"+callerUid;
-  S.incomingOffer=data.offer||null;
+  S.incomingOffer=data.offer;
 
   resetCallOverlay();
   setCallUI({name:data.fromName,emoji:data.fromEmoji,avType:data.fromAvType,img:data.fromImg});
@@ -622,7 +658,6 @@ function handleRing(callerUid,data){
   $("call-state-text").textContent=data.type==="video"?"📹 Appel vidéo entrant":"🎙 Appel audio entrant";
   $("call-incoming-actions").style.display="flex";
 
-  // Auto-refus après 45s
   setTimeout(()=>{
     if(S.callDir==="in"&&$("call-incoming-actions").style.display==="flex"){
       rejectCall();
@@ -635,13 +670,6 @@ window.acceptCall=async function(){
   $("call-incoming-actions").style.display="none";
   $("call-state-text").textContent="Connexion...";
 
-  // Attendre l'offre si pas encore reçue (max 5s)
-  if(!S.incomingOffer){
-    await new Promise(resolve=>{
-      const check=setInterval(()=>{if(S.incomingOffer){clearInterval(check);resolve();}},100);
-      setTimeout(()=>{clearInterval(check);resolve();},5000);
-    });
-  }
   if(!S.incomingOffer){
     toast("Erreur : offre d'appel non reçue","err");
     endCall(true);return;
@@ -661,6 +689,7 @@ window.acceptCall=async function(){
 
   try{
     await S.pc.setRemoteDescription(new RTCSessionDescription(S.incomingOffer));
+    flushIceQueue();
     const answer=await S.pc.createAnswer();
     await S.pc.setLocalDescription(answer);
     await db.ref(S.callRef).update({answer:{type:answer.type,sdp:answer.sdp},status:"connected"});
@@ -715,7 +744,7 @@ window.endCall=function(silent){
   if(S.pc){try{S.pc.close();}catch(e){} S.pc=null;}
   if(S.localStream){S.localStream.getTracks().forEach(t=>{try{t.stop();}catch(e){}});S.localStream=null;}
   S.remoteStream=null;
-  S.callRef=null;S.callDir=null;S.callPeer=null;S.incomingOffer=null;
+  S.callRef=null;S.callDir=null;S.callPeer=null;S.incomingOffer=null;S.iceQueue=[];
   resetCallOverlay();
 
   // Sauvegarder dans l'historique des appels
