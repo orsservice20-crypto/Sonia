@@ -600,10 +600,13 @@ window.startCall=async function(type){
   const ref=db.ref(S.callRef);
   const handler=async snap=>{
     const data=snap.val();
-    if(!data||data.status==="ended"||data.status==="rejected"){
-      const msg=(!data||data.status==="ended")?"Appel terminé":"Appel refusé";
+    if(!data||data.status==="ended"||data.status==="rejected"||data.status==="busy"){
+      let msg="Appel terminé";
+      if(data&&data.status==="rejected")msg="Appel refusé";
+      if(data&&data.status==="busy")msg="📵 Occupé";
       $("call-state-text").textContent=msg;
-      setTimeout(()=>endCall(true),1500);
+      if(navigator.vibrate)navigator.vibrate(data&&data.status==="busy"?[100,80,100]:60);
+      setTimeout(()=>endCall(true),1700);
       return;
     }
     if(data.answer&&S.pc&&!S.pc.currentRemoteDescription){
@@ -645,8 +648,34 @@ function handleRing(callerUid,data){
   if(!data||data.status!=="ringing")return;
   if(!data.offer)return; // Signal incomplet, ignorer (ne devrait plus arriver)
   if(!data.ts||Date.now()-data.ts>60000)return; // Expiré
-  if(S.callDir)return; // Déjà en appel
-  if($("call-overlay").style.display==="flex")return; // Déjà visible
+
+  // Si déjà en appel (sortant ou entrant) → signaler "occupé" à l'appelant automatiquement
+  if(S.callDir || $("call-overlay").style.display==="flex"){
+    const busyRef="callSignals/"+S.myUid+"/"+callerUid;
+    db.ref(busyRef).update({status:"busy"}).then(()=>{
+      setTimeout(()=>db.ref(busyRef).remove().catch(()=>{}),1500);
+    }).catch(()=>{});
+    // Notifier discrètement l'utilisateur en cours d'appel
+    toast("📵 "+(data.fromName||"Quelqu'un")+" a essayé de vous appeler");
+    // Enregistrer comme appel manqué dans l'historique
+    const contact=S.contacts.find(c=>c.uid===callerUid)||{};
+    const nick=CACHE.load("nick_"+callerUid)||"";
+    db.ref("callLog/"+S.myUid).push({
+      peer:callerUid,
+      peerName:nick||data.fromName||contact.name||contact.phone||callerUid,
+      peerEmoji:data.fromEmoji||contact.emoji||"🧑🏾",
+      peerAvType:data.fromAvType||contact.avType||"emoji",
+      peerImg:data.fromImg||contact.img||null,
+      dir:"in",
+      type:data.type||"audio",
+      duration:0,
+      missed:true,
+      ts:Date.now(),
+      time:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"}),
+      date:new Date().toLocaleDateString("fr",{day:"2-digit",month:"short"})
+    }).catch(()=>{});
+    return;
+  }
 
   S.callType=data.type;
   S.callDir="in";
@@ -1862,11 +1891,11 @@ input,textarea{font-family:inherit;border:none;outline:none}
 .toast.toast-err{border-color:var(--danger);color:var(--danger)}
 /* AUTH */
 @keyframes logoFadeIn{from{opacity:0;transform:translateY(8px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}
-#s-auth{align-items:center;justify-content:center;background:
+#s-auth{align-items:center;justify-content:center;padding:64px 20px 70px;box-sizing:border-box;background:
   radial-gradient(ellipse 100% 50% at 50% -5%, rgba(212,40,40,.10), transparent 60%),
   radial-gradient(ellipse 90% 45% at 50% 105%, rgba(180,150,40,.08), transparent 60%),
   var(--bg);
-  position:relative;overflow:hidden}
+  position:fixed;overflow-y:auto}
 #s-auth::before{content:"";position:absolute;inset:0;background-image:
   linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),
   linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);
@@ -2159,7 +2188,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 
 <!-- AUTH -->
 <div class="screen off" id="s-auth">
-  <div style="display:flex;justify-content:flex-end;padding:14px 16px 0;position:absolute;top:0;right:0;z-index:10">
+  <div style="display:flex;justify-content:flex-end;padding:calc(14px + env(safe-area-inset-top)) 16px 0;position:absolute;top:0;right:0;z-index:10">
     <button onclick="openLangModal()" style="display:flex;align-items:center;gap:6px;background:var(--card);border:1.5px solid var(--border);border-radius:20px;padding:7px 14px;color:var(--text);font-size:13px;font-weight:700;font-family:inherit;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)">
       <span id="auth-lang-flag">🇫🇷</span><span id="auth-lang-name">Français</span><span style="font-size:10px;opacity:.6">▼</span>
     </button>
