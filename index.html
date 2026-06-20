@@ -1303,28 +1303,58 @@ function listenMsgs(){
   if(!box)return;
   box.innerHTML="";
 
-  const ref=db.ref("chats/"+key+"/messages");
-  const rendered=new Set(); // Suivre les IDs déjà rendus
+  const rendered=new Set();
 
-  // child_added : déclenché pour tous les existants + nouveaux
+  // ---- 1. AFFICHAGE INSTANTANÉ depuis le cache local (même hors-ligne) ----
+  const cached=CACHE.load("msgs_"+key);
+  if(cached && cached.length){
+    cached.forEach(m=>{
+      if(!m.id || rendered.has(m.id))return;
+      try{
+        const row=makeBubble(m);
+        box.appendChild(row);
+        rendered.add(m.id);
+      }catch(e){console.error("bubble cache:",e);}
+    });
+    requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
+  }
+
+  // ---- 2. SYNCHRONISATION avec Firebase en arrière-plan ----
+  if(!isOnline){
+    // Pas de connexion → on reste sur le cache, rien d'autre à faire
+    if(!cached || !cached.length){
+      box.innerHTML='<div class="empty-note">Aucun message en cache.<br/>Connectez-vous à internet pour charger la discussion.</div>';
+    }
+    return;
+  }
+
+  const ref=db.ref("chats/"+key+"/messages");
+  const allMsgs={}; // map id -> message, pour sauvegarder le cache à jour
+  cached && cached.forEach(m=>{ if(m.id) allMsgs[m.id]=m; });
+
   const onAdded=ref.on("child_added",snap=>{
+    const m={id:snap.key,...snap.val()};
+    allMsgs[m.id]=m;
+    saveMsgsCache(key,allMsgs);
     if(rendered.has(snap.key))return;
     rendered.add(snap.key);
     try{
-      const m={id:snap.key,...snap.val()};
       const row=makeBubble(m);
       box.appendChild(row);
-      // Scroll uniquement si déjà en bas (±100px)
       if(box.scrollHeight - box.scrollTop - box.clientHeight < 100){
         requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
       }
     }catch(e){console.error("bubble add:",e);}
-  },err=>{toast("Erreur messages : "+err.message,"err");});
+  },err=>{
+    console.error("listenMsgs err:",err.message);
+    // En cas d'erreur réseau, on garde l'affichage du cache local tel quel
+  });
 
-  // child_changed : message modifié (suppression, etc.)
   const onChanged=ref.on("child_changed",snap=>{
     try{
       const m={id:snap.key,...snap.val()};
+      allMsgs[m.id]=m;
+      saveMsgsCache(key,allMsgs);
       const existing=document.getElementById("bub-"+snap.key);
       if(existing){
         const newRow=makeBubble(m);
@@ -1333,7 +1363,6 @@ function listenMsgs(){
     }catch(e){console.error("bubble change:",e);}
   });
 
-  // Scroll initial vers le bas après le premier chargement
   ref.once("value",()=>{
     requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
   });
@@ -1342,6 +1371,27 @@ function listenMsgs(){
     ref.off("child_added",onAdded);
     ref.off("child_changed",onChanged);
   };
+}
+
+// Sauvegarde le cache des messages (limité aux 200 derniers pour rester léger)
+let saveCacheTimer=null;
+function saveMsgsCache(key,allMsgsMap){
+  clearTimeout(saveCacheTimer);
+  saveCacheTimer=setTimeout(()=>{
+    try{
+      let list=Object.values(allMsgsMap);
+      list.sort((a,b)=>(a.ts||0)-(b.ts||0));
+      if(list.length>200) list=list.slice(list.length-200);
+      // Ne pas stocker les gros médias base64 dans le cache localStorage (limite ~5-10Mo)
+      const lightList=list.map(m=>{
+        if(m.src && m.src.length>50000 && m.type!=="text"){
+          return {...m, src:null, mediaCached:false};
+        }
+        return m;
+      });
+      CACHE.save("msgs_"+key,lightList);
+    }catch(e){console.error("saveMsgsCache:",e);}
+  },300);
 }
 
 function makeBubble(m){
@@ -1410,11 +1460,19 @@ function makeBubble(m){
       };
     },0);
   } else if(m.type==="photo"){
-    bub.innerHTML='<div class="photo-bub"><img src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;cursor:pointer"/></div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
-    setTimeout(()=>{const img=bub.querySelector(".photo-bub img");if(img)img.onclick=e=>{e.stopPropagation();openViewer(m.src);};},0);
+    if(!m.src && m.mediaCached===false){
+      bub.innerHTML='<div class="photo-bub" style="width:200px;height:140px;background:var(--bg);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;color:var(--sub);font-size:12px"><span style="font-size:28px">📷</span>Photo (connexion requise)</div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+    } else {
+      bub.innerHTML='<div class="photo-bub"><img src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;cursor:pointer"/></div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+      setTimeout(()=>{const img=bub.querySelector(".photo-bub img");if(img)img.onclick=e=>{e.stopPropagation();openViewer(m.src);};},0);
+    }
   } else if(m.type==="video"){
-    bub.innerHTML='<div class="video-bub"><video src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;display:block" preload="metadata" playsinline></video><div class="vid-play-overlay">▶</div></div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
-    setTimeout(()=>{const vid=bub.querySelector("video");const ov=bub.querySelector(".vid-play-overlay");const open=e=>{e.stopPropagation();openVideoViewer(m.src);};if(vid)vid.onclick=open;if(ov)ov.onclick=open;},0);
+    if(!m.src && m.mediaCached===false){
+      bub.innerHTML='<div class="video-bub" style="width:200px;height:140px;background:var(--bg);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;color:var(--sub);font-size:12px"><span style="font-size:28px">🎥</span>Vidéo (connexion requise)</div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+    } else {
+      bub.innerHTML='<div class="video-bub"><video src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;display:block" preload="metadata" playsinline></video><div class="vid-play-overlay">▶</div></div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+      setTimeout(()=>{const vid=bub.querySelector("video");const ov=bub.querySelector(".vid-play-overlay");const open=e=>{e.stopPropagation();openVideoViewer(m.src);};if(vid)vid.onclick=open;if(ov)ov.onclick=open;},0);
+    }
   } else {
     bub.innerHTML='<div class="b-text">'+esc(m.text||"")+'</div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
   }
