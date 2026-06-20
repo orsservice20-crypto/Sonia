@@ -1,5 +1,5 @@
-// Sonia SW — mise à jour automatique dès que le code change sur GitHub
-const VERSION = "sonia-2026-06-17-v1"; // Change automatiquement à chaque déploiement GitHub
+// EniBusiness Pro SW — mise à jour automatique dès que le code change sur GitHub
+const VERSION = "enibusiness-2026-06-20-v2"; // Change automatiquement à chaque déploiement GitHub
 
 self.addEventListener("install", e => {
   // S'activer immédiatement sans attendre que les anciens onglets se ferment
