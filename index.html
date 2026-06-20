@@ -1304,50 +1304,79 @@ function listenMsgs(){
   box.innerHTML="";
 
   const rendered=new Set();
+  let anyShown=false;
 
   // ---- 1. AFFICHAGE INSTANTANÉ depuis le cache local (même hors-ligne) ----
-  const cached=CACHE.load("msgs_"+key);
+  let cached=null;
+  try{ cached=CACHE.load("msgs_"+key); }catch(e){ console.error("cache load:",e); }
+
   if(cached && cached.length){
     cached.forEach(m=>{
-      if(!m.id || rendered.has(m.id))return;
+      if(!m || !m.id || rendered.has(m.id))return;
       try{
         const row=makeBubble(m);
         box.appendChild(row);
         rendered.add(m.id);
-      }catch(e){console.error("bubble cache:",e);}
+        anyShown=true;
+      }catch(e){ console.error("bubble cache erreur:",e.message,m); }
     });
     requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
   }
 
+  // Si on a essayé d'afficher le cache mais que RIEN n'est apparu (erreur silencieuse) → message clair
+  if(cached && cached.length && !anyShown){
+    box.innerHTML='<div class="empty-note">Erreur d\'affichage des messages.<br/>Tirez vers le bas pour réessayer ou rouvrez la discussion.</div>';
+  }
+
   // ---- 2. SYNCHRONISATION avec Firebase en arrière-plan ----
-  if(!isOnline){
-    // Pas de connexion → on reste sur le cache, rien d'autre à faire
-    if(!cached || !cached.length){
-      box.innerHTML='<div class="empty-note">Aucun message en cache.<br/>Connectez-vous à internet pour charger la discussion.</div>';
+  if(!navigator.onLine){
+    if(!anyShown){
+      box.innerHTML='<div class="empty-note">📡 Pas de connexion internet.<br/>Les messages s\'afficheront dès que vous serez en ligne.</div>';
     }
     return;
   }
 
+  if(!db){
+    box.innerHTML='<div class="empty-note">Erreur : connexion au serveur indisponible.</div>';
+    return;
+  }
+
   const ref=db.ref("chats/"+key+"/messages");
-  const allMsgs={}; // map id -> message, pour sauvegarder le cache à jour
-  cached && cached.forEach(m=>{ if(m.id) allMsgs[m.id]=m; });
+  const allMsgs={};
+  if(cached) cached.forEach(m=>{ if(m && m.id) allMsgs[m.id]=m; });
+
+  // Indicateur de chargement si rien n'est encore affiché
+  let loadingTimer=null;
+  if(!anyShown){
+    loadingTimer=setTimeout(()=>{
+      if(!anyShown && box.innerHTML===""){
+        box.innerHTML='<div class="empty-note">Chargement des messages...</div>';
+      }
+    },800);
+  }
 
   const onAdded=ref.on("child_added",snap=>{
-    const m={id:snap.key,...snap.val()};
+    clearTimeout(loadingTimer);
+    let m;
+    try{ m={id:snap.key,...snap.val()}; }catch(e){ console.error("parse msg:",e); return; }
     allMsgs[m.id]=m;
     saveMsgsCache(key,allMsgs);
     if(rendered.has(snap.key))return;
     rendered.add(snap.key);
     try{
+      if(!anyShown){ box.innerHTML=""; anyShown=true; } // Effacer le message "chargement"/"vide"
       const row=makeBubble(m);
       box.appendChild(row);
       if(box.scrollHeight - box.scrollTop - box.clientHeight < 100){
         requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
       }
-    }catch(e){console.error("bubble add:",e);}
+    }catch(e){console.error("bubble add erreur:",e.message,m);}
   },err=>{
-    console.error("listenMsgs err:",err.message);
-    // En cas d'erreur réseau, on garde l'affichage du cache local tel quel
+    clearTimeout(loadingTimer);
+    console.error("listenMsgs Firebase err:",err.code,err.message);
+    if(!anyShown){
+      box.innerHTML='<div class="empty-note">Erreur de connexion : '+esc(err.message)+'<br/>Vérifiez votre connexion ou réessayez.</div>';
+    }
   });
 
   const onChanged=ref.on("child_changed",snap=>{
@@ -1360,11 +1389,21 @@ function listenMsgs(){
         const newRow=makeBubble(m);
         existing.replaceWith(newRow);
       }
-    }catch(e){console.error("bubble change:",e);}
+    }catch(e){console.error("bubble change erreur:",e.message);}
   });
 
+  // Si après 4s rien n'est arrivé ET aucune erreur, mais toujours rien affiché → notifier
+  setTimeout(()=>{
+    if(!anyShown && box.querySelector(".empty-note")){
+      box.innerHTML='<div class="empty-note">Aucun message dans cette discussion.<br/>Envoyez le premier message !</div>';
+    }
+  },4000);
+
   ref.once("value",()=>{
+    clearTimeout(loadingTimer);
     requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
+  }).catch(err=>{
+    console.error("once value err:",err.message);
   });
 
   S.unsubMsgs=()=>{
