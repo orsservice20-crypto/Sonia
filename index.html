@@ -367,56 +367,56 @@ async function completeLogin(user){
   S.myPhone=S.pendingPhone||CACHE.load("myPhone")||"utilisateur";
   CACHE.save("myUid",S.myUid);
   CACHE.save("myPhone",S.myPhone);
-  if(isOnline){
-    try{
-      const snap=await db.ref("users/"+S.myUid).get();
-      if(snap.exists()){Object.assign(S.profile,snap.val());CACHE.save("profile",S.profile);}
-      else{
-        S.profile.name=S.myPhone;
-        await db.ref("users/"+S.myUid).set({uid:S.myUid,phone:S.myPhone,name:S.profile.name,status:"En ligne",emoji:"🧑🏾",avType:"emoji",img:null,online:true});
-        CACHE.save("profile",S.profile);
-      }
-      db.ref("users/"+S.myUid+"/online").set(true);
-      db.ref("users/"+S.myUid).onDisconnect().update({online:false,lastSeen:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"})});
-    }catch(e){const c=CACHE.load("profile");if(c)Object.assign(S.profile,c);}
-  } else {
-    const c=CACHE.load("profile");if(c)Object.assign(S.profile,c);
-    const cc=CACHE.load("contacts");if(cc)S.contacts=cc;
-  }
-  updateMyAv();
-  if(isOnline)listenContacts();
-  else{const cc=CACHE.load("contacts");if(cc){S.contacts=cc;renderList();}}
-  if(isOnline)listenIncomingCalls();
-  if(isOnline)listenIncomingMessages();
-  showScreen("s-list");
-}
 
-// Écouter les messages entrants de N'IMPORTE quel utilisateur
-// (même si l'expéditeur n'est pas dans vos contacts)
-function listenIncomingMessages(){
-  if(!S.myUid)return;
-  // Écouter le nœud "inbox/{myUid}" — les expéditeurs y écrivent une notification
-  db.ref("inbox/"+S.myUid).on("child_added",snap=>{
-    const notif=snap.val();
-    if(!notif||!notif.from)return;
-    // Ajouter automatiquement l'expéditeur comme contact
-    ensureMutualContact(notif.from).catch(()=>{});
-    // Supprimer la notification après traitement
-    snap.ref.remove().catch(()=>{});
-  });
+  // 1. AFFICHER IMMÉDIATEMENT depuis le cache (comme WhatsApp)
+  const cp=CACHE.load("profile");if(cp)Object.assign(S.profile,cp);
+  const cc=CACHE.load("contacts");if(cc)S.contacts=cc;
+  updateMyAv();renderList();showScreen("s-list");
+
+  if(!isOnline) return; // Hors-ligne → cache suffisant
+
+  // 2. Synchroniser en arrière-plan sans bloquer l'UI
+  try{
+    const snap=await db.ref("users/"+S.myUid).get();
+    if(snap.exists()){
+      Object.assign(S.profile,snap.val());
+      CACHE.save("profile",S.profile);
+      updateMyAv();
+    } else {
+      S.profile.name=S.myPhone;
+      await db.ref("users/"+S.myUid).set({uid:S.myUid,phone:S.myPhone,name:S.profile.name,status:"En ligne",emoji:"🧑🏾",avType:"emoji",img:null,online:true});
+      CACHE.save("profile",S.profile);
+    }
+    // Fix multi-appareils : marquer le dernier appareil actif
+    db.ref("users/"+S.myUid+"/online").set(true).catch(()=>{});
+    db.ref("users/"+S.myUid+"/lastDevice").set(Date.now()).catch(()=>{});
+    db.ref("users/"+S.myUid).onDisconnect().update({online:false,lastSeen:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"})});
+    listenContacts();
+    listenIncomingCalls();
+    listenIncomingMessages();
+  }catch(e){console.error("login sync:",e.message);}
 }
 
 auth.onAuthStateChanged(async user=>{
   if(user){
     await completeLogin(user);
   } else {
+    // Pas de session Firebase — vérifier le cache local
     const cachedUid=CACHE.load("myUid");
-    if(cachedUid&&!isOnline){
-      S.myUid=cachedUid;S.myPhone=CACHE.load("myPhone")||"";
+    const cachedPhone=CACHE.load("myPhone");
+    if(cachedUid&&cachedPhone){
+      // Utilisateur déjà connu → accès hors-ligne sans erreur
+      S.myUid=cachedUid;S.myPhone=cachedPhone;
       const cp=CACHE.load("profile");if(cp)Object.assign(S.profile,cp);
       const cc=CACHE.load("contacts");if(cc)S.contacts=cc;
       updateMyAv();renderList();showScreen("s-list");
-    } else {showScreen("s-auth");}
+      // Reconnecter les listeners dès que le réseau revient
+      window.addEventListener("online",()=>{
+        if(S.myUid){listenContacts();listenIncomingCalls();listenIncomingMessages();}
+      },{once:true});
+    } else {
+      showScreen("s-auth");
+    }
   }
 });
 
@@ -1068,6 +1068,53 @@ async function ensureMutualContact(otherUid){
   await db.ref("userContacts/"+otherUid+"/"+S.myUid).set(true);
 }
 
+// ---- MENU CONTEXTUEL DES MESSAGES (copier, supprimer) ----
+function showMsgMenu(m,self,bub){
+  const old=document.getElementById("msg-ctx-menu");if(old)old.remove();
+  const menu=document.createElement("div");
+  menu.id="msg-ctx-menu";
+  menu.style.cssText="position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.35);display:flex;align-items:flex-end";
+
+  const canCopy=m.type==="text"&&m.text&&!m.del;
+  const canDelAll=self&&!m.del&&m.id;
+  const canDelMe=m.id&&!m.del;
+
+  let btns="";
+  if(canCopy) btns+=`<button onclick="copyMsg(${JSON.stringify(m.text||'')})" style="display:flex;align-items:center;gap:14px;width:100%;padding:15px 20px;border-bottom:1px solid var(--border);background:none;border-top:none;border-left:none;border-right:none;color:var(--text);font-size:15px;font-family:inherit;cursor:pointer"><span style="font-size:20px">📋</span>Copier le message</button>`;
+  if(canDelAll) btns+=`<button onclick="delMsg('${m.id}',true);document.getElementById('msg-ctx-menu').remove()" style="display:flex;align-items:center;gap:14px;width:100%;padding:15px 20px;border-bottom:1px solid var(--border);border-top:none;border-left:none;border-right:none;background:none;color:var(--danger);font-size:15px;font-family:inherit;cursor:pointer"><span style="font-size:20px">🗑</span>Supprimer pour tous</button>`;
+  if(canDelMe)  btns+=`<button onclick="delMsg('${m.id}',false);document.getElementById('msg-ctx-menu').remove()" style="display:flex;align-items:center;gap:14px;width:100%;padding:15px 20px;border:none;background:none;color:var(--danger);font-size:15px;font-family:inherit;cursor:pointer;opacity:.7"><span style="font-size:20px">🗑</span>Supprimer pour moi</button>`;
+
+  menu.innerHTML=
+    '<div style="width:100%;background:var(--surface);border-radius:20px 20px 0 0;padding:6px 0 24px">'+
+      '<div style="width:36px;height:4px;border-radius:2px;background:var(--border);margin:8px auto 12px"></div>'+
+      btns+
+      '<button onclick="document.getElementById(\'msg-ctx-menu\').remove()" style="display:flex;align-items:center;justify-content:center;width:calc(100% - 32px);margin:8px 16px 0;padding:14px;border:none;background:var(--bg);border-radius:14px;color:var(--sub);font-size:15px;font-family:inherit;cursor:pointer;font-weight:600">Annuler</button>'+
+    '</div>';
+  menu.onclick=e=>{if(e.target===menu)menu.remove();};
+  document.body.appendChild(menu);
+}
+
+window.copyMsg=function(text){
+  const menu=document.getElementById("msg-ctx-menu");if(menu)menu.remove();
+  if(!text)return;
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>toast("Message copié ✓")).catch(()=>{
+      // Fallback
+      const ta=document.createElement("textarea");
+      ta.value=text;ta.style.position="fixed";ta.style.opacity="0";
+      document.body.appendChild(ta);ta.select();
+      try{document.execCommand("copy");toast("Message copié ✓");}catch(e){toast("Impossible de copier","err");}
+      ta.remove();
+    });
+  } else {
+    const ta=document.createElement("textarea");
+    ta.value=text;ta.style.position="fixed";ta.style.opacity="0";
+    document.body.appendChild(ta);ta.select();
+    try{document.execCommand("copy");toast("Message copié ✓");}catch(e){toast("Impossible de copier","err");}
+    ta.remove();
+  }
+};
+
 function showDeleteConvMenu(c,ck,row){
   // Supprimer tout menu existant
   const old=document.getElementById("conv-del-menu");if(old)old.remove();
@@ -1507,6 +1554,22 @@ function makeBubble(m){
   const bub=document.createElement("div");
   if(m.del){bub.className="bubble del";bub.textContent=t("msgSupprime");row.appendChild(bub);return row;}
   bub.className="bubble "+(self?"out":"in");
+
+  // Appui long → menu contextuel (copier, supprimer)
+  let pressTimer=null;
+  const onPress=e=>{
+    pressTimer=setTimeout(()=>{
+      if(navigator.vibrate)navigator.vibrate(40);
+      showMsgMenu(m,self,bub);
+    },500);
+  };
+  const cancelPress=()=>clearTimeout(pressTimer);
+  row.addEventListener("touchstart",onPress,{passive:true});
+  row.addEventListener("touchend",cancelPress);
+  row.addEventListener("touchmove",cancelPress);
+  row.addEventListener("mousedown",onPress);
+  row.addEventListener("mouseup",cancelPress);
+  row.addEventListener("contextmenu",e=>{e.preventDefault();showMsgMenu(m,self,bub);});
   if(m.type==="voice"){
     // Générer une forme d'onde (barres de hauteurs variées pour un look réaliste)
     const barCount=28;
@@ -1582,37 +1645,13 @@ function makeBubble(m){
     bub.innerHTML='<div class="b-text">'+esc(m.text||"")+'</div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
   }
 
-  // ---- APPUI LONG → Menu contextuel (supprimer) ----
-  let pressTimer=null;
-  const showMenu=e=>{
-    e.preventDefault();e.stopPropagation();
-    // Vibration légère si disponible
-    if(navigator.vibrate) navigator.vibrate(40);
-    const existing=document.querySelector(".del-menu");if(existing)existing.remove();
-    const menuEl=document.createElement("div");menuEl.className="del-menu";
-    if(self){
-      menuEl.innerHTML='<button class="del-menu-btn red" id="dm-me">🗑 Supprimer pour moi</button><button class="del-menu-btn red" id="dm-all">🗑 Supprimer pour tous</button><button class="del-menu-btn" id="dm-cancel">Annuler</button>';
-      menuEl.querySelector("#dm-me").onclick=ev=>{ev.stopPropagation();delMsg(m.id,false);menuEl.remove();};
-      menuEl.querySelector("#dm-all").onclick=ev=>{ev.stopPropagation();delMsg(m.id,true);menuEl.remove();};
-      menuEl.querySelector("#dm-cancel").onclick=ev=>{ev.stopPropagation();menuEl.remove();};
-    } else {
-      menuEl.innerHTML='<button class="del-menu-btn red" id="dm-me">🗑 Supprimer pour moi</button><button class="del-menu-btn" id="dm-cancel">Annuler</button>';
-      menuEl.querySelector("#dm-me").onclick=ev=>{ev.stopPropagation();delMsg(m.id,false);menuEl.remove();};
-      menuEl.querySelector("#dm-cancel").onclick=ev=>{ev.stopPropagation();menuEl.remove();};
-    }
-    bub.style.position="relative";bub.appendChild(menuEl);
-    setTimeout(()=>document.addEventListener("click",()=>menuEl.remove(),{once:true}),50);
-  };
-
-  // Touch events for long press
-  bub.addEventListener("touchstart",e=>{pressTimer=setTimeout(()=>showMenu(e),500);},{passive:false});
+  // Appui long → nouveau menu unifié (copier + supprimer)
+  bub.addEventListener("touchstart",e=>{pressTimer=setTimeout(()=>{if(navigator.vibrate)navigator.vibrate(40);showMsgMenu(m,self,bub);},500);},{passive:true});
   bub.addEventListener("touchend",()=>clearTimeout(pressTimer));
   bub.addEventListener("touchmove",()=>clearTimeout(pressTimer));
-  // Mouse long press (desktop/emulator)
-  bub.addEventListener("mousedown",e=>{pressTimer=setTimeout(()=>showMenu(e),500);});
+  bub.addEventListener("mousedown",e=>{pressTimer=setTimeout(()=>{showMsgMenu(m,self,bub);},500);});
   bub.addEventListener("mouseup",()=>clearTimeout(pressTimer));
   bub.addEventListener("mouseleave",()=>clearTimeout(pressTimer));
-  // Prevent context menu on long press
   bub.addEventListener("contextmenu",e=>e.preventDefault());
 
   row.appendChild(bub);return row;
@@ -1867,7 +1906,7 @@ function closeStatusViewer(){
 const APP_MSG="💬 Rejoins-moi sur EniBusiness Pro !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-const CURRENT_BUILD = "v2026-06-21-fixlisteners4";
+const CURRENT_BUILD = "v2026-06-21-multifix5";
 
 if("serviceWorker" in navigator){
   const lastSeenBuild = localStorage.getItem("sonia_last_build");
