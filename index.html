@@ -264,19 +264,82 @@ async function verifyCode(){
       btn.textContent=t("confirmer");btn.disabled=false;
       return;
     }
-    // Code correct → connexion anonyme Firebase
+    // Code correct → connexion
     S.pendingPhone = phone;
     CACHE.save("myPhone", phone);
-    btn.textContent=t("confirmer");btn.disabled=false;
+    btn.textContent="Connexion...";btn.disabled=true;
+
     try{
-      if(auth.currentUser){
-        await completeLogin(auth.currentUser);
+      // ÉTAPE CLÉ : chercher si ce numéro a déjà un compte (UID existant)
+      // Comme WhatsApp : le numéro = identité permanente, peu importe l'appareil
+      const existingSnap = await db.ref("users").orderByChild("phone").equalTo(phone).get();
+      let existingUid = null;
+      existingSnap.forEach(child=>{
+        existingUid = child.key; // UID lié à ce numéro
+      });
+
+      if(existingUid){
+        // Ce numéro est déjà inscrit → réutiliser l'UID existant
+        // L'UID logique de l'utilisateur reste identique même sur un nouveau téléphone
+        S.myUid = existingUid;
+        S.myPhone = phone;
+        CACHE.save("myUid", existingUid);
+        CACHE.save("myPhone", phone);
+
+        // Se connecter à Firebase Auth (session technique)
+        if(!auth.currentUser){
+          await auth.signInAnonymously();
+        }
+        // Mettre à jour l'état en ligne de ce compte existant
+        await db.ref("users/"+existingUid+"/online").set(true);
+        db.ref("users/"+existingUid).onDisconnect().update({
+          online:false,
+          lastSeen:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"})
+        });
+
+        // Charger et afficher directement (toutes les anciennes discussions sont là)
+        const profSnap = await db.ref("users/"+existingUid).get();
+        if(profSnap.exists()) Object.assign(S.profile, profSnap.val());
+        CACHE.save("profile",S.profile);
+        const cc=CACHE.load("contacts");if(cc)S.contacts=cc;
+        updateMyAv();renderList();showScreen("s-list");
+        listenContacts();listenIncomingCalls();listenIncomingMessages();
+
       } else {
-        const cred = await auth.signInAnonymously();
-        await completeLogin(cred.user);
+        // Nouveau numéro → créer un compte (signInAnonymously génère l'UID)
+        let user = auth.currentUser;
+        if(!user){
+          const cred = await auth.signInAnonymously();
+          user = cred.user;
+        }
+        // Stocker immédiatement le numéro lié à cet UID dans Firebase
+        // C'est la clé : on peut retrouver l'UID via le numéro à l'avenir
+        S.myUid = user.uid;
+        S.myPhone = phone;
+        CACHE.save("myUid", S.myUid);
+        CACHE.save("myPhone", S.myPhone);
+        S.profile.name = phone;
+        await db.ref("users/"+S.myUid).set({
+          uid:S.myUid,
+          phone:phone,
+          name:S.profile.name,
+          status:"En ligne",
+          emoji:"🧑🏾",
+          avType:"emoji",
+          img:null,
+          online:true
+        });
+        CACHE.save("profile",S.profile);
+        db.ref("users/"+S.myUid).onDisconnect().update({
+          online:false,
+          lastSeen:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"})
+        });
+        updateMyAv();renderList();showScreen("s-list");
+        listenContacts();listenIncomingCalls();listenIncomingMessages();
       }
     }catch(e){
       $("auth-err").textContent="Erreur connexion : "+e.message;
+      btn.textContent=t("confirmer");btn.disabled=false;
     }
   }).catch(e=>{
     $("auth-err").textContent="Erreur réseau — vérifiez votre connexion";
@@ -366,8 +429,10 @@ function updateOnlineBanner(){
 
 // ---- AUTH FIREBASE ----
 async function completeLogin(user){
-  S.myUid=user.uid;
-  S.myPhone=S.pendingPhone||CACHE.load("myPhone")||"utilisateur";
+  // Si S.myUid est déjà défini (depuis la recherche par numéro), le respecter
+  // Sinon, utiliser l'UID Firebase (première connexion)
+  if(!S.myUid) S.myUid = user.uid;
+  S.myPhone = S.pendingPhone||CACHE.load("myPhone")||"utilisateur";
   CACHE.save("myUid",S.myUid);
   CACHE.save("myPhone",S.myPhone);
 
@@ -1987,7 +2052,7 @@ function closeStatusViewer(){
 const APP_MSG="💬 Rejoins-moi sur EniBusiness Pro !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-const CURRENT_BUILD = "v2026-06-24-callfix6";
+const CURRENT_BUILD = "v2026-06-24-phoneuid7";
 
 if("serviceWorker" in navigator){
   const lastSeenBuild = localStorage.getItem("sonia_last_build");
