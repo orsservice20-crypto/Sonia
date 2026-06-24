@@ -66,7 +66,7 @@ const S={
   // WebRTC
   pc:null,localStream:null,remoteStream:null,
   callType:null,callDir:null,callPeer:null,callTick:null,callSecs:0,callMuted:false,callCamOff:false,
-  callRef:null,unsubCall:null,unsubIce:null,iceQueue:[],
+  callRef:null,unsubCall:null,unsubIce:null,iceQueue:[],disconnectTimer:null,
 };
 
 let isOnline=navigator.onLine;
@@ -453,15 +453,20 @@ auth.onAuthStateChanged(async user=>{
 
 // ==================== APPELS WEBRTC ====================
 const ICE_SERVERS={iceServers:[
+  // STUN Google (détection IP directe)
   {urls:"stun:stun.l.google.com:19302"},
   {urls:"stun:stun1.l.google.com:19302"},
-  {urls:"stun:stun2.l.google.com:19302"},
-  {urls:"stun:stun3.l.google.com:19302"},
-  // Serveurs TURN publics (relais pour connexions difficiles Afrique↔Europe)
-  {urls:"turn:openrelay.metered.ca:80",username:"openrelayproject",credential:"openrelayproject"},
-  {urls:"turn:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"},
-  {urls:"turn:openrelay.metered.ca:443?transport=tcp",username:"openrelayproject",credential:"openrelayproject"},
-  {urls:"turn:openrelay.metered.ca:80?transport=tcp",username:"openrelayproject",credential:"openrelayproject"}
+  // TURN metered.ca (relais) — multiples ports pour maximiser la connectivité
+  {urls:"turn:openrelay.metered.ca:80",
+   username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turn:openrelay.metered.ca:443",
+   username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turns:openrelay.metered.ca:443",
+   username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turn:openrelay.metered.ca:80?transport=tcp",
+   username:"openrelayproject",credential:"openrelayproject"},
+  // TURN alternatif (backup si metered.ca indisponible)
+  {urls:"stun:stun.cloudflare.com:3478"},
 ]};
 
 function setCallUI(contact){
@@ -493,46 +498,84 @@ function getLocalStream(type){
 }
 
 function createPC(otherUid){
-  const pc=new RTCPeerConnection(ICE_SERVERS);
+  const pc=new RTCPeerConnection({
+    ...ICE_SERVERS,
+    iceCandidatePoolSize:10,          // Pré-collecter les candidats ICE
+    bundlePolicy:"max-bundle",         // Réduire les connexions réseau
+    rtcpMuxPolicy:"require"            // Économiser les ports réseau
+  });
+
   pc.onicecandidate=e=>{
     if(e.candidate&&S.callRef)
       db.ref(S.callRef+"/ice/"+S.myUid).push(e.candidate.toJSON()).catch(()=>{});
   };
+
   pc.ontrack=e=>{
     if(!S.remoteStream)S.remoteStream=new MediaStream();
-    e.streams[0].getTracks().forEach(tr=>S.remoteStream.addTrack(tr));
-    const rv=$("call-remote-video");rv.srcObject=S.remoteStream;rv.style.display="block";
+    e.streams[0].getTracks().forEach(tr=>{
+      // Éviter les doublons de tracks
+      if(!S.remoteStream.getTracks().find(t=>t.id===tr.id))
+        S.remoteStream.addTrack(tr);
+    });
+    const rv=$("call-remote-video");
+    if(rv){rv.srcObject=S.remoteStream;rv.style.display="block";}
   };
-  let disconnectTimer=null;
+
+  // Utiliser S.disconnectTimer au lieu d'une variable locale
+  // pour éviter les conflits entre instances
   pc.onconnectionstatechange=()=>{
     const st=pc.connectionState;
+    console.log("Connection state:", st);
     if(st==="connected"){
-      clearTimeout(disconnectTimer);disconnectTimer=null;
-      $("call-state-text").textContent="";
-      if(!S.callTick) S.callTick=setInterval(()=>{S.callSecs++;$("call-state-text").textContent=fmt(S.callSecs);},1000);
+      clearTimeout(S.disconnectTimer);S.disconnectTimer=null;
+      const stEl=$("call-state-text");if(stEl)stEl.textContent="";
+      if(!S.callTick)
+        S.callTick=setInterval(()=>{
+          S.callSecs++;
+          const stEl=$("call-state-text");
+          if(stEl)stEl.textContent=fmt(S.callSecs);
+        },1000);
     } else if(st==="disconnected"){
-      // État transitoire normal (réseau instable) → attendre avant de raccrocher
-      $("call-state-text").textContent="Reconnexion...";
-      clearTimeout(disconnectTimer);
-      disconnectTimer=setTimeout(()=>{
-        if(pc.connectionState==="disconnected"||pc.connectionState==="failed"){
+      const stEl=$("call-state-text");if(stEl)stEl.textContent="Reconnexion...";
+      clearTimeout(S.disconnectTimer);
+      S.disconnectTimer=setTimeout(()=>{
+        // Re-vérifier l'état réel avant de raccrocher (peut se reconnecter seul)
+        if(pc.connectionState==="disconnected"){
+          // Tenter une relance ICE d'abord
+          try{pc.restartIce();}catch(e){}
+          // Si toujours disconnected après 8s supplémentaires → raccrocher
+          S.disconnectTimer=setTimeout(()=>{
+            if(pc.connectionState==="disconnected"||pc.connectionState==="failed"){
+              endCall();
+            }
+          },8000);
+        }
+      },5000); // 5s avant de tenter la relance ICE
+    } else if(st==="failed"){
+      clearTimeout(S.disconnectTimer);
+      // Tenter la relance ICE
+      try{pc.restartIce();}catch(e){}
+      S.disconnectTimer=setTimeout(()=>{
+        if(pc.connectionState==="failed"||pc.connectionState==="disconnected"){
           endCall();
         }
-      },10000); // 10s de grâce pour se reconnecter
-    } else if(st==="failed"){
-      // Tentative de relance ICE avant d'abandonner
-      try{ pc.restartIce(); }catch(e){}
-      clearTimeout(disconnectTimer);
-      disconnectTimer=setTimeout(()=>{
-        if(pc.connectionState==="failed") endCall();
-      },6000);
+      },8000); // 8s pour que restartIce fonctionne
+    } else if(st==="closed"){
+      clearTimeout(S.disconnectTimer);
     }
   };
+
   pc.oniceconnectionstatechange=()=>{
-    if(pc.iceConnectionState==="connected"||pc.iceConnectionState==="completed"){
-      clearTimeout(disconnectTimer);disconnectTimer=null;
+    const ist=pc.iceConnectionState;
+    console.log("ICE state:", ist);
+    if(ist==="connected"||ist==="completed"){
+      clearTimeout(S.disconnectTimer);S.disconnectTimer=null;
+    } else if(ist==="failed"){
+      // ICE a échoué → forcer la relance
+      try{pc.restartIce();}catch(e){}
     }
   };
+
   return pc;
 }
 
@@ -543,10 +586,14 @@ function listenIce(otherUid){
   ref.on("child_added",snap=>{
     const c=snap.val();
     if(!c)return;
-    if(S.pc && S.pc.remoteDescription){
-      S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{});
+    if(S.pc&&S.pc.remoteDescription&&S.pc.remoteDescription.type){
+      // remoteDescription est défini → ajouter directement
+      S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(e=>{
+        // Ignorer les erreurs d'ICE candidates périmés (normale en WebRTC)
+        if(!e.message.includes("closed")) console.warn("ICE add:",e.message);
+      });
     } else {
-      // PC pas encore prêt → mettre en attente
+      // Pas encore de remoteDescription → mettre en file d'attente
       S.iceQueue.push(c);
     }
   });
@@ -554,11 +601,13 @@ function listenIce(otherUid){
 }
 
 function flushIceQueue(){
-  if(!S.pc || !S.iceQueue || !S.iceQueue.length) return;
-  const queue=S.iceQueue;
+  if(!S.pc||!S.iceQueue||!S.iceQueue.length)return;
+  const queue=[...S.iceQueue];
   S.iceQueue=[];
   queue.forEach(c=>{
-    S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{});
+    S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(e=>{
+      if(!e.message.includes("closed")) console.warn("ICE flush:",e.message);
+    });
   });
 }
 
@@ -847,6 +896,7 @@ window.endCall=function(silent){
 
   if(S.unsubCall){try{S.unsubCall();}catch(e){} S.unsubCall=null;}
   if(S.unsubIce){try{S.unsubIce();}catch(e){} S.unsubIce=null;}
+  clearTimeout(S.disconnectTimer);S.disconnectTimer=null;
   if(S.pc){try{S.pc.close();}catch(e){} S.pc=null;}
   if(S.localStream){S.localStream.getTracks().forEach(t=>{try{t.stop();}catch(e){}});S.localStream=null;}
   S.remoteStream=null;
@@ -1937,7 +1987,7 @@ function closeStatusViewer(){
 const APP_MSG="💬 Rejoins-moi sur EniBusiness Pro !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-const CURRENT_BUILD = "v2026-06-23-fast";
+const CURRENT_BUILD = "v2026-06-24-callfix6";
 
 if("serviceWorker" in navigator){
   const lastSeenBuild = localStorage.getItem("sonia_last_build");
