@@ -1196,7 +1196,18 @@ function listenContacts(){
       db.ref("users/"+uid).get().then(s=>s.exists()?s.val():null).catch(()=>null)
     );
     const results=await Promise.all(fetches);
-    S.contacts=results.filter(Boolean);
+    // Dédupliquer par numéro de téléphone (garde le plus récent)
+    const seen=new Map();
+    results.forEach(c=>{
+      if(!c)return;
+      const key=c.phone||c.uid;
+      const existing=seen.get(key);
+      // Garder celui avec le timestamp le plus récent (lastDevice) ou le premier
+      if(!existing||(c.lastDevice&&existing.lastDevice&&c.lastDevice>existing.lastDevice)){
+        seen.set(key,c);
+      }
+    });
+    S.contacts=Array.from(seen.values());
     CACHE.save("contacts",S.contacts);
     renderList();
     // Écouter les changements de statut/présence en temps réel
@@ -1221,7 +1232,31 @@ function listenContacts(){
 
 // Ajoute une discussion mutuelle entre 2 utilisateurs (comme WhatsApp : démarrer une conv ajoute le contact pour les 2)
 async function ensureMutualContact(otherUid){
-  if(!S.myUid||!otherUid) return;
+  if(!S.myUid||!otherUid||otherUid===S.myUid) return;
+
+  // Charger le profil de l'autre utilisateur
+  let otherProfile=null;
+  try{
+    const snap=await db.ref("users/"+otherUid).get();
+    if(snap.exists()) otherProfile=snap.val();
+  }catch(e){}
+
+  // Vérifier si on a déjà un contact avec ce même numéro de téléphone
+  // pour éviter les doublons quand quelqu'un change de téléphone
+  if(otherProfile&&otherProfile.phone){
+    const phone=otherProfile.phone;
+    const duplicate=S.contacts.find(c=>
+      c.uid!==otherUid && (c.phone===phone||(c.name&&c.name===phone))
+    );
+    if(duplicate){
+      // Un contact avec ce numéro existe déjà sous un autre UID
+      // Supprimer l'ancien doublon et garder le plus récent (otherUid)
+      db.ref("userContacts/"+S.myUid+"/"+duplicate.uid).remove().catch(()=>{});
+      db.ref("chats/"+chatKey(S.myUid,duplicate.uid)+"/lastMsg").remove().catch(()=>{});
+    }
+  }
+
+  // Ajouter le contact dans les deux sens
   await db.ref("userContacts/"+S.myUid+"/"+otherUid).set(true);
   await db.ref("userContacts/"+otherUid+"/"+S.myUid).set(true);
 }
@@ -1417,7 +1452,7 @@ function renderList(){
     row.setAttribute("data-uid",c.uid);
     row.className="contact-row"+(S.activeId===c.uid?" active-row":"");
     const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
-    const subStatus=c.online?"● En ligne":(c.lastSeen?"Vu à "+c.lastSeen:"");
+    const subStatus=c.online?"● En ligne":"";
     row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span><span class="row-time" id="lt-'+ck+'"></span></div><div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+(subStatus||"...")+'</span><span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span><button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button></div></div>';
     row.querySelector(".arch-btn").onclick=ev=>{ev.stopPropagation();toggleArch(c.uid);};
     row.onclick=()=>openChat(c.uid);
@@ -2064,7 +2099,7 @@ function closeStatusViewer(){
 const APP_MSG="💬 Rejoins-moi sur EniBusiness Pro !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-const CURRENT_BUILD = "v2026-06-25-permfix";
+const CURRENT_BUILD = "v2026-06-26-dedup";
 
 if("serviceWorker" in navigator){
   const lastSeenBuild = localStorage.getItem("sonia_last_build");
