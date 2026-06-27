@@ -1452,8 +1452,19 @@ function renderList(){
     row.setAttribute("data-uid",c.uid);
     row.className="contact-row"+(S.activeId===c.uid?" active-row":"");
     const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
+    // Afficher immédiatement le dernier message depuis le cache local
+    const cachedLm=CACHE.load("lastMsg_"+ck);
     const subStatus=c.online?"● En ligne":"";
-    row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span><span class="row-time" id="lt-'+ck+'"></span></div><div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+(subStatus||"...")+'</span><span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span><button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button></div></div>';
+    const initialText=cachedLm?
+      (cachedLm.del?"🚫 Message supprimé":
+       cachedLm.type==="voice"?"🎵 Vocal":
+       cachedLm.type==="photo"?"📷 Photo":
+       cachedLm.type==="video"?"🎥 Vidéo":
+       (cachedLm.text||subStatus||""))
+      :(subStatus||"");
+    const initialTime=cachedLm?(cachedLm.t||""):"";
+
+    row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span><span class="row-time" id="lt-'+ck+'">'+initialTime+'</span></div><div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+esc(initialText)+'</span><span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span><button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button></div></div>';
     row.querySelector(".arch-btn").onclick=ev=>{ev.stopPropagation();toggleArch(c.uid);};
     row.onclick=()=>openChat(c.uid);
 
@@ -1476,8 +1487,10 @@ function renderList(){
 
     box.appendChild(row);
 
-    // Écouter le dernier message — UN SEUL listener actif par conversation,
-    // jamais dupliqué même si renderList() est appelée plusieurs fois
+    // Afficher le badge non lu si en cache
+    updateUnreadBadge(ck);
+
+    // Écouter le dernier message — UN SEUL listener actif par conversation
     if(!S.lastMsgListeners) S.lastMsgListeners={};
     if(!S.lastMsgListeners[ck]){
       const lmRef=db.ref("chats/"+ck+"/lastMsg");
@@ -1486,12 +1499,16 @@ function renderList(){
         if(!lm)return;
         const lt=document.getElementById("lt-"+ck);
         const ll=document.getElementById("ll-"+ck);
-        if(lt)lt.textContent=lm.t||"";
-        if(ll)ll.textContent=lm.del?"🚫 Message supprimé":
+        const txt=lm.del?"🚫 Message supprimé":
           lm.type==="voice"?"🎵 Vocal":
           lm.type==="photo"?"📷 Photo":
           lm.type==="video"?"🎥 Vidéo":
           (lm.text||"");
+        if(lt)lt.textContent=lm.t||"";
+        if(ll)ll.textContent=txt;
+
+        // Sauvegarder en cache pour affichage instantané au prochain chargement
+        CACHE.save("lastMsg_"+ck, {text:lm.text||"",t:lm.t||"",type:lm.type||"text",del:!!lm.del});
 
         const ts=lm.ts||Date.now();
         const prevTs=CACHE.load("lastTs_"+ck)||0;
@@ -1499,7 +1516,6 @@ function renderList(){
 
         if(ts>prevTs && lm.from!==S.myUid && S.activeId!==c.uid){
           incrementUnread(c.uid,ck);
-          // Petite notification sonore/visuelle discrète
           toast("💬 Nouveau message de "+(displayName||"un contact"));
         }
 
@@ -1508,16 +1524,6 @@ function renderList(){
       };
       lmRef.on("value",lmHandler);
       S.lastMsgListeners[ck]={ref:lmRef,handler:lmHandler};
-    }
-
-    // Mettre à jour l'affichage immédiatement avec la valeur déjà connue en cache
-    const cachedTs=CACHE.load("lastTs_"+ck);
-    if(cachedTs){
-      const lt=document.getElementById("lt-"+ck);
-      if(lt){
-        const d=new Date(cachedTs);
-        lt.textContent=d.toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"});
-      }
     }
 
     // Afficher le badge actuel s'il y en a un en cache
@@ -1882,6 +1888,10 @@ function pushMsg(m){
   const msgRef=db.ref("chats/"+key+"/messages");
   const lastRef=db.ref("chats/"+key+"/lastMsg");
 
+  // Sauvegarder en cache local immédiatement (affichage instantané)
+  CACHE.save("lastMsg_"+key,{text:m.text||"",t:m.t||"",type:m.type||"text",del:false});
+  CACHE.save("lastTs_"+key,m.ts);
+
   return msgRef.push(m).then(()=>{
     lastRef.set({text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts}).catch(()=>{});
   }).catch(e=>{
@@ -2099,7 +2109,7 @@ function closeStatusViewer(){
 const APP_MSG="💬 Rejoins-moi sur EniBusiness Pro !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-const CURRENT_BUILD = "v2026-06-26-dedup";
+const CURRENT_BUILD = "v2026-06-27-lastmsg";
 
 if("serviceWorker" in navigator){
   const lastSeenBuild = localStorage.getItem("sonia_last_build");
