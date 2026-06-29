@@ -530,20 +530,15 @@ auth.onAuthStateChanged(async user=>{
 
 // ==================== APPELS WEBRTC ====================
 const ICE_SERVERS={iceServers:[
-  // STUN Google (détection IP directe)
   {urls:"stun:stun.l.google.com:19302"},
   {urls:"stun:stun1.l.google.com:19302"},
-  // TURN metered.ca (relais) — multiples ports pour maximiser la connectivité
-  {urls:"turn:openrelay.metered.ca:80",
-   username:"openrelayproject",credential:"openrelayproject"},
-  {urls:"turn:openrelay.metered.ca:443",
-   username:"openrelayproject",credential:"openrelayproject"},
-  {urls:"turns:openrelay.metered.ca:443",
-   username:"openrelayproject",credential:"openrelayproject"},
-  {urls:"turn:openrelay.metered.ca:80?transport=tcp",
-   username:"openrelayproject",credential:"openrelayproject"},
-  // TURN alternatif (backup si metered.ca indisponible)
-  {urls:"stun:stun.cloudflare.com:3478"},
+  {urls:"stun:stun2.l.google.com:19302"},
+  {urls:"stun:global.stun.twilio.com:3478"},
+  // TURN servers - multiples pour fiabilité maximale
+  {urls:"turn:openrelay.metered.ca:80",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turn:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turns:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turn:openrelay.metered.ca:80?transport=tcp",username:"openrelayproject",credential:"openrelayproject"},
 ]};
 
 function setCallUI(contact){
@@ -574,23 +569,23 @@ function getLocalStream(type){
   );
 }
 
-function createPC(otherUid){
+function createPC(){
   const pc=new RTCPeerConnection({
-    ...ICE_SERVERS,
-    iceCandidatePoolSize:10,          // Pré-collecter les candidats ICE
-    bundlePolicy:"max-bundle",         // Réduire les connexions réseau
-    rtcpMuxPolicy:"require"            // Économiser les ports réseau
+    iceServers:ICE_SERVERS.iceServers,
+    iceCandidatePoolSize:10,
+    bundlePolicy:"max-bundle",
+    rtcpMuxPolicy:"require"
   });
 
   pc.onicecandidate=e=>{
-    if(e.candidate&&S.callRef)
+    if(e.candidate&&S.callRef&&S.pc===pc)
       db.ref(S.callRef+"/ice/"+S.myUid).push(e.candidate.toJSON()).catch(()=>{});
   };
 
   pc.ontrack=e=>{
+    if(S.pc!==pc)return; // Ignorer si ce n'est plus le PC actif
     if(!S.remoteStream)S.remoteStream=new MediaStream();
     e.streams[0].getTracks().forEach(tr=>{
-      // Éviter les doublons de tracks
       if(!S.remoteStream.getTracks().find(t=>t.id===tr.id))
         S.remoteStream.addTrack(tr);
     });
@@ -598,11 +593,9 @@ function createPC(otherUid){
     if(rv){rv.srcObject=S.remoteStream;rv.style.display="block";}
   };
 
-  // Utiliser S.disconnectTimer au lieu d'une variable locale
-  // pour éviter les conflits entre instances
   pc.onconnectionstatechange=()=>{
+    if(S.pc!==pc)return; // PC obsolète → ignorer
     const st=pc.connectionState;
-    console.log("Connection state:", st);
     if(st==="connected"){
       clearTimeout(S.disconnectTimer);S.disconnectTimer=null;
       const stEl=$("call-state-text");if(stEl)stEl.textContent="";
@@ -616,39 +609,32 @@ function createPC(otherUid){
       const stEl=$("call-state-text");if(stEl)stEl.textContent="Reconnexion...";
       clearTimeout(S.disconnectTimer);
       S.disconnectTimer=setTimeout(()=>{
-        // Re-vérifier l'état réel avant de raccrocher (peut se reconnecter seul)
-        if(pc.connectionState==="disconnected"){
-          // Tenter une relance ICE d'abord
+        if(S.pc!==pc||!S.callRef)return;
+        if(pc.connectionState==="disconnected"||pc.connectionState==="failed"){
           try{pc.restartIce();}catch(e){}
-          // Si toujours disconnected après 8s supplémentaires → raccrocher
           S.disconnectTimer=setTimeout(()=>{
-            if(pc.connectionState==="disconnected"||pc.connectionState==="failed"){
-              endCall();
-            }
+            if(S.pc!==pc||!S.callRef)return;
+            if(pc.connectionState==="disconnected"||pc.connectionState==="failed")endCall();
           },8000);
         }
-      },5000); // 5s avant de tenter la relance ICE
+      },5000);
     } else if(st==="failed"){
       clearTimeout(S.disconnectTimer);
-      // Tenter la relance ICE
+      if(S.pc!==pc||!S.callRef)return;
       try{pc.restartIce();}catch(e){}
       S.disconnectTimer=setTimeout(()=>{
-        if(pc.connectionState==="failed"||pc.connectionState==="disconnected"){
-          endCall();
-        }
-      },8000); // 8s pour que restartIce fonctionne
-    } else if(st==="closed"){
-      clearTimeout(S.disconnectTimer);
+        if(S.pc!==pc||!S.callRef)return;
+        if(pc.connectionState==="failed"||pc.connectionState==="disconnected")endCall();
+      },8000);
     }
   };
 
   pc.oniceconnectionstatechange=()=>{
+    if(S.pc!==pc)return;
     const ist=pc.iceConnectionState;
-    console.log("ICE state:", ist);
     if(ist==="connected"||ist==="completed"){
       clearTimeout(S.disconnectTimer);S.disconnectTimer=null;
     } else if(ist==="failed"){
-      // ICE a échoué → forcer la relance
       try{pc.restartIce();}catch(e){}
     }
   };
@@ -657,44 +643,46 @@ function createPC(otherUid){
 }
 
 function listenIce(otherUid){
-  if(S.unsubIce){try{S.unsubIce();}catch(e){}}
-  S.iceQueue=S.iceQueue||[];
+  if(S.unsubIce){
+    try{S.unsubIce();}catch(e){}
+    S.unsubIce=null;
+  }
+  if(!S.callRef)return;
+  S.iceQueue=[];
   const ref=db.ref(S.callRef+"/ice/"+otherUid);
-  ref.on("child_added",snap=>{
+  const iceHandler=snap=>{
     const c=snap.val();
-    if(!c)return;
-    if(S.pc&&S.pc.remoteDescription&&S.pc.remoteDescription.type){
-      // remoteDescription est défini → ajouter directement
+    if(!c||!S.pc)return;
+    if(S.pc.remoteDescription&&S.pc.remoteDescription.type){
       S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(e=>{
-        // Ignorer les erreurs d'ICE candidates périmés (normale en WebRTC)
-        if(!e.message.includes("closed")) console.warn("ICE add:",e.message);
+        if(e.message&&!e.message.includes("closed")&&!e.message.includes("wrong state"))
+          console.warn("ICE:",e.message);
       });
     } else {
-      // Pas encore de remoteDescription → mettre en file d'attente
       S.iceQueue.push(c);
     }
-  });
-  S.unsubIce=()=>ref.off();
+  };
+  ref.on("child_added",iceHandler);
+  S.unsubIce=()=>ref.off("child_added",iceHandler);
 }
 
 function flushIceQueue(){
   if(!S.pc||!S.iceQueue||!S.iceQueue.length)return;
-  const queue=[...S.iceQueue];
+  const q=[...S.iceQueue];
   S.iceQueue=[];
-  queue.forEach(c=>{
-    S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(e=>{
-      if(!e.message.includes("closed")) console.warn("ICE flush:",e.message);
-    });
+  q.forEach(c=>{
+    if(S.pc)S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{});
   });
 }
 
 // ---- APPEL SORTANT ----
 window.startCall=async function(type){
-  if(!S.activeId||S.callDir){return;}
+  if(!S.activeId||S.callDir)return;
   const contact=S.contacts.find(c=>c.uid===S.activeId)||{uid:S.activeId,phone:S.activeId};
 
   S.callType=type;S.callDir="out";S.callPeer=S.activeId;
   S.callRef="callSignals/"+S.activeId+"/"+S.myUid;
+  S.iceQueue=[];
   resetCallOverlay();
   setCallUI(contact);
   $("call-overlay").style.display="flex";
@@ -702,7 +690,7 @@ window.startCall=async function(type){
   $("call-active-actions").style.display="flex";
   if(type!=="video")$("call-cam-wrap").style.display="none";
 
-  // 1. Obtenir le micro/caméra D'ABORD
+  // 1. Micro/caméra
   try{
     S.localStream=await getLocalStream(type);
   }catch(e){
@@ -711,22 +699,25 @@ window.startCall=async function(type){
   }
   if(type==="video"){const lv=$("call-local-video");lv.srcObject=S.localStream;lv.style.display="block";}
 
-  // 2. Créer la connexion + l'offre WebRTC AVANT d'écrire dans Firebase
-  S.pc=createPC(S.activeId);
+  // 2. Créer PC + offre
+  S.pc=createPC();
   S.localStream.getTracks().forEach(tr=>S.pc.addTrack(tr,S.localStream));
+
+  // Écouter les ICE DÈS MAINTENANT (avant setLocalDescription)
+  listenIce(S.activeId);
+
   let offer;
   try{
     offer=await S.pc.createOffer();
     await S.pc.setLocalDescription(offer);
   }catch(e){
-    toast("Erreur création de l'appel : "+e.message,"err");
+    toast("Erreur création appel : "+e.message,"err");
     endCall(true);return;
   }
 
   $("call-state-text").textContent="Sonnerie...";
 
-  // 3. Écrire le signal COMPLET (avec l'offre déjà incluse) en une seule fois
-  // → élimine toute race condition côté receveur
+  // 3. Écrire dans Firebase (signal complet avec offre)
   const ringData={
     type,from:S.myUid,
     fromName:S.profile.name||S.myPhone||"Inconnu",
@@ -749,38 +740,33 @@ window.startCall=async function(type){
     endCall(true);return;
   }
 
-  // 4. Écouter les ICE du receveur
-  listenIce(S.activeId);
-
-  // 5. Écouter la réponse/statut
+  // 4. Écouter la réponse
   if(S.unsubCall){try{S.unsubCall();}catch(e){}}
   const ref=db.ref(S.callRef);
   const handler=async snap=>{
     const data=snap.val();
     if(!data||data.status==="ended"||data.status==="rejected"||data.status==="busy"){
-      let msg="Appel terminé";
-      if(data&&data.status==="rejected")msg="Appel refusé";
-      if(data&&data.status==="busy")msg="📵 Occupé";
-      $("call-state-text").textContent=msg;
-      if(navigator.vibrate)navigator.vibrate(data&&data.status==="busy"?[100,80,100]:60);
-      setTimeout(()=>endCall(true),1700);
+      let msg=!data||data.status==="ended"?"Appel terminé":data.status==="rejected"?"Appel refusé":"📵 Occupé";
+      const stEl=$("call-state-text");if(stEl)stEl.textContent=msg;
+      setTimeout(()=>endCall(true),1500);
       return;
     }
     if(data.answer&&S.pc&&!S.pc.currentRemoteDescription){
       try{
         await S.pc.setRemoteDescription(new RTCSessionDescription(data.answer));
         flushIceQueue();
-        $("call-state-text").textContent="Connexion...";
-      }catch(e){console.error("SRD:",e);}
+        const stEl=$("call-state-text");if(stEl)stEl.textContent="Connexion...";
+      }catch(e){console.error("SRD err:",e.message);}
     }
   };
   ref.on("value",handler);
   S.unsubCall=()=>ref.off("value",handler);
 
-  // 6. Timeout 60s sans réponse
+  // 5. Timeout 60s
+  const callStartTime=Date.now();
   setTimeout(()=>{
-    if(S.callRef&&S.callDir==="out"&&S.callSecs===0){
-      $("call-state-text").textContent="Pas de réponse";
+    if(S.callRef&&S.callDir==="out"&&S.callSecs===0&&Date.now()-callStartTime>=59000){
+      const stEl=$("call-state-text");if(stEl)stEl.textContent="Pas de réponse";
       endCall();
     }
   },60000);
@@ -792,7 +778,6 @@ function listenIncomingCalls(){
   db.ref("callSignals/"+S.myUid).on("child_added",snap=>{
     handleRing(snap.key,snap.val());
   });
-  // Toujours utile pour détecter une fin d'appel pendant la sonnerie
   db.ref("callSignals/"+S.myUid).on("child_changed",snap=>{
     const data=snap.val();
     if(data&&(data.status==="ended"||data.status==="rejected")&&S.callPeer===snap.key){
@@ -803,42 +788,32 @@ function listenIncomingCalls(){
 
 function handleRing(callerUid,data){
   if(!data||data.status!=="ringing")return;
-  if(!data.offer)return; // Signal incomplet, ignorer (ne devrait plus arriver)
-  if(!data.ts||Date.now()-data.ts>60000)return; // Expiré
+  if(!data.offer)return;
+  if(!data.ts||Date.now()-data.ts>60000)return;
 
-  // Si déjà en appel (sortant ou entrant) → signaler "occupé" à l'appelant automatiquement
-  if(S.callDir || $("call-overlay").style.display==="flex"){
+  if(S.callDir||$("call-overlay").style.display==="flex"){
     const busyRef="callSignals/"+S.myUid+"/"+callerUid;
     db.ref(busyRef).update({status:"busy"}).then(()=>{
       setTimeout(()=>db.ref(busyRef).remove().catch(()=>{}),1500);
     }).catch(()=>{});
-    // Notifier discrètement l'utilisateur en cours d'appel
     toast("📵 "+(data.fromName||"Quelqu'un")+" a essayé de vous appeler");
-    // Enregistrer comme appel manqué dans l'historique
     const contact=S.contacts.find(c=>c.uid===callerUid)||{};
     const nick=CACHE.load("nick_"+callerUid)||"";
     db.ref("callLog/"+S.myUid).push({
-      peer:callerUid,
-      peerName:nick||data.fromName||contact.name||contact.phone||callerUid,
-      peerEmoji:data.fromEmoji||contact.emoji||"🧑🏾",
-      peerAvType:data.fromAvType||contact.avType||"emoji",
-      peerImg:data.fromImg||contact.img||null,
-      dir:"in",
-      type:data.type||"audio",
-      duration:0,
-      missed:true,
-      ts:Date.now(),
+      peer:callerUid,peerName:nick||data.fromName||contact.name||contact.phone||callerUid,
+      peerEmoji:data.fromEmoji||contact.emoji||"🧑🏾",peerAvType:data.fromAvType||"emoji",
+      peerImg:data.fromImg||null,dir:"in",type:data.type||"audio",
+      duration:0,missed:true,ts:Date.now(),
       time:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"}),
       date:new Date().toLocaleDateString("fr",{day:"2-digit",month:"short"})
     }).catch(()=>{});
     return;
   }
 
-  S.callType=data.type;
-  S.callDir="in";
-  S.callPeer=callerUid;
+  S.callType=data.type;S.callDir="in";S.callPeer=callerUid;
   S.callRef="callSignals/"+S.myUid+"/"+callerUid;
   S.incomingOffer=data.offer;
+  S.iceQueue=[];
 
   resetCallOverlay();
   setCallUI({name:data.fromName,emoji:data.fromEmoji,avType:data.fromAvType,img:data.fromImg});
@@ -847,14 +822,16 @@ function handleRing(callerUid,data){
   $("call-incoming-actions").style.display="flex";
   startRingtone();
 
+  // Écouter les ICE entrants DÈS LA SONNERIE (pas après acceptation)
+  // pour ne pas perdre les candidats ICE qui arrivent rapidement
+  listenIce(callerUid);
+
   setTimeout(()=>{
-    if(S.callDir==="in"&&$("call-incoming-actions").style.display==="flex"){
-      rejectCall();
-    }
+    if(S.callDir==="in"&&$("call-incoming-actions").style.display==="flex")rejectCall();
   },60000);
 }
 
-// ---- SONNERIE PROFESSIONNELLE (générée via Web Audio API) ----
+// ---- SONNERIE PROFESSIONNELLE ----
 let ringtoneCtx=null;
 let ringtoneInterval=null;
 function startRingtone(){
@@ -863,36 +840,27 @@ function startRingtone(){
     ringtoneCtx=new (window.AudioContext||window.webkitAudioContext)();
     playRingtoneCycle();
     ringtoneInterval=setInterval(playRingtoneCycle,3200);
-  }catch(e){console.error("ringtone:",e);}
+  }catch(e){}
 }
 function playRingtoneCycle(){
   if(!ringtoneCtx)return;
   const now=ringtoneCtx.currentTime;
-  // Deux tonalités douces type "ding-dong" professionnel, répétées 2 fois
   const playTone=(freq,start,dur,vol)=>{
     const osc=ringtoneCtx.createOscillator();
     const gain=ringtoneCtx.createGain();
-    osc.type="sine";
-    osc.frequency.value=freq;
+    osc.type="sine";osc.frequency.value=freq;
     gain.gain.setValueAtTime(0,now+start);
     gain.gain.linearRampToValueAtTime(vol,now+start+0.05);
     gain.gain.linearRampToValueAtTime(0,now+start+dur);
     osc.connect(gain);gain.connect(ringtoneCtx.destination);
     osc.start(now+start);osc.stop(now+start+dur+0.05);
   };
-  // Motif 1 : Mi-Do (descendant, ton doux)
-  playTone(659.25,0,0.35,0.18);
-  playTone(523.25,0.35,0.45,0.18);
-  // Motif 2 : répétition après une pause courte
-  playTone(659.25,1.4,0.35,0.18);
-  playTone(523.25,1.75,0.45,0.18);
+  playTone(659.25,0,0.35,0.18);playTone(523.25,0.35,0.45,0.18);
+  playTone(659.25,1.4,0.35,0.18);playTone(523.25,1.75,0.45,0.18);
 }
 function stopRingtone(){
   clearInterval(ringtoneInterval);ringtoneInterval=null;
-  if(ringtoneCtx){
-    try{ringtoneCtx.close();}catch(e){}
-    ringtoneCtx=null;
-  }
+  if(ringtoneCtx){try{ringtoneCtx.close();}catch(e){}ringtoneCtx=null;}
 }
 
 // ---- ACCEPTER ----
@@ -901,42 +869,38 @@ window.acceptCall=async function(){
   $("call-incoming-actions").style.display="none";
   $("call-state-text").textContent="Connexion...";
 
-  if(!S.incomingOffer){
-    toast("Erreur : offre d'appel non reçue","err");
-    endCall(true);return;
-  }
+  if(!S.incomingOffer){toast("Erreur : offre non reçue","err");endCall(true);return;}
 
   try{S.localStream=await getLocalStream(S.callType);}
   catch(e){toast("Micro/caméra inaccessible","err");rejectCall();return;}
 
-  if(S.callType==="video"){
-    const lv=$("call-local-video");lv.srcObject=S.localStream;lv.style.display="block";
-  }
+  if(S.callType==="video"){const lv=$("call-local-video");lv.srcObject=S.localStream;lv.style.display="block";}
   $("call-active-actions").style.display="flex";
   if(S.callType!=="video")$("call-cam-wrap").style.display="none";
 
-  S.pc=createPC(S.callPeer);
+  S.pc=createPC();
   S.localStream.getTracks().forEach(tr=>S.pc.addTrack(tr,S.localStream));
+
+  // Mettre à jour listenIce pour utiliser le bon PC (créé juste au-dessus)
+  // Les ICE déjà en queue seront appliqués après setRemoteDescription
+  listenIce(S.callPeer);
 
   try{
     await S.pc.setRemoteDescription(new RTCSessionDescription(S.incomingOffer));
-    flushIceQueue();
+    flushIceQueue(); // Appliquer les ICE reçus pendant la sonnerie
     const answer=await S.pc.createAnswer();
     await S.pc.setLocalDescription(answer);
     await db.ref(S.callRef).update({answer:{type:answer.type,sdp:answer.sdp},status:"connected"});
   }catch(e){
-    toast("Erreur connexion appel : "+e.message,"err");
+    toast("Erreur connexion : "+e.message,"err");
     endCall(true);return;
   }
 
-  listenIce(S.callPeer);
-
-  // Écouter si le caller raccroche
   if(S.unsubCall){try{S.unsubCall();}catch(e){}}
   const ref=db.ref(S.callRef);
   const handler=snap=>{
     const d=snap.val();
-    if(!d||d.status==="ended"){endCall(true);}
+    if(!d||d.status==="ended")endCall(true);
   };
   ref.on("value",handler);
   S.unsubCall=()=>ref.off("value",handler);
@@ -953,7 +917,6 @@ window.rejectCall=function(){
   endCall(true);
 };
 
-// ---- RACCROCHER ----
 window.endCall=function(silent){
   stopRingtone();
   if(!S.callRef&&!S.pc&&!S.localStream)return;
@@ -2109,7 +2072,7 @@ function closeStatusViewer(){
 const APP_MSG="💬 Rejoins-moi sur EniBusiness Pro !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-const CURRENT_BUILD = "v2026-06-27-lastmsg";
+const CURRENT_BUILD = "v2026-06-28-callfix-final";
 
 if("serviceWorker" in navigator){
   const lastSeenBuild = localStorage.getItem("sonia_last_build");
