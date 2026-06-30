@@ -85,6 +85,45 @@ const nowDate=()=>{
   if(isYest)return"Hier";
   return d.toLocaleDateString("fr",{day:"2-digit",month:"short"});
 };
+
+// Renvoie un libellé de date pour un timestamp donné : "Aujourd'hui", "Hier", ou "12 juin 2026"
+// Utilisé pour les séparateurs de date entre messages et "Vu à"
+function dateLabel(ts){
+  if(!ts)return"";
+  const d=new Date(ts);
+  const today=new Date();
+  const isToday=d.toDateString()===today.toDateString();
+  if(isToday)return"Aujourd'hui";
+  const yest=new Date();yest.setDate(yest.getDate()-1);
+  const isYest=d.toDateString()===yest.toDateString();
+  if(isYest)return"Hier";
+  const sameYear=d.getFullYear()===today.getFullYear();
+  return d.toLocaleDateString("fr",sameYear?{day:"2-digit",month:"long"}:{day:"2-digit",month:"long",year:"numeric"});
+}
+
+// Formate le statut "Vu à" comme WhatsApp :
+// - Aujourd'hui à 14:32
+// - Hier à 14:32
+// - Plus de 2 jours → date complète + heure : 12 juin à 14:32 (ou avec l'année si différente)
+function formatLastSeen(ts){
+  if(!ts)return"";
+  const d=new Date(ts);
+  const now=Date.now();
+  const diffMs=now-ts;
+  const diffDays=diffMs/(1000*60*60*24);
+  const heure=d.toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"});
+  const today=new Date();
+  const isToday=d.toDateString()===today.toDateString();
+  if(isToday)return"aujourd'hui à "+heure;
+  const yest=new Date();yest.setDate(yest.getDate()-1);
+  const isYest=d.toDateString()===yest.toDateString();
+  if(isYest)return"hier à "+heure;
+  // Plus de 2 jours → date complète
+  const sameYear=d.getFullYear()===today.getFullYear();
+  const dateStr=d.toLocaleDateString("fr",sameYear?{day:"2-digit",month:"long"}:{day:"2-digit",month:"long",year:"numeric"});
+  return"le "+dateStr+" à "+heure;
+}
+
 const esc=t=>String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 const chatKey=(a,b)=>[a,b].sort().join("_");
 
@@ -303,7 +342,7 @@ async function verifyCode(){
         db.ref("users/"+existingUid+"/online").set(true).catch(()=>{});
         db.ref("users/"+existingUid).onDisconnect().update({
           online:false,
-          lastSeen:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"})
+          lastSeenTs:Date.now()
         });
 
         // Afficher avec l'ancien compte (toutes les discussions intactes)
@@ -335,7 +374,7 @@ async function verifyCode(){
         db.ref("users/"+S.myUid+"/online").set(true).catch(()=>{});
         db.ref("users/"+S.myUid).onDisconnect().update({
           online:false,
-          lastSeen:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"})
+          lastSeenTs:Date.now()
         });
         const cc = CACHE.load("contacts"); if(cc) S.contacts=cc;
         updateMyAv(); renderList(); showScreen("s-list");
@@ -465,7 +504,7 @@ async function completeLogin(user){
     db.ref("users/"+S.myUid+"/online").set(true).catch(()=>{});
     db.ref("users/"+S.myUid).onDisconnect().update({
       online:false,
-      lastSeen:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"})
+      lastSeenTs:Date.now()
     });
     listenContacts();listenIncomingCalls();listenIncomingMessages();
   }catch(e){console.error("login sync:",e.message);}
@@ -1327,7 +1366,8 @@ function refreshChatHeader(c){
   const cn=$("c-name");if(cn)cn.textContent=displayName;
   const cs=$("c-status");if(cs){
     if(c.online){cs.textContent="● En ligne";cs.style.color="var(--green)";}
-    else{cs.textContent=c.lastSeen?"⚫ Vu à "+c.lastSeen:"⚫ Hors ligne";cs.style.color="var(--sub)";}
+    else if(c.lastSeenTs){cs.textContent="Vu "+formatLastSeen(c.lastSeenTs);cs.style.color="var(--sub)";}
+    else{cs.textContent="";cs.style.color="var(--sub)";}
   }
 }
 
@@ -1341,7 +1381,7 @@ window.openContactInfo=function(){
   else{av.innerHTML="<span>"+(c.emoji||"🧑🏾")+"</span>";}
   $("ci-name").textContent=c.name||c.phone||"Inconnu";
   $("ci-phone").textContent=c.phone||"";
-  $("ci-status-txt").textContent=c.online?"● En ligne":(c.lastSeen?"⚫ Vu à "+c.lastSeen:"⚫ Hors ligne");
+  $("ci-status-txt").textContent=c.online?"● En ligne":(c.lastSeenTs?"Vu "+formatLastSeen(c.lastSeenTs):"");
   // Pré-remplir le surnom avec le nom actuel stocké localement
   const saved=CACHE.load("nick_"+c.uid);
   $("ci-nickname-input").value=saved||c.name||"";
@@ -1416,15 +1456,15 @@ function renderList(){
     row.className="contact-row"+(S.activeId===c.uid?" active-row":"");
     const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
     // Afficher immédiatement le dernier message depuis le cache local
+    // (statut "En ligne"/Vu à ne s'affiche QUE dans la conversation, jamais dans la liste)
     const cachedLm=CACHE.load("lastMsg_"+ck);
-    const subStatus=c.online?"● En ligne":"";
     const initialText=cachedLm?
       (cachedLm.del?"🚫 Message supprimé":
        cachedLm.type==="voice"?"🎵 Vocal":
        cachedLm.type==="photo"?"📷 Photo":
        cachedLm.type==="video"?"🎥 Vidéo":
-       (cachedLm.text||subStatus||""))
-      :(subStatus||"");
+       (cachedLm.text||""))
+      :"";
     const initialTime=cachedLm?(cachedLm.t||""):"";
 
     row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span><span class="row-time" id="lt-'+ck+'">'+initialTime+'</span></div><div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+esc(initialText)+'</span><span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span><button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button></div></div>';
@@ -1558,6 +1598,23 @@ function openChat(uid){
   clearUnread(uid,ck);
 }
 
+// Ajoute une bulle dans la boîte de messages en insérant un séparateur de date
+// ("Aujourd'hui", "Hier", "12 juin") si la date change par rapport à la précédente bulle
+function appendBubbleWithDate(box,m){
+  const ts=m.ts||Date.now();
+  const label=dateLabel(ts);
+  if(box.dataset.lastDateLabel!==label){
+    const sep=document.createElement("div");
+    sep.className="date-sep";
+    sep.innerHTML='<span>'+esc(label)+'</span>';
+    box.appendChild(sep);
+    box.dataset.lastDateLabel=label;
+  }
+  const row=makeBubble(m);
+  box.appendChild(row);
+  return row;
+}
+
 function listenMsgs(){
   if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}
   const key=chatKey(S.myUid,S.activeId);
@@ -1573,11 +1630,11 @@ function listenMsgs(){
   try{ cached=CACHE.load("msgs_"+key); }catch(e){ console.error("cache load:",e); }
 
   if(cached && cached.length){
+    box.dataset.lastDateLabel="";
     cached.forEach(m=>{
       if(!m || !m.id || rendered.has(m.id))return;
       try{
-        const row=makeBubble(m);
-        box.appendChild(row);
+        appendBubbleWithDate(box,m);
         rendered.add(m.id);
         anyShown=true;
       }catch(e){ console.error("bubble cache erreur:",e.message,m); }
@@ -1638,9 +1695,8 @@ function listenMsgs(){
     }
     rendered.add(snap.key);
     try{
-      if(!anyShown){ box.innerHTML=""; anyShown=true; } // Effacer le message "chargement"/"vide"
-      const row=makeBubble(m);
-      box.appendChild(row);
+      if(!anyShown){ box.innerHTML=""; box.dataset.lastDateLabel=""; anyShown=true; } // Effacer le message "chargement"/"vide"
+      const row=appendBubbleWithDate(box,m);
       if(box.scrollHeight - box.scrollTop - box.clientHeight < 100){
         requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
       }
@@ -1749,7 +1805,7 @@ function makeBubble(m){
           '<button class="vspeed" id="vs-'+m.id+'">1×</button>'+
         '</div>'+
       '</div>'+
-      '<div class="b-meta"><span class="b-time">'+(m.dateStr?m.dateStr+' · ':'')+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+      '<div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
     setTimeout(()=>{
       const pb=document.getElementById("vp-"+m.id);
       const wp=document.getElementById("vwp-"+m.id);
@@ -2072,7 +2128,7 @@ function closeStatusViewer(){
 const APP_MSG="💬 Rejoins-moi sur EniBusiness Pro !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-const CURRENT_BUILD = "v2026-06-28-callfix-final";
+const CURRENT_BUILD = "v2026-06-29-lastseen-datesep";
 
 if("serviceWorker" in navigator){
   const lastSeenBuild = localStorage.getItem("sonia_last_build");
@@ -2195,6 +2251,8 @@ input,textarea{font-family:inherit;border:none;outline:none}
 .call-btn-sm{width:38px;height:38px;border-radius:11px;background:var(--card);border:1px solid var(--border);font-size:17px;display:flex;align-items:center;justify-content:center;cursor:pointer}
 #msg-list{flex:1;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:3px;background:var(--chat-bg)}
 .bubble-row{display:flex}.bubble-row.out{justify-content:flex-end}.bubble-row.in{justify-content:flex-start}
+.date-sep{display:flex;justify-content:center;margin:14px 0 8px}
+.date-sep span{background:var(--card);color:var(--sub);font-size:12px;font-weight:700;padding:6px 14px;border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.08)}
 .bubble{max-width:78%;padding:9px 13px;font-size:14px;line-height:1.5;position:relative}
 .bubble.out{background:var(--bubble-out);border-radius:18px 18px 4px 18px;color:var(--text)}
 .bubble.in{background:var(--bubble-in);border-radius:18px 18px 18px 4px;color:var(--text)}
@@ -3562,3 +3620,4 @@ window.addEventListener("DOMContentLoaded",()=>{
 
 </body>
 </html>
+t
