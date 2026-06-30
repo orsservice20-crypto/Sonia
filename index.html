@@ -59,7 +59,7 @@ const S={
   profile:{name:"",status:"En ligne",avType:"emoji",emoji:"🧑🏾",img:null},
   contacts:[],activeId:null,arch:new Set(),tab:"chats",search:"",
   currentScreen:"s-splash",
-  unsubMsgs:null,unsubContacts:null,lastMsgListeners:{},
+  unsubMsgs:null,unsubContacts:null,lastMsgListeners:{},statusListeners:{},contactStatuses:{},
   recPaused:false,recSecs:0,recTick:null,
   recStream:null,recorder:null,recChunks:[],recMimeType:null,
   pendingPhoto:null,pendingVideo:null,pendingVideoFile:null,pendingPhone:null,
@@ -1212,6 +1212,9 @@ function listenContacts(){
     S.contacts=Array.from(seen.values());
     CACHE.save("contacts",S.contacts);
     renderList();
+    // Statuts : suivre automatiquement les contacts dès qu'ils sont chargés
+    // (les statuts publiés apparaissent automatiquement, sans recharger l'onglet)
+    attachContactStatusListeners();
     // Écouter les changements de statut/présence en temps réel
     uids.forEach(uid=>{
       db.ref("users/"+uid).on("value",usnap=>{
@@ -1469,24 +1472,47 @@ function renderList(){
 
     row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span><span class="row-time" id="lt-'+ck+'">'+initialTime+'</span></div><div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+esc(initialText)+'</span><span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span><button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button></div></div>';
     row.querySelector(".arch-btn").onclick=ev=>{ev.stopPropagation();toggleArch(c.uid);};
-    row.onclick=()=>openChat(c.uid);
 
-    // Appui long → supprimer la discussion
+    // Appui long UNIQUEMENT → supprimer la discussion (600ms minimum requis)
+    // Un simple clic ouvre toujours la discussion, jamais le menu de suppression
     let rowPressTimer=null;
-    const startRowPress=()=>{
+    let rowLongPressTriggered=false;
+    let rowStartX=0,rowStartY=0;
+
+    const startRowPress=e=>{
+      rowLongPressTriggered=false;
+      const pt=e.touches?e.touches[0]:e;
+      rowStartX=pt.clientX;rowStartY=pt.clientY;
+      clearTimeout(rowPressTimer);
       rowPressTimer=setTimeout(()=>{
+        rowLongPressTriggered=true;
         if(navigator.vibrate)navigator.vibrate(40);
         showDeleteConvMenu(c,ck,row);
       },600);
     };
-    const cancelRowPress=()=>clearTimeout(rowPressTimer);
+    const cancelRowPress=()=>{ clearTimeout(rowPressTimer); };
+    const moveRowPress=e=>{
+      const pt=e.touches?e.touches[0]:e;
+      const dx=Math.abs(pt.clientX-rowStartX),dy=Math.abs(pt.clientY-rowStartY);
+      if(dx>10||dy>10) clearTimeout(rowPressTimer); // Glissement → annuler l'appui long
+    };
+
     row.addEventListener("touchstart",startRowPress,{passive:true});
-    row.addEventListener("touchend",cancelRowPress);
-    row.addEventListener("touchmove",cancelRowPress);
+    row.addEventListener("touchend",cancelRowPress,{passive:true});
+    row.addEventListener("touchmove",moveRowPress,{passive:true});
+    row.addEventListener("touchcancel",cancelRowPress,{passive:true});
     row.addEventListener("mousedown",startRowPress);
     row.addEventListener("mouseup",cancelRowPress);
     row.addEventListener("mouseleave",cancelRowPress);
-    row.addEventListener("contextmenu",e=>{e.preventDefault();showDeleteConvMenu(c,ck,row);});
+    row.addEventListener("mousemove",moveRowPress);
+    // Bloquer le menu contextuel natif (évite tout déclenchement parasite sur WebView)
+    row.addEventListener("contextmenu",e=>e.preventDefault());
+
+    // Le clic simple ouvre TOUJOURS la discussion (sauf si un appui long vient d'avoir lieu)
+    row.onclick=e=>{
+      if(rowLongPressTriggered){ rowLongPressTriggered=false; return; }
+      openChat(c.uid);
+    };
 
     box.appendChild(row);
 
@@ -1995,6 +2021,7 @@ function updateMyAv(){
 let svItems=[],svIdx=0,svTimer=null;
 
 function loadStatuses(){
+  // Mes propres statuts : chargement à la demande (pas besoin de temps réel ici)
   db.ref("statuses/"+S.myUid).once("value",snap=>{
     const now24=Date.now()-24*60*60*1000;const myItems=[];const strip=$("my-statuses-strip");strip.innerHTML="";
     snap.forEach(child=>{const s={id:child.key,...child.val()};if(s.ts>=now24)myItems.push(s);});
@@ -2006,22 +2033,58 @@ function loadStatuses(){
       });
     } else {$("my-status-count-el").textContent=t("ajouterStatut");strip.style.display="none";}
   }).catch(e=>{console.error("loadStatuses (moi):",e.message);});
-  const cl=$("contacts-statuses-list");cl.innerHTML="";let hasAny=false;
-  const now24=Date.now()-24*60*60*1000;
+
+  // S'assurer que les listeners temps réel des contacts sont actifs
+  // (statuts publiés par un contact apparaissent automatiquement, sans recharger)
+  attachContactStatusListeners();
+  renderContactsStatusList();
+}
+
+// Cache des statuts de chaque contact, mis à jour en temps réel
+S.contactStatuses=S.contactStatuses||{};
+
+function attachContactStatusListeners(){
+  if(!S.statusListeners) S.statusListeners={};
   S.contacts.forEach(c=>{
-    db.ref("statuses/"+c.uid).once("value",snap=>{
-      const items=[];snap.forEach(child=>{const s={id:child.key,...child.val()};if(s.ts>=now24)items.push(s);});
-      if(!items.length)return;
-      hasAny=true;$("contacts-statuses-section").style.display="block";$("no-contacts-status").style.display="none";
-      const seen=items.every(s=>s.viewers&&s.viewers[S.myUid]);
-      const row=document.createElement("div");row.className="status-contact-row";
-      const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'"/>':'<span style="font-size:24px">'+(c.emoji||"🧑🏾")+'</span>';
-      const ago=timeSince(items[items.length-1].ts);
-      row.innerHTML='<div class="status-ring'+(seen?" seen":"")+'"><div class="status-ring-inner">'+avH+'</div></div><div class="status-row-info"><div class="status-row-name">'+esc(c.name||c.phone||"Inconnu")+'</div><div class="status-row-time">'+ago+'</div></div>';
-      row.onclick=()=>openStatusViewer(items,0,false,c);
-      const old=document.getElementById("sr-"+c.uid);if(old)old.remove();
-      row.id="sr-"+c.uid;cl.appendChild(row);
-    }).catch(e=>{console.error("loadStatuses (contact "+c.uid+"):",e.message);});
+    if(S.statusListeners[c.uid])return; // Déjà attaché
+    const ref=db.ref("statuses/"+c.uid);
+    const handler=snap=>{
+      const now24=Date.now()-24*60*60*1000;
+      const items=[];
+      snap.forEach(child=>{const s={id:child.key,...child.val()};if(s.ts>=now24)items.push(s);});
+      S.contactStatuses[c.uid]=items;
+      // Re-render la liste seulement si l'onglet Statuts est actuellement affiché
+      if(S.currentScreen==="s-status") renderContactsStatusList();
+      // Notification discrète si un nouveau statut vient d'arriver (pas au premier chargement)
+      if(S.statusListeners[c.uid].loaded && items.length>(S.statusListeners[c.uid].lastCount||0)){
+        const nick=CACHE.load("nick_"+c.uid)||"";
+        toast("🔵 Nouveau statut de "+(nick||c.name||c.phone||"un contact"));
+      }
+      S.statusListeners[c.uid].lastCount=items.length;
+      S.statusListeners[c.uid].loaded=true;
+    };
+    ref.on("value",handler);
+    S.statusListeners[c.uid]={ref,handler,loaded:false,lastCount:0};
+  });
+}
+
+function renderContactsStatusList(){
+  const cl=$("contacts-statuses-list");
+  if(!cl)return;
+  cl.innerHTML="";let hasAny=false;
+  S.contacts.forEach(c=>{
+    const items=S.contactStatuses[c.uid];
+    if(!items||!items.length)return;
+    hasAny=true;
+    $("contacts-statuses-section").style.display="block";$("no-contacts-status").style.display="none";
+    const seen=items.every(s=>s.viewers&&s.viewers[S.myUid]);
+    const row=document.createElement("div");row.className="status-contact-row";
+    const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'"/>':'<span style="font-size:24px">'+(c.emoji||"🧑🏾")+'</span>';
+    const ago=timeSince(items[items.length-1].ts);
+    const nick=CACHE.load("nick_"+c.uid)||"";
+    row.innerHTML='<div class="status-ring'+(seen?" seen":"")+'"><div class="status-ring-inner">'+avH+'</div></div><div class="status-row-info"><div class="status-row-name">'+esc(nick||c.name||c.phone||"Inconnu")+'</div><div class="status-row-time">'+ago+'</div></div>';
+    row.onclick=()=>openStatusViewer(items,0,false,c);
+    row.id="sr-"+c.uid;cl.appendChild(row);
   });
   if(!hasAny){$("no-contacts-status").style.display="block";$("contacts-statuses-section").style.display="none";}
 }
@@ -2039,10 +2102,16 @@ function openStatusViewer(items,startIdx,isMine,contact){
   showStatusItem(svIdx,isMine);
 }
 
+let currentStatusViewers=[];
+let currentStatusUid=null;
+let currentStatusId=null;
+let currentStatusIsMine=false;
+
 function showStatusItem(idx,isMine){
   clearTimeout(svTimer);
   if(idx>=svItems.length){closeStatusViewer();return;}
   const s=svItems[idx];
+  currentStatusUid=s.uid;currentStatusId=s.id;currentStatusIsMine=isMine;
   $("sv-img").style.display="none";$("sv-img").src="";
   $("sv-vid").style.display="none";$("sv-vid").src="";
   $("sv-text-el").style.display="none";$("sv-text-el").textContent="";
@@ -2061,6 +2130,7 @@ function showStatusItem(idx,isMine){
   }
   if(isMine){
     $("sv-viewers-el").style.display="flex";
+    $("sv-viewers-count").textContent="...";
     // Charger les vues en direct depuis Firebase
     db.ref("statuses/"+s.uid+"/"+s.id+"/viewers").get().then(snap=>{
       const viewers=[];
@@ -2082,9 +2152,35 @@ function showStatusItem(idx,isMine){
   for(let i=0;i<idx;i++){const f=document.getElementById("svbar-"+i);if(f)f.style.width="100%";}
 }
 
-let currentStatusViewers=[];
-
 window.openViewersList=function(){
+  const body=$("viewers-list-body");
+  if(!body||!currentStatusUid||!currentStatusId)return;
+
+  // Mettre en pause le défilement automatique du statut pendant la consultation
+  clearTimeout(svTimer);
+  const fill=document.getElementById("svbar-"+svIdx);
+  if(fill) fill.style.transition="none"; // Geler la barre de progression visuelle
+  const vidEl=$("sv-vid");
+  if(vidEl&&vidEl.style.display==="block") vidEl.pause();
+
+  // Afficher l'overlay immédiatement avec un état de chargement
+  $("viewers-list-title").textContent="👁 Vu par...";
+  body.innerHTML='<div style="text-align:center;color:var(--sub);font-size:14px;padding:30px 20px">Chargement...</div>';
+  $("viewers-list-overlay").style.display="flex";
+
+  // Recharger les vues EN DIRECT (toujours à jour, jamais de données périmées)
+  db.ref("statuses/"+currentStatusUid+"/"+currentStatusId+"/viewers").get().then(snap=>{
+    const viewers=[];
+    snap.forEach(child=>viewers.push(child.val()));
+    viewers.sort((a,b)=>(b.ts||0)-(a.ts||0));
+    currentStatusViewers=viewers;
+    renderViewersList();
+  }).catch(()=>{
+    renderViewersList(); // Repli sur les données déjà connues
+  });
+};
+
+function renderViewersList(){
   const body=$("viewers-list-body");
   if(!body)return;
   if(!currentStatusViewers.length){
@@ -2100,11 +2196,25 @@ window.openViewersList=function(){
     }).join("");
   }
   $("viewers-list-title").textContent="👁 Vu par "+currentStatusViewers.length;
-  $("viewers-list-overlay").style.display="flex";
-};
+}
 
 window.closeViewersList=function(){
   $("viewers-list-overlay").style.display="none";
+  // Reprendre le défilement du statut là où il était
+  if(currentStatusIsMine&&svItems[svIdx]){
+    const s=svItems[svIdx];
+    if(s.type==="video"){
+      const vidEl=$("sv-vid");
+      if(vidEl) vidEl.play();
+    } else {
+      const fill=document.getElementById("svbar-"+svIdx);
+      if(fill){
+        fill.style.transition="width 5s linear";
+        fill.style.width="100%";
+      }
+      svTimer=setTimeout(()=>{showStatusItem(svIdx+1,true);},5000);
+    }
+  }
 };
 
 function markViewed(s){
@@ -2128,7 +2238,7 @@ function closeStatusViewer(){
 const APP_MSG="💬 Rejoins-moi sur EniBusiness Pro !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-const CURRENT_BUILD = "v2026-06-29-lastseen-datesep";
+const CURRENT_BUILD = "v2026-06-30-longpress-status-viewers";
 
 if("serviceWorker" in navigator){
   const lastSeenBuild = localStorage.getItem("sonia_last_build");
@@ -3620,4 +3730,3 @@ window.addEventListener("DOMContentLoaded",()=>{
 
 </body>
 </html>
-t
