@@ -569,15 +569,25 @@ auth.onAuthStateChanged(async user=>{
 
 // ==================== APPELS WEBRTC ====================
 const ICE_SERVERS={iceServers:[
+  // STUN publics (5 serveurs Google + Cloudflare + Twilio)
   {urls:"stun:stun.l.google.com:19302"},
   {urls:"stun:stun1.l.google.com:19302"},
   {urls:"stun:stun2.l.google.com:19302"},
+  {urls:"stun:stun3.l.google.com:19302"},
+  {urls:"stun:stun4.l.google.com:19302"},
   {urls:"stun:global.stun.twilio.com:3478"},
-  // TURN servers - multiples pour fiabilité maximale
+  {urls:"stun:stun.cloudflare.com:3478"},
+  // TURN openrelay — ports 80/443 passent tous les pare-feux opérateurs Afrique
   {urls:"turn:openrelay.metered.ca:80",username:"openrelayproject",credential:"openrelayproject"},
   {urls:"turn:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"},
   {urls:"turns:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"},
   {urls:"turn:openrelay.metered.ca:80?transport=tcp",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turn:openrelay.metered.ca:443?transport=tcp",username:"openrelayproject",credential:"openrelayproject"},
+  // TURN FreeSWITCH public (backup Europe/Amérique)
+  {urls:"turn:numb.viagenie.ca",username:"webrtc@live.com",credential:"muazkh"},
+  {urls:"turn:numb.viagenie.ca:3478?transport=tcp",username:"webrtc@live.com",credential:"muazkh"},
+  // TURN Xirsys backup
+  {urls:"turn:us-turn4.xirsys.com:80?transport=udp",username:"EiNFtxWJw_M3RV5DmVGPyFhZMFiIPMcTLSiWMvMqD6oR9sXBMbHOWMjLNHHuAzKcAAAAAGa3h8tlbmlieXM=",credential:"a71b3d4a-3c1e-11ef-9c9b-0242ac130004"},
 ]};
 
 function setCallUI(contact){
@@ -611,9 +621,10 @@ function getLocalStream(type){
 function createPC(){
   const pc=new RTCPeerConnection({
     iceServers:ICE_SERVERS.iceServers,
-    iceCandidatePoolSize:10,
+    iceCandidatePoolSize:15,    // Plus de candidats pré-collectés
     bundlePolicy:"max-bundle",
-    rtcpMuxPolicy:"require"
+    rtcpMuxPolicy:"require",
+    iceTransportPolicy:"all"    // "all" = essaie P2P direct ET TURN relay en parallèle
   });
 
   pc.onicecandidate=e=>{
@@ -749,14 +760,23 @@ window.startCall=async function(type){
   try{
     offer=await S.pc.createOffer();
     await S.pc.setLocalDescription(offer);
+
+    // Attendre que la collecte ICE soit complète (ou timeout 3s)
+    // Crucial pour les appels intercontinentaux : les candidats TURN doivent être inclus
+    await new Promise(resolve=>{
+      if(S.pc.iceGatheringState==="complete"){resolve();return;}
+      const check=setInterval(()=>{
+        if(!S.pc||S.pc.iceGatheringState==="complete"){clearInterval(check);resolve();}
+      },100);
+      setTimeout(()=>{clearInterval(check);resolve();},3000);
+    });
   }catch(e){
     toast("Erreur création appel : "+e.message,"err");
     endCall(true);return;
   }
 
-  $("call-state-text").textContent="Sonnerie...";
-
-  // 3. Écrire dans Firebase (signal complet avec offre)
+  // 3. Écrire dans Firebase (offre complète avec tous les candidats ICE déjà collectés)
+  const finalOffer=S.pc.localDescription||offer;
   const ringData={
     type,from:S.myUid,
     fromName:S.profile.name||S.myPhone||"Inconnu",
@@ -764,10 +784,11 @@ window.startCall=async function(type){
     fromAvType:S.profile.avType||"emoji",
     fromImg:S.profile.img||null,
     to:S.activeId,
-    offer:{type:offer.type,sdp:offer.sdp},
+    offer:{type:finalOffer.type,sdp:finalOffer.sdp},
     status:"ringing",
     ts:Date.now()
   };
+  $("call-state-text").textContent="Sonnerie...";
   try{
     await db.ref(S.callRef).set(ringData);
     db.ref("inbox/"+S.activeId+"/"+S.myUid).set({
@@ -929,7 +950,18 @@ window.acceptCall=async function(){
     flushIceQueue(); // Appliquer les ICE reçus pendant la sonnerie
     const answer=await S.pc.createAnswer();
     await S.pc.setLocalDescription(answer);
-    await db.ref(S.callRef).update({answer:{type:answer.type,sdp:answer.sdp},status:"connected"});
+
+    // Attendre que la collecte ICE soit complète côté receveur aussi (max 3s)
+    await new Promise(resolve=>{
+      if(S.pc.iceGatheringState==="complete"){resolve();return;}
+      const check=setInterval(()=>{
+        if(!S.pc||S.pc.iceGatheringState==="complete"){clearInterval(check);resolve();}
+      },100);
+      setTimeout(()=>{clearInterval(check);resolve();},3000);
+    });
+
+    const finalAnswer=S.pc.localDescription||answer;
+    await db.ref(S.callRef).update({answer:{type:finalAnswer.type,sdp:finalAnswer.sdp},status:"connected"});
   }catch(e){
     toast("Erreur connexion : "+e.message,"err");
     endCall(true);return;
@@ -2238,7 +2270,7 @@ function closeStatusViewer(){
 const APP_MSG="💬 Rejoins-moi sur EniBusiness Pro !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-const CURRENT_BUILD = "v2026-06-30-longpress-status-viewers";
+const CURRENT_BUILD = "v2026-07-01-turnfix-intercontinental";
 
 if("serviceWorker" in navigator){
   const lastSeenBuild = localStorage.getItem("sonia_last_build");
