@@ -1831,21 +1831,55 @@ function makeBubble(m){
   if(m.del){bub.className="bubble del";bub.textContent=t("msgSupprime");row.appendChild(bub);return row;}
   bub.className="bubble "+(self?"out":"in");
 
-  // Appui long → menu contextuel (copier, supprimer)
-  let pressTimer=null;
-  const onPress=e=>{
-    pressTimer=setTimeout(()=>{
-      if(navigator.vibrate)navigator.vibrate(40);
+  // APPUI LONG UNIQUEMENT (800ms) → menu copier/supprimer
+  // Simple tap → rien ne se passe
+  let msgPressTimer=null;
+  let msgLongPressed=false;
+  let msgStartX=0, msgStartY=0;
+  let msgTouchActive=false;
+
+  const msgPressStart=e=>{
+    // Bloquer la sélection de texte natif du WebView qui peut interférer
+    if(e.cancelable) e.preventDefault();
+    msgLongPressed=false;
+    msgTouchActive=true;
+    const pt=e.touches?e.touches[0]:e;
+    msgStartX=pt.clientX; msgStartY=pt.clientY;
+    clearTimeout(msgPressTimer);
+    msgPressTimer=setTimeout(()=>{
+      if(!msgTouchActive)return; // Doigt déjà levé → ne pas déclencher
+      msgLongPressed=true;
+      if(navigator.vibrate)navigator.vibrate(60);
       showMsgMenu(m,self,bub);
-    },500);
+    },800); // 800ms = durée longue pour éviter tout faux déclenchement
   };
-  const cancelPress=()=>clearTimeout(pressTimer);
-  row.addEventListener("touchstart",onPress,{passive:true});
-  row.addEventListener("touchend",cancelPress);
-  row.addEventListener("touchmove",cancelPress);
-  row.addEventListener("mousedown",onPress);
-  row.addEventListener("mouseup",cancelPress);
-  row.addEventListener("contextmenu",e=>{e.preventDefault();showMsgMenu(m,self,bub);});
+  const msgPressEnd=()=>{
+    msgTouchActive=false;
+    clearTimeout(msgPressTimer); // TOUJOURS annuler dès que le doigt se lève
+  };
+  const msgPressMove=e=>{
+    const pt=e.touches?e.touches[0]:e;
+    const dx=Math.abs(pt.clientX-msgStartX);
+    const dy=Math.abs(pt.clientY-msgStartY);
+    if(dx>6||dy>6){ // Moindre mouvement → annuler
+      clearTimeout(msgPressTimer);
+      msgTouchActive=false;
+    }
+  };
+
+  // Attacher sur `row` ET `bub` pour couvrir toute la zone de la bulle
+  // IMPORTANT : {passive:false} sur touchstart pour que preventDefault() fonctionne
+  row.addEventListener("touchstart",msgPressStart,{passive:false});
+  row.addEventListener("touchend",msgPressEnd,{passive:true});
+  row.addEventListener("touchmove",msgPressMove,{passive:true});
+  row.addEventListener("touchcancel",msgPressEnd,{passive:true});
+  row.addEventListener("mousedown",msgPressStart);
+  row.addEventListener("mouseup",msgPressEnd);
+  row.addEventListener("mousemove",msgPressMove);
+  row.addEventListener("mouseleave",msgPressEnd);
+  // Bloquer le menu contextuel natif du navigateur/WebView dans tous les cas
+  row.addEventListener("contextmenu",e=>{e.preventDefault();e.stopPropagation();});
+  bub.addEventListener("contextmenu",e=>{e.preventDefault();e.stopPropagation();});
   if(m.type==="voice"){
     // Générer une forme d'onde (barres de hauteurs variées pour un look réaliste)
     const barCount=28;
@@ -1920,15 +1954,6 @@ function makeBubble(m){
   } else {
     bub.innerHTML='<div class="b-text">'+esc(m.text||"")+'</div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
   }
-
-  // Appui long → nouveau menu unifié (copier + supprimer)
-  bub.addEventListener("touchstart",e=>{pressTimer=setTimeout(()=>{if(navigator.vibrate)navigator.vibrate(40);showMsgMenu(m,self,bub);},500);},{passive:true});
-  bub.addEventListener("touchend",()=>clearTimeout(pressTimer));
-  bub.addEventListener("touchmove",()=>clearTimeout(pressTimer));
-  bub.addEventListener("mousedown",e=>{pressTimer=setTimeout(()=>{showMsgMenu(m,self,bub);},500);});
-  bub.addEventListener("mouseup",()=>clearTimeout(pressTimer));
-  bub.addEventListener("mouseleave",()=>clearTimeout(pressTimer));
-  bub.addEventListener("contextmenu",e=>e.preventDefault());
 
   row.appendChild(bub);return row;
 }
@@ -2270,7 +2295,7 @@ function closeStatusViewer(){
 const APP_MSG="💬 Rejoins-moi sur EniBusiness Pro !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-const CURRENT_BUILD = "v2026-07-01-turnfix-intercontinental";
+const CURRENT_BUILD = "v2026-07-01-longpress-fix2";
 
 if("serviceWorker" in navigator){
   const lastSeenBuild = localStorage.getItem("sonia_last_build");
@@ -2392,10 +2417,10 @@ input,textarea{font-family:inherit;border:none;outline:none}
 .call-btns{display:flex;gap:8px}
 .call-btn-sm{width:38px;height:38px;border-radius:11px;background:var(--card);border:1px solid var(--border);font-size:17px;display:flex;align-items:center;justify-content:center;cursor:pointer}
 #msg-list{flex:1;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:3px;background:var(--chat-bg)}
-.bubble-row{display:flex}.bubble-row.out{justify-content:flex-end}.bubble-row.in{justify-content:flex-start}
+.bubble-row{display:flex;-webkit-user-select:none;user-select:none}.bubble-row.out{justify-content:flex-end}.bubble-row.in{justify-content:flex-start}
 .date-sep{display:flex;justify-content:center;margin:14px 0 8px}
 .date-sep span{background:var(--card);color:var(--sub);font-size:12px;font-weight:700;padding:6px 14px;border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.08)}
-.bubble{max-width:78%;padding:9px 13px;font-size:14px;line-height:1.5;position:relative}
+.bubble{max-width:78%;padding:9px 13px;font-size:14px;line-height:1.5;position:relative;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 .bubble.out{background:var(--bubble-out);border-radius:18px 18px 4px 18px;color:var(--text)}
 .bubble.in{background:var(--bubble-in);border-radius:18px 18px 18px 4px;color:var(--text)}
 .bubble.del{background:rgba(255,255,255,.04)!important;border:1px dashed var(--border)!important;border-radius:14px!important;color:var(--dim)!important;font-style:italic}
