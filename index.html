@@ -846,6 +846,31 @@ function listenIncomingCalls(){
   });
 }
 
+function listenIncomingMessages(){
+  if(!S.myUid)return;
+  // Écouter les notifications inbox : quelqu'un nous a envoyé un message
+  db.ref("inbox/"+S.myUid).on("child_added",snap=>{
+    const notif=snap.val();
+    if(!notif||!notif.from)return;
+    const fromUid=notif.from;
+    // 1. S'assurer que cet expéditeur est dans nos contacts
+    ensureMutualContact(fromUid).catch(()=>{});
+    // 2. Si ce n'est pas la discussion actuellement ouverte → badge non lu
+    if(S.activeId!==fromUid){
+      const ck=chatKey(S.myUid,fromUid);
+      // Incrémenter le badge non lu pour cette discussion
+      const current=CACHE.load("unread_"+ck)||0;
+      CACHE.save("unread_"+ck,current+1);
+      db.ref("unreadCount/"+S.myUid+"/"+fromUid).set(current+1).catch(()=>{});
+      updateUnreadBadge(ck);
+    }
+    // 3. Si la discussion est ouverte → listenMsgs() a déjà un listener Firebase
+    //    actif (child_added) qui reçoit les nouveaux messages automatiquement
+    // 4. Supprimer la notification après traitement
+    snap.ref.remove().catch(()=>{});
+  });
+}
+
 function handleRing(callerUid,data){
   if(!data||data.status!=="ringing")return;
   if(!data.offer)return;
@@ -1800,7 +1825,6 @@ function listenMsgs(){
   };
 }
 
-// Sauvegarde le cache des messages (limité aux 200 derniers pour rester léger)
 let saveCacheTimer=null;
 function saveMsgsCache(key,allMsgsMap){
   clearTimeout(saveCacheTimer);
@@ -1809,13 +1833,15 @@ function saveMsgsCache(key,allMsgsMap){
       let list=Object.values(allMsgsMap);
       list.sort((a,b)=>(a.ts||0)-(b.ts||0));
       if(list.length>200) list=list.slice(list.length-200);
-      // Ne pas stocker les gros médias base64 dans le cache localStorage (limite ~5-10Mo)
-      // Les messages vocaux restent TOUJOURS complets (nécessaires pour la lecture)
+      // Règle de mise en cache des médias :
+      // - Texte : toujours complet
+      // - Vocal (voice) : TOUJOURS gardé complet (nécessaire pour la lecture)
+      // - Photo/Vidéo : allégé si > 50KB (trop lourd pour localStorage)
       const lightList=list.map(m=>{
         if(m.src && m.src.length>50000 && (m.type==="photo"||m.type==="video")){
           return {...m, src:null, mediaCached:false};
         }
-        return m;
+        return m; // Tout le reste (texte, vocal) : gardé intact
       });
       CACHE.save("msgs_"+key,lightList);
     }catch(e){console.error("saveMsgsCache:",e);}
@@ -1839,7 +1865,8 @@ function makeBubble(m){
   let msgTouchActive=false;
 
   const msgPressStart=e=>{
-    // Bloquer la sélection de texte natif du WebView qui peut interférer
+    // Ne pas bloquer les clics sur boutons (lecture audio, vitesse, etc.)
+    if(e.target&&(e.target.tagName==="BUTTON"||e.target.closest&&e.target.closest("button"))) return;
     if(e.cancelable) e.preventDefault();
     msgLongPressed=false;
     msgTouchActive=true;
@@ -1847,11 +1874,11 @@ function makeBubble(m){
     msgStartX=pt.clientX; msgStartY=pt.clientY;
     clearTimeout(msgPressTimer);
     msgPressTimer=setTimeout(()=>{
-      if(!msgTouchActive)return; // Doigt déjà levé → ne pas déclencher
+      if(!msgTouchActive)return;
       msgLongPressed=true;
       if(navigator.vibrate)navigator.vibrate(60);
       showMsgMenu(m,self,bub);
-    },800); // 800ms = durée longue pour éviter tout faux déclenchement
+    },800);
   };
   const msgPressEnd=()=>{
     msgTouchActive=false;
@@ -2295,7 +2322,7 @@ function closeStatusViewer(){
 const APP_MSG="💬 Rejoins-moi sur EniBusiness Pro !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-const CURRENT_BUILD = "v2026-07-01-longpress-fix2";
+const CURRENT_BUILD = "v2026-07-01-audiofix3";
 
 if("serviceWorker" in navigator){
   const lastSeenBuild = localStorage.getItem("sonia_last_build");
