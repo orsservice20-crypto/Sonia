@@ -692,23 +692,27 @@ function createPC(){
   return pc;
 }
 
-function listenIce(otherUid){
+function listenIce(otherUid,resetQueue){
+  // Désinscrire l'ancien listener si existe
   if(S.unsubIce){
     try{S.unsubIce();}catch(e){}
     S.unsubIce=null;
   }
   if(!S.callRef)return;
-  S.iceQueue=[];
+  // Ne réinitialiser la queue QUE si demandé explicitement
+  // (pour ne pas perdre les candidats ICE reçus pendant la sonnerie)
+  if(resetQueue) S.iceQueue=[];
   const ref=db.ref(S.callRef+"/ice/"+otherUid);
   const iceHandler=snap=>{
     const c=snap.val();
-    if(!c||!S.pc)return;
-    if(S.pc.remoteDescription&&S.pc.remoteDescription.type){
+    if(!c)return;
+    if(S.pc&&S.pc.remoteDescription&&S.pc.remoteDescription.type){
       S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(e=>{
         if(e.message&&!e.message.includes("closed")&&!e.message.includes("wrong state"))
           console.warn("ICE:",e.message);
       });
     } else {
+      // Pas encore de remoteDescription → mettre en file d'attente
       S.iceQueue.push(c);
     }
   };
@@ -753,8 +757,8 @@ window.startCall=async function(type){
   S.pc=createPC();
   S.localStream.getTracks().forEach(tr=>S.pc.addTrack(tr,S.localStream));
 
-  // Écouter les ICE DÈS MAINTENANT (avant setLocalDescription)
-  listenIce(S.activeId);
+  // Écouter les ICE du destinataire DÈS MAINTENANT (reset queue = nouveau départ)
+  listenIce(S.activeId, true);
 
   let offer;
   try{
@@ -907,9 +911,8 @@ function handleRing(callerUid,data){
   $("call-incoming-actions").style.display="flex";
   startRingtone();
 
-  // Écouter les ICE entrants DÈS LA SONNERIE (pas après acceptation)
-  // pour ne pas perdre les candidats ICE qui arrivent rapidement
-  listenIce(callerUid);
+  // Écouter les ICE entrants DÈS LA SONNERIE (reset queue = nouveau départ)
+  listenIce(callerUid, true);
 
   setTimeout(()=>{
     if(S.callDir==="in"&&$("call-incoming-actions").style.display==="flex")rejectCall();
@@ -966,9 +969,9 @@ window.acceptCall=async function(){
   S.pc=createPC();
   S.localStream.getTracks().forEach(tr=>S.pc.addTrack(tr,S.localStream));
 
-  // Mettre à jour listenIce pour utiliser le bon PC (créé juste au-dessus)
-  // Les ICE déjà en queue seront appliqués après setRemoteDescription
-  listenIce(S.callPeer);
+  // Ré-attacher le listener ICE avec le nouveau PC (SANS reset de queue)
+  // Les candidats ICE reçus pendant la sonnerie sont préservés dans S.iceQueue
+  listenIce(S.callPeer, false);
 
   try{
     await S.pc.setRemoteDescription(new RTCSessionDescription(S.incomingOffer));
@@ -2322,7 +2325,7 @@ function closeStatusViewer(){
 const APP_MSG="💬 Rejoins-moi sur EniBusiness Pro !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-const CURRENT_BUILD = "v2026-07-01-audiofix3";
+const CURRENT_BUILD = "v2026-07-02-icefix";
 
 if("serviceWorker" in navigator){
   const lastSeenBuild = localStorage.getItem("sonia_last_build");
