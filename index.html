@@ -59,7 +59,7 @@ const S={
   profile:{name:"",status:"En ligne",avType:"emoji",emoji:"🧑🏾",img:null},
   contacts:[],activeId:null,arch:new Set(),tab:"chats",search:"",
   currentScreen:"s-splash",
-  unsubMsgs:null,unsubContacts:null,lastMsgListeners:{},statusListeners:{},contactStatuses:{},
+  unsubMsgs:null,unsubContacts:null,lastMsgListeners:{},statusListeners:{},contactStatuses:{},_presenceListeners:[],
   recPaused:false,recSecs:0,recTick:null,
   recStream:null,recorder:null,recChunks:[],recMimeType:null,
   pendingPhoto:null,pendingVideo:null,pendingVideoFile:null,pendingPhone:null,
@@ -1186,49 +1186,60 @@ window.searchUserByPhone=function(){
 // ---- CONTACTS ----
 function listenContacts(){
   if(S.unsubContacts){S.unsubContacts();S.unsubContacts=null;}
+  // Nettoyer les listeners de présence précédents
+  if(S._presenceListeners){
+    S._presenceListeners.forEach(unsub=>{try{unsub();}catch(e){}});
+  }
+  S._presenceListeners=[];
+
   S.unsubContacts=db.ref("userContacts/"+S.myUid).on("value",async snap=>{
     const uids=[];
-    snap.forEach(child=>{ if(child.key!==S.myUid) uids.push(child.key); });
+    snap.forEach(child=>{if(child.key!==S.myUid)uids.push(child.key);});
     if(!uids.length){
-      S.contacts=[];
-      CACHE.save("contacts",S.contacts);
-      renderList();
-      return;
+      S.contacts=[];CACHE.save("contacts",S.contacts);renderList();return;
     }
-    // Charger tous les profils en PARALLÈLE (beaucoup plus rapide)
+    // Charger tous les profils en parallèle
     const fetches=uids.map(uid=>
-      db.ref("users/"+uid).get().then(s=>s.exists()?s.val():null).catch(()=>null)
+      db.ref("users/"+uid).get().then(s=>s.exists()?{...s.val(),uid:s.val().uid||uid}:null).catch(()=>null)
     );
     const results=await Promise.all(fetches);
-    // Dédupliquer par numéro de téléphone (garde le plus récent)
+    // Dédupliquer par numéro de téléphone
     const seen=new Map();
     results.forEach(c=>{
       if(!c)return;
-      const key=c.phone||c.uid;
-      const existing=seen.get(key);
-      // Garder celui avec le timestamp le plus récent (lastDevice) ou le premier
-      if(!existing||(c.lastDevice&&existing.lastDevice&&c.lastDevice>existing.lastDevice)){
-        seen.set(key,c);
-      }
+      const k=c.phone||c.uid;
+      const ex=seen.get(k);
+      if(!ex||(c.lastDevice&&(!ex.lastDevice||c.lastDevice>ex.lastDevice)))seen.set(k,c);
     });
     S.contacts=Array.from(seen.values());
     CACHE.save("contacts",S.contacts);
     renderList();
-    // Statuts : suivre automatiquement les contacts dès qu'ils sont chargés
-    // (les statuts publiés apparaissent automatiquement, sans recharger l'onglet)
     attachContactStatusListeners();
-    // Écouter les changements de statut/présence en temps réel
+
+    // Listeners de présence (online/offline) — UN seul par UID
+    // Nettoyer d'abord les anciens
+    S._presenceListeners.forEach(unsub=>{try{unsub();}catch(e){}});
+    S._presenceListeners=[];
     uids.forEach(uid=>{
-      db.ref("users/"+uid).on("value",usnap=>{
+      const ref=db.ref("users/"+uid);
+      const fn=usnap=>{
         if(!usnap.exists())return;
-        const updated=usnap.val();
+        const updated={...usnap.val(),uid:usnap.val().uid||uid};
         const idx=S.contacts.findIndex(c=>c.uid===uid);
-        if(idx>=0) S.contacts[idx]=updated;
+        if(idx>=0)S.contacts[idx]=updated;
         else S.contacts.push(updated);
         CACHE.save("contacts",S.contacts);
-        renderList();
-        if(S.activeId===uid) refreshChatHeader(updated);
-      });
+        // Mise à jour sélective sans re-créer toute la liste
+        const ck=chatKey(S.myUid,uid);
+        const row=document.getElementById("row-"+ck);
+        if(row){
+          const dot=row.querySelector(".dot");
+          if(dot)dot.className="dot "+(updated.online?"online":"offline");
+        }
+        if(S.activeId===uid)refreshChatHeader(updated);
+      };
+      ref.on("value",fn);
+      S._presenceListeners.push(()=>ref.off("value",fn));
     });
   },err=>{
     console.error("listenContacts:",err.message);
@@ -1589,24 +1600,27 @@ function updateUnreadBadge(ck){
   }
 }
 
-// Replace la ligne dans le bon ordre chronologique (le plus récent en haut)
+// Repositionne la conversation en HAUT de la liste quand un nouveau message arrive
 function repositionRow(uid,ck,box){
   const rowEl=document.getElementById("row-"+ck);
-  if(!rowEl)return;
+  if(!rowEl||!box)return;
   const myTs=CACHE.load("lastTs_"+ck)||0;
   const rows=Array.from(box.querySelectorAll(".contact-row"));
-  let insertBeforeEl=null;
+  // Trouver la première conversation avec un timestamp plus récent que moi
+  // Si j'ai le timestamp le plus récent → je vais tout en haut
+  let insertBefore=null;
   for(const r of rows){
     if(r===rowEl)continue;
     const rUid=r.getAttribute("data-uid");
+    if(!rUid)continue;
     const rCk=chatKey(S.myUid,rUid);
     const rTs=CACHE.load("lastTs_"+rCk)||0;
-    if(myTs>rTs){ insertBeforeEl=r; break; }
+    if(rTs<myTs){ insertBefore=r; break; } // Trouver la première plus ancienne
   }
-  if(insertBeforeEl){
-    if(rowEl!==insertBeforeEl.previousSibling) box.insertBefore(rowEl,insertBeforeEl);
-  } else if(rowEl!==box.lastChild){
-    box.appendChild(rowEl);
+  if(insertBefore){
+    box.insertBefore(rowEl,insertBefore);
+  } else if(box.firstChild!==rowEl){
+    box.insertBefore(rowEl,box.firstChild); // Je suis le plus récent → tout en haut
   }
 }
 
@@ -1967,7 +1981,7 @@ function pushMsg(m){
   CACHE.save("lastTs_"+key,m.ts);
 
   return msgRef.push(m).then(()=>{
-    lastRef.set({text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts}).catch(()=>{});
+    lastRef.set({text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts,from:m.from}).catch(()=>{});
   }).catch(e=>{
     toast("Échec de l'envoi : "+e.message,"err");
     throw e;
