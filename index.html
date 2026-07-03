@@ -624,13 +624,17 @@ function getLocalStream(type){
 
 // === PEER CONNECTION ===
 function makePC(){
+  // Capturer la référence au moment de la création du PC
+  const createdForRef=S.callRef;
   const pc=new RTCPeerConnection(ICE_CFG);
 
   // Trickle ICE : envoyer chaque candidat dès qu'il arrive
   pc.onicecandidate=e=>{
-    if(!e.candidate)return; // null = fin du gathering, ignoré en Trickle ICE
-    if(S.pc!==pc||!S.callRef)return;
-    db.ref(S.callRef+"/ice/"+S.myUid).push(e.candidate.toJSON()).catch(()=>{});
+    if(!e.candidate)return;
+    if(S.pc!==pc)return; // PC obsolète
+    const ref=S.callRef||createdForRef;
+    if(!ref)return; // Plus d'appel actif
+    db.ref(ref+"/ice/"+S.myUid).push(e.candidate.toJSON()).catch(()=>{});
   };
 
   pc.ontrack=e=>{
@@ -645,7 +649,7 @@ function makePC(){
   };
 
   pc.onconnectionstatechange=()=>{
-    if(S.pc!==pc)return;
+    if(S.pc!==pc)return; // PC obsolète — ignorer
     const st=pc.connectionState;
     if(st==="connected"){
       clearTimeout(S.disconnectTimer);S.disconnectTimer=null;
@@ -675,6 +679,8 @@ function makePC(){
         if(S.pc!==pc)return;
         if(pc.connectionState!=="connected")endCall();
       },8000);
+    }else if(st==="closed"){
+      clearTimeout(S.disconnectTimer);
     }
   };
 
@@ -685,10 +691,14 @@ function makePC(){
 function watchIce(otherUid){
   if(S.unsubIce){try{S.unsubIce();}catch(e){}S.unsubIce=null;}
   if(!S.callRef)return;
-  const ref=db.ref(S.callRef+"/ice/"+otherUid);
+  // Capturer callRef maintenant — évite l'erreur "invalid path=null"
+  // quand le listener Firebase se déclenche après endCall()
+  const capturedRef=S.callRef;
+  const ref=db.ref(capturedRef+"/ice/"+otherUid);
   const fn=snap=>{
+    // Vérifier que l'appel est toujours actif AVANT d'accéder à S.pc
+    if(!S.callRef||S.callRef!==capturedRef)return;
     const c=snap.val();if(!c||!S.pc)return;
-    // Appliquer immédiatement si remoteDescription est prêt, sinon mettre en queue
     if(S.pc.remoteDescription&&S.pc.remoteDescription.type){
       S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{});
     }else{
@@ -908,14 +918,18 @@ window.acceptCall=async function(){
     // Créer et envoyer la réponse (sans attendre le gathering)
     const ans=await S.pc.createAnswer();
     await S.pc.setLocalDescription(ans);
-    await db.ref(S.callRef).update({
+    const callRefCaptured=S.callRef;
+    if(!callRefCaptured){toast("Erreur: appel interrompu","err");endCall(true);return;}
+    await db.ref(callRefCaptured).update({
       answer:{type:ans.type,sdp:ans.sdp},status:"connected"
     });
   }catch(e){toast("Erreur connexion : "+e.message,"err");endCall(true);return;}
 
   // Écouter si le caller raccroche
   if(S.unsubCall){try{S.unsubCall();}catch(e){}}
-  const ref=db.ref(S.callRef);
+  const capturedCallRef=S.callRef;
+  if(!capturedCallRef)return;
+  const ref=db.ref(capturedCallRef);
   const fn=snap=>{const d=snap.val();if(!d||d.status==="ended")endCall(true);};
   ref.on("value",fn);
   S.unsubCall=()=>ref.off("value",fn);
@@ -924,9 +938,10 @@ window.acceptCall=async function(){
 // === REFUSER ===
 window.rejectCall=function(){
   stopRingtone();
-  if(S.callRef){
-    db.ref(S.callRef).update({status:"rejected"}).then(()=>{
-      setTimeout(()=>db.ref(S.callRef||"x").remove().catch(()=>{}),1500);
+  const rp=S.callRef;
+  if(rp){
+    db.ref(rp).update({status:"rejected"}).then(()=>{
+      setTimeout(()=>db.ref(rp).remove().catch(()=>{}),1500);
     }).catch(()=>{});
   }
   endCall(true);
@@ -936,27 +951,47 @@ window.rejectCall=function(){
 window.endCall=function(silent){
   stopRingtone();
   clearTimeout(S._callTimeout);S._callTimeout=null;
-  if(!S.callRef&&!S.pc&&!S.localStream)return;
-  const refPath=S.callRef,peer=S.callPeer,dir=S.callDir,type=S.callType,secs=S.callSecs;
+  clearTimeout(S.disconnectTimer);S.disconnectTimer=null;
 
-  if(!silent&&refPath){
-    db.ref(refPath).update({status:"ended"}).then(()=>{
-      setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),2000);
-    }).catch(()=>{});
-  }else if(refPath){
-    setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),2500);
-  }
+  // Capturer tout avant de nullifier (évite les erreurs "invalid path=null")
+  const refPath=S.callRef;
+  const peer=S.callPeer;
+  const dir=S.callDir;
+  const type=S.callType;
+  const secs=S.callSecs;
 
+  // Nullifier immédiatement pour bloquer les callbacks futurs
+  S.callRef=null;S.callDir=null;S.callPeer=null;S.incomingOffer=null;S.iceQueue=[];
+
+  // Nettoyer les listeners Firebase
   if(S.unsubCall){try{S.unsubCall();}catch(e){}S.unsubCall=null;}
   if(S.unsubIce){try{S.unsubIce();}catch(e){}S.unsubIce=null;}
-  clearTimeout(S.disconnectTimer);S.disconnectTimer=null;
+
+  // Fermer la connexion WebRTC
   if(S.pc){try{S.pc.close();}catch(e){}S.pc=null;}
   if(S.localStream){S.localStream.getTracks().forEach(t=>{try{t.stop();}catch(e){}});S.localStream=null;}
   S.remoteStream=null;
-  S.callRef=null;S.callDir=null;S.callPeer=null;S.incomingOffer=null;S.iceQueue=[];
+
+  // Arrêter le timer d'appel
+  clearInterval(S.callTick);S.callTick=null;S.callSecs=0;
+
+  // Mettre à jour Firebase seulement si on avait un chemin valide
+  if(refPath){
+    if(!silent){
+      db.ref(refPath).update({status:"ended"}).then(()=>{
+        setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),2000);
+      }).catch(()=>{
+        db.ref(refPath).remove().catch(()=>{});
+      });
+    }else{
+      setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),2500);
+    }
+  }
+
+  // Réinitialiser l'UI
   resetCallOverlay();
 
-  // Historique des appels
+  // Enregistrer dans l'historique des appels
   if(peer&&dir&&S.myUid){
     const ct=S.contacts.find(c=>c.uid===peer)||{};
     const nick=CACHE.load("nick_"+peer)||"";
