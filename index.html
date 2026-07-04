@@ -1438,147 +1438,176 @@ window.downloadContactVcf=function(){
 };
 
 function renderList(){
-  const box=$("contact-list");if(!box)return;
-  box.innerHTML="";
+  const box=$("contact-list");
+  if(!box)return;
   const term=S.search.toLowerCase();
   let vis=S.contacts.filter(c=>{
     const nick=CACHE.load("nick_"+c.uid)||"";
-    const displayName=(nick||c.name||c.phone||"").toLowerCase();
-    const match=displayName.includes(term)||(c.phone||"").includes(term);
-    const arch=S.arch.has(c.uid);
-    return match&&(S.tab==="archived"?arch:!arch);
+    const name=(nick||c.name||c.phone||"").toLowerCase();
+    const match=name.includes(term)||(c.phone||"").includes(term);
+    return match&&(S.tab==="archived"?S.arch.has(c.uid):!S.arch.has(c.uid));
   });
+
   if(!vis.length){
-    box.innerHTML = S.tab==="archived"
-      ? '<div class="empty-note">Aucune conversation archivée</div>'
-      : '<div class="empty-note">Aucune discussion pour le moment<br/><br/>Appuyez sur ➕ pour trouver un ami par son numéro ou son nom</div>';
+    // Nettoyer les anciens listeners lastMsg
+    if(S.lastMsgListeners){
+      Object.values(S.lastMsgListeners).forEach(l=>{try{l.ref.off("value",l.handler);}catch(e){}});
+      S.lastMsgListeners={};
+    }
+    box.innerHTML=S.tab==="archived"
+      ?'<div class="empty-note">Aucune conversation archivée</div>'
+      :'<div class="empty-note">Aucune discussion pour le moment<br/><br/>Appuyez sur ➕ pour trouver un contact</div>';
     return;
   }
 
-  // Trier par timestamp du dernier message (plus récent en haut)
+  // Trier du plus récent au plus ancien
   vis.sort((a,b)=>{
     const ta=CACHE.load("lastTs_"+chatKey(S.myUid,a.uid))||0;
     const tb=CACHE.load("lastTs_"+chatKey(S.myUid,b.uid))||0;
     return tb-ta;
   });
 
+  // Nettoyer les listeners des contacts qui ne sont plus visibles
+  if(!S.lastMsgListeners) S.lastMsgListeners={};
+  const visKeys=new Set(vis.map(c=>chatKey(S.myUid,c.uid)));
+  Object.keys(S.lastMsgListeners).forEach(ck=>{
+    if(!visKeys.has(ck)){
+      try{S.lastMsgListeners[ck].ref.off("value",S.lastMsgListeners[ck].handler);}catch(e){}
+      delete S.lastMsgListeners[ck];
+    }
+  });
+
+  box.innerHTML="";
+
   vis.forEach(c=>{
     const nick=CACHE.load("nick_"+c.uid)||"";
     const displayName=nick||c.name||c.phone||"Inconnu";
     const ck=chatKey(S.myUid,c.uid);
+
     const row=document.createElement("div");
     row.id="row-"+ck;
     row.setAttribute("data-uid",c.uid);
     row.className="contact-row"+(S.activeId===c.uid?" active-row":"");
-    const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
-    // Afficher immédiatement le dernier message depuis le cache local
-    // (statut "En ligne"/Vu à ne s'affiche QUE dans la conversation, jamais dans la liste)
-    const cachedLm=CACHE.load("lastMsg_"+ck);
-    const initialText=cachedLm?
-      (cachedLm.del?"🚫 Message supprimé":
-       cachedLm.type==="voice"?"🎵 Vocal":
-       cachedLm.type==="photo"?"📷 Photo":
-       cachedLm.type==="video"?"🎥 Vidéo":
-       (cachedLm.text||""))
-      :"";
-    const initialTime=cachedLm?(cachedLm.t||""):"";
 
-    row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span><span class="row-time" id="lt-'+ck+'">'+initialTime+'</span></div><div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+esc(initialText)+'</span><span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span><button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button></div></div>';
+    const avH=(c.avType==="img"&&c.img)
+      ?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>'
+      :(c.emoji||"🧑🏾");
+
+    // Dernier message depuis le cache (affichage instantané)
+    const cachedLm=CACHE.load("lastMsg_"+ck);
+    const lmText=cachedLm
+      ?(cachedLm.del?"🚫 Message supprimé"
+        :cachedLm.type==="voice"?"🎵 Vocal"
+        :cachedLm.type==="photo"?"📷 Photo"
+        :cachedLm.type==="video"?"🎥 Vidéo"
+        :(cachedLm.text||""))
+      :(c.online?"● En ligne":"");
+    const lmTime=cachedLm?(cachedLm.t||""):"";
+
+    row.innerHTML=
+      '<div class="av-wrap"><div class="av">'+avH+'</div>'
+      +'<div class="dot '+(c.online?"online":"offline")+'"></div></div>'
+      +'<div class="row-info">'
+      +'<div class="row-top"><span class="row-name">'+esc(displayName)+'</span>'
+      +'<span class="row-time" id="lt-'+ck+'">'+esc(lmTime)+'</span></div>'
+      +'<div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+esc(lmText)+'</span>'
+      +'<span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span>'
+      +'<button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button>'
+      +'</div></div>';
+
     row.querySelector(".arch-btn").onclick=ev=>{ev.stopPropagation();toggleArch(c.uid);};
 
-    // Appui long UNIQUEMENT → supprimer la discussion (600ms minimum requis)
-    // Un simple clic ouvre toujours la discussion, jamais le menu de suppression
-    let rowPressTimer=null;
-    let rowLongPressTriggered=false;
-    let rowStartX=0,rowStartY=0;
-
-    const startRowPress=e=>{
-      rowLongPressTriggered=false;
+    // Clic simple → ouvrir discussion
+    let longPressTimer=null,longPressed=false,lpX=0,lpY=0;
+    row.onclick=()=>{ if(!longPressed) openChat(c.uid); };
+    const lpStart=e=>{
+      longPressed=false;
       const pt=e.touches?e.touches[0]:e;
-      rowStartX=pt.clientX;rowStartY=pt.clientY;
-      clearTimeout(rowPressTimer);
-      rowPressTimer=setTimeout(()=>{
-        rowLongPressTriggered=true;
+      lpX=pt.clientX;lpY=pt.clientY;
+      clearTimeout(longPressTimer);
+      longPressTimer=setTimeout(()=>{
+        longPressed=true;
         if(navigator.vibrate)navigator.vibrate(40);
         showDeleteConvMenu(c,ck,row);
       },600);
     };
-    const cancelRowPress=()=>{ clearTimeout(rowPressTimer); };
-    const moveRowPress=e=>{
+    const lpEnd=()=>clearTimeout(longPressTimer);
+    const lpMove=e=>{
       const pt=e.touches?e.touches[0]:e;
-      const dx=Math.abs(pt.clientX-rowStartX),dy=Math.abs(pt.clientY-rowStartY);
-      if(dx>10||dy>10) clearTimeout(rowPressTimer); // Glissement → annuler l'appui long
+      if(Math.abs(pt.clientX-lpX)>10||Math.abs(pt.clientY-lpY)>10)clearTimeout(longPressTimer);
     };
-
-    row.addEventListener("touchstart",startRowPress,{passive:true});
-    row.addEventListener("touchend",cancelRowPress,{passive:true});
-    row.addEventListener("touchmove",moveRowPress,{passive:true});
-    row.addEventListener("touchcancel",cancelRowPress,{passive:true});
-    row.addEventListener("mousedown",startRowPress);
-    row.addEventListener("mouseup",cancelRowPress);
-    row.addEventListener("mouseleave",cancelRowPress);
-    row.addEventListener("mousemove",moveRowPress);
-    // Bloquer le menu contextuel natif (évite tout déclenchement parasite sur WebView)
+    row.addEventListener("touchstart",lpStart,{passive:true});
+    row.addEventListener("touchend",lpEnd,{passive:true});
+    row.addEventListener("touchmove",lpMove,{passive:true});
+    row.addEventListener("touchcancel",lpEnd,{passive:true});
+    row.addEventListener("mousedown",lpStart);
+    row.addEventListener("mouseup",lpEnd);
     row.addEventListener("contextmenu",e=>e.preventDefault());
 
-    // Le clic simple ouvre TOUJOURS la discussion (sauf si un appui long vient d'avoir lieu)
-    row.onclick=e=>{
-      if(rowLongPressTriggered){ rowLongPressTriggered=false; return; }
-      openChat(c.uid);
-    };
-
     box.appendChild(row);
-
-    // Afficher le badge non lu si en cache
     updateUnreadBadge(ck);
 
-    // Écouter le dernier message — UN SEUL listener actif par conversation
-    if(!S.lastMsgListeners) S.lastMsgListeners={};
+    // Listener lastMsg — UN SEUL par conversation, jamais dupliqué
     if(!S.lastMsgListeners[ck]){
       const lmRef=db.ref("chats/"+ck+"/lastMsg");
-      const lmHandler=snap2=>{
-        const lm=snap2.val();
+      const lmHandler=snap=>{
+        const lm=snap.val();
         if(!lm)return;
+
+        // Mise à jour UI
         const lt=document.getElementById("lt-"+ck);
         const ll=document.getElementById("ll-"+ck);
-        const txt=lm.del?"🚫 Message supprimé":
-          lm.type==="voice"?"🎵 Vocal":
-          lm.type==="photo"?"📷 Photo":
-          lm.type==="video"?"🎥 Vidéo":
-          (lm.text||"");
+        const txt=lm.del?"🚫 Message supprimé"
+          :lm.type==="voice"?"🎵 Vocal"
+          :lm.type==="photo"?"📷 Photo"
+          :lm.type==="video"?"🎥 Vidéo"
+          :(lm.text||"");
         if(lt)lt.textContent=lm.t||"";
         if(ll)ll.textContent=txt;
 
-        // Sauvegarder en cache pour affichage instantané au prochain chargement
-        CACHE.save("lastMsg_"+ck, {text:lm.text||"",t:lm.t||"",type:lm.type||"text",del:!!lm.del});
-
+        // Cache
+        CACHE.save("lastMsg_"+ck,{text:lm.text||"",t:lm.t||"",type:lm.type||"text",del:!!lm.del,from:lm.from||""});
         const ts=lm.ts||Date.now();
         const prevTs=CACHE.load("lastTs_"+ck)||0;
-        CACHE.save("lastTs_"+ck, ts);
+        CACHE.save("lastTs_"+ck,ts);
 
-        if(ts>prevTs && lm.from!==S.myUid && S.activeId!==c.uid){
+        // Badge non-lu si nouveau message d'un autre
+        if(ts>prevTs&&lm.from&&lm.from!==S.myUid&&S.activeId!==c.uid){
           incrementUnread(c.uid,ck);
-          toast("💬 Nouveau message de "+(displayName||"un contact"));
         }
 
+        // Remonter la conversation en haut
         const curBox=$("contact-list");
-        if(curBox) repositionRow(c.uid,ck,curBox);
+        if(curBox) moveRowToTop(ck,curBox);
       };
       lmRef.on("value",lmHandler);
       S.lastMsgListeners[ck]={ref:lmRef,handler:lmHandler};
     }
-
-    // Afficher le badge actuel s'il y en a un en cache
-    updateUnreadBadge(ck);
   });
 }
 
-// ---- COMPTEUR DE MESSAGES NON LUS ----
+// Déplace la conversation en haut de la liste (le plus récent = premier)
+function moveRowToTop(ck,box){
+  const rowEl=document.getElementById("row-"+ck);
+  if(!rowEl||!box)return;
+  if(box.firstChild===rowEl)return; // Déjà en haut
+  const myTs=CACHE.load("lastTs_"+ck)||0;
+  const rows=Array.from(box.querySelectorAll(".contact-row"));
+  let insertBefore=null;
+  for(const r of rows){
+    if(r===rowEl)continue;
+    const rCk=chatKey(S.myUid,r.getAttribute("data-uid")||"");
+    const rTs=CACHE.load("lastTs_"+rCk)||0;
+    if(myTs>=rTs){insertBefore=r;break;}
+  }
+  if(insertBefore) box.insertBefore(rowEl,insertBefore);
+  else box.insertBefore(rowEl,box.firstChild);
+}
+
 function incrementUnread(uid,ck){
-  const current=CACHE.load("unread_"+ck)||0;
-  const next=current+1;
-  CACHE.save("unread_"+ck,next);
-  db.ref("unreadCount/"+S.myUid+"/"+uid).set(next).catch(()=>{});
+  const n=(CACHE.load("unread_"+ck)||0)+1;
+  CACHE.save("unread_"+ck,n);
+  db.ref("unreadCount/"+S.myUid+"/"+uid).set(n).catch(()=>{});
   updateUnreadBadge(ck);
 }
 
@@ -1591,57 +1620,12 @@ function clearUnread(uid,ck){
 function updateUnreadBadge(ck){
   const badge=document.getElementById("ub-"+ck);
   if(!badge)return;
-  const count=CACHE.load("unread_"+ck)||0;
-  if(count>0){
-    badge.textContent=count>99?"99+":String(count);
-    badge.style.display="flex";
-  } else {
-    badge.style.display="none";
-  }
+  const n=CACHE.load("unread_"+ck)||0;
+  if(n>0){badge.textContent=n>99?"99+":String(n);badge.style.display="flex";}
+  else badge.style.display="none";
 }
 
-// Repositionne la conversation en HAUT de la liste quand un nouveau message arrive
-function repositionRow(uid,ck,box){
-  const rowEl=document.getElementById("row-"+ck);
-  if(!rowEl||!box)return;
-  const myTs=CACHE.load("lastTs_"+ck)||0;
-  const rows=Array.from(box.querySelectorAll(".contact-row"));
-  // Trouver la première conversation avec un timestamp plus récent que moi
-  // Si j'ai le timestamp le plus récent → je vais tout en haut
-  let insertBefore=null;
-  for(const r of rows){
-    if(r===rowEl)continue;
-    const rUid=r.getAttribute("data-uid");
-    if(!rUid)continue;
-    const rCk=chatKey(S.myUid,rUid);
-    const rTs=CACHE.load("lastTs_"+rCk)||0;
-    if(rTs<myTs){ insertBefore=r; break; } // Trouver la première plus ancienne
-  }
-  if(insertBefore){
-    box.insertBefore(rowEl,insertBefore);
-  } else if(box.firstChild!==rowEl){
-    box.insertBefore(rowEl,box.firstChild); // Je suis le plus récent → tout en haut
-  }
-}
-
-function toggleArch(uid){S.arch.has(uid)?S.arch.delete(uid):S.arch.add(uid);renderList();if(S.activeId===uid)updateArchBtn();}
-function updateArchBtn(){const b=$("arch-btn");if(b)b.textContent=S.arch.has(S.activeId)?"📤":"🗄";}
-
-// ---- CHAT ----
-function openChat(uid){
-  S.activeId=uid;
-  const c=S.contacts.find(x=>x.uid===uid)||{phone:uid};
-  refreshChatHeader(c);
-  updateArchBtn();
-  showScreen("s-chat");
-  listenMsgs();
-  // Marquer comme lu
-  const ck=chatKey(S.myUid,uid);
-  clearUnread(uid,ck);
-}
-
-// Ajoute une bulle dans la boîte de messages en insérant un séparateur de date
-// ("Aujourd'hui", "Hier", "12 juin") si la date change par rapport à la précédente bulle
+// Ajoute une bulle avec séparateur de date si nécessaire
 function appendBubbleWithDate(box,m){
   const ts=m.ts||Date.now();
   const label=dateLabel(ts);
@@ -1663,92 +1647,68 @@ function listenMsgs(){
   const box=$("msg-list");
   if(!box)return;
   box.innerHTML="";
+  box.dataset.lastDateLabel="";
 
   const rendered=new Set();
   let anyShown=false;
 
-  // ---- 1. AFFICHAGE INSTANTANÉ depuis le cache local (même hors-ligne) ----
+  // 1. Afficher immédiatement depuis le cache
   let cached=null;
-  try{ cached=CACHE.load("msgs_"+key); }catch(e){ console.error("cache load:",e); }
-
-  if(cached && cached.length){
-    box.dataset.lastDateLabel="";
+  try{cached=CACHE.load("msgs_"+key);}catch(e){}
+  if(cached&&cached.length){
     cached.forEach(m=>{
-      if(!m || !m.id || rendered.has(m.id))return;
+      if(!m||!m.id||rendered.has(m.id))return;
       try{
         appendBubbleWithDate(box,m);
         rendered.add(m.id);
         anyShown=true;
-      }catch(e){ console.error("bubble cache erreur:",e.message,m); }
+      }catch(e){console.error("bubble cache:",e.message);}
     });
     requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
   }
 
-  // Si on a essayé d'afficher le cache mais que RIEN n'est apparu (erreur silencieuse) → message clair
-  if(cached && cached.length && !anyShown){
-    box.innerHTML='<div class="empty-note">Erreur d\'affichage des messages.<br/>Tirez vers le bas pour réessayer ou rouvrez la discussion.</div>';
-  }
-
-  // ---- 2. SYNCHRONISATION avec Firebase en arrière-plan ----
   if(!navigator.onLine){
-    if(!anyShown){
-      box.innerHTML='<div class="empty-note">📡 Pas de connexion internet.<br/>Les messages s\'afficheront dès que vous serez en ligne.</div>';
-    }
+    if(!anyShown) box.innerHTML='<div class="empty-note">Pas de connexion internet.</div>';
     return;
   }
 
-  if(!db){
-    box.innerHTML='<div class="empty-note">Erreur : connexion au serveur indisponible.</div>';
-    return;
+  // 2. Écouter Firebase en temps réel
+  const allMsgs={};
+  if(cached) cached.forEach(m=>{if(m&&m.id)allMsgs[m.id]=m;});
+
+  let loadTimer=null;
+  if(!anyShown){
+    loadTimer=setTimeout(()=>{
+      if(!anyShown&&box.innerHTML==="") box.innerHTML='<div class="empty-note">Chargement...</div>';
+    },600);
   }
 
   const ref=db.ref("chats/"+key+"/messages");
-  const allMsgs={};
-  if(cached) cached.forEach(m=>{ if(m && m.id) allMsgs[m.id]=m; });
-
-  // Indicateur de chargement si rien n'est encore affiché
-  let loadingTimer=null;
-  if(!anyShown){
-    loadingTimer=setTimeout(()=>{
-      if(!anyShown && box.innerHTML===""){
-        box.innerHTML='<div class="empty-note">Chargement des messages...</div>';
-      }
-    },800);
-  }
 
   const onAdded=ref.on("child_added",snap=>{
-    clearTimeout(loadingTimer);
+    clearTimeout(loadTimer);
     let m;
-    try{ m={id:snap.key,...snap.val()}; }catch(e){ console.error("parse msg:",e); return; }
+    try{m={id:snap.key,...snap.val()};}catch(e){return;}
     allMsgs[m.id]=m;
     saveMsgsCache(key,allMsgs);
-
     if(rendered.has(snap.key)){
-      // Déjà affiché depuis le cache — si la version cache était dégradée
-      // (média non sauvegardé) et qu'on a maintenant la vraie donnée, remplacer la bulle
-      const existing=document.getElementById("bub-"+snap.key);
-      if(existing && m.src){
-        try{
-          const newRow=makeBubble(m);
-          existing.replaceWith(newRow);
-        }catch(e){console.error("bubble refresh erreur:",e.message);}
+      // Mettre à jour la bulle existante si nécessaire (ex: src arrivé après cache)
+      if(m.src&&!m.mediaCached){
+        const existing=document.getElementById("bub-"+snap.key);
+        if(existing)try{const nr=makeBubble(m);existing.replaceWith(nr);}catch(e){}
       }
       return;
     }
     rendered.add(snap.key);
+    if(!anyShown){box.innerHTML="";box.dataset.lastDateLabel="";anyShown=true;}
     try{
-      if(!anyShown){ box.innerHTML=""; box.dataset.lastDateLabel=""; anyShown=true; } // Effacer le message "chargement"/"vide"
-      const row=appendBubbleWithDate(box,m);
-      if(box.scrollHeight - box.scrollTop - box.clientHeight < 100){
+      appendBubbleWithDate(box,m);
+      if(box.scrollHeight-box.scrollTop-box.clientHeight<120)
         requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
-      }
-    }catch(e){console.error("bubble add erreur:",e.message,m);}
+    }catch(e){console.error("bubble add:",e.message);}
   },err=>{
-    clearTimeout(loadingTimer);
-    console.error("listenMsgs Firebase err:",err.code,err.message);
-    if(!anyShown){
-      box.innerHTML='<div class="empty-note">Erreur de connexion : '+esc(err.message)+'<br/>Vérifiez votre connexion ou réessayez.</div>';
-    }
+    clearTimeout(loadTimer);
+    if(!anyShown) box.innerHTML='<div class="empty-note">Erreur : '+esc(err.message)+'</div>';
   });
 
   const onChanged=ref.on("child_changed",snap=>{
@@ -1756,27 +1716,15 @@ function listenMsgs(){
       const m={id:snap.key,...snap.val()};
       allMsgs[m.id]=m;
       saveMsgsCache(key,allMsgs);
-      const existing=document.getElementById("bub-"+snap.key);
-      if(existing){
-        const newRow=makeBubble(m);
-        existing.replaceWith(newRow);
-      }
-    }catch(e){console.error("bubble change erreur:",e.message);}
+      const ex=document.getElementById("bub-"+snap.key);
+      if(ex)try{ex.replaceWith(makeBubble(m));}catch(e){}
+    }catch(e){}
   });
-
-  // Si après 4s rien n'est arrivé ET aucune erreur, mais toujours rien affiché → notifier
-  setTimeout(()=>{
-    if(!anyShown && box.querySelector(".empty-note")){
-      box.innerHTML='<div class="empty-note">Aucun message dans cette discussion.<br/>Envoyez le premier message !</div>';
-    }
-  },4000);
 
   ref.once("value",()=>{
-    clearTimeout(loadingTimer);
+    clearTimeout(loadTimer);
     requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
-  }).catch(err=>{
-    console.error("once value err:",err.message);
-  });
+  }).catch(()=>{});
 
   S.unsubMsgs=()=>{
     ref.off("child_added",onAdded);
@@ -1784,27 +1732,23 @@ function listenMsgs(){
   };
 }
 
-let saveCacheTimer=null;
+let _saveCacheTimer=null;
 function saveMsgsCache(key,allMsgsMap){
-  clearTimeout(saveCacheTimer);
-  saveCacheTimer=setTimeout(()=>{
+  clearTimeout(_saveCacheTimer);
+  _saveCacheTimer=setTimeout(()=>{
     try{
-      let list=Object.values(allMsgsMap);
+      let list=Object.values(allMsgsMap).filter(Boolean);
       list.sort((a,b)=>(a.ts||0)-(b.ts||0));
-      if(list.length>200) list=list.slice(list.length-200);
-      // Règle de mise en cache des médias :
-      // - Texte : toujours complet
-      // - Vocal (voice) : TOUJOURS gardé complet (nécessaire pour la lecture)
-      // - Photo/Vidéo : allégé si > 50KB (trop lourd pour localStorage)
-      const lightList=list.map(m=>{
-        if(m.src && m.src.length>50000 && (m.type==="photo"||m.type==="video")){
-          return {...m, src:null, mediaCached:false};
-        }
-        return m; // Tout le reste (texte, vocal) : gardé intact
+      if(list.length>200) list=list.slice(-200);
+      // Alléger les gros médias (photo/video), garder le texte et l'audio intacts
+      const light=list.map(m=>{
+        if(m.src&&m.src.length>60000&&(m.type==="photo"||m.type==="video"))
+          return{...m,src:null,mediaCached:false};
+        return m;
       });
-      CACHE.save("msgs_"+key,lightList);
-    }catch(e){console.error("saveMsgsCache:",e);}
-  },300);
+      CACHE.save("msgs_"+key,light);
+    }catch(e){}
+  },400);
 }
 
 function makeBubble(m){
