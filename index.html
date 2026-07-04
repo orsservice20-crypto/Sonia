@@ -1091,6 +1091,20 @@ window.clearCallLog=function(){
 };
 // ==================== FIN APPELS WEBRTC ====================
 
+// ---- OUVRIR UNE DISCUSSION ----
+function openChat(uid){
+  if(!uid)return;
+  S.activeId=uid;
+  const c=S.contacts.find(x=>x.uid===uid)||{uid,phone:uid};
+  refreshChatHeader(c);
+  updateArchBtn();
+  showScreen("s-chat");
+  listenMsgs();
+  // Marquer comme lu
+  const ck=chatKey(S.myUid,uid);
+  clearUnread(uid,ck);
+}
+
 // ---- NOUVELLE DISCUSSION / RECHERCHE PAR NUMÉRO ----
 window.openNewChatModal=function(){
   $("nc-phone-input").value="";
@@ -1167,9 +1181,15 @@ window.searchUserByPhone=function(){
         '</div>';
       $("nc-found-row").onclick=async ()=>{
         $("newchat-overlay").style.display="none";
-        if(!S.contacts.find(c=>c.uid===found.uid)) S.contacts.push(found);
+        // Ajouter localement si pas encore présent
+        if(!S.contacts.find(c=>c.uid===found.uid)){
+          S.contacts.push(found);
+          CACHE.save("contacts",S.contacts);
+        }
+        // Ouvrir la discussion immédiatement
         openChat(found.uid);
-        try{ await ensureMutualContact(found.uid); }catch(e){ console.error("ensureMutualContact:",e); }
+        // Sauvegarder le lien mutuel en arrière-plan (silencieux)
+        ensureMutualContact(found.uid).catch(()=>{});
       };
     } else {
       result.innerHTML=
@@ -3280,11 +3300,14 @@ window.addEventListener("DOMContentLoaded",()=>{
     }
     const avH = (found.avType==="img"&&found.img)?'<img src="'+found.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>': (found.emoji||"🧑🏾");
     result.innerHTML='<div class="contact-row" style="border-bottom:none;border-radius:14px;background:var(--surface);border:1px solid var(--border)" id="nc-found-row"><div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(found.online?"online":"offline")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(found.name||found.phone||"Inconnu")+'</span></div><div class="row-bot"><span class="row-last">'+esc(found.phone||"")+'</span></div></div><span style="color:var(--accent);font-size:22px;padding:0 4px">›</span></div>';
-    document.getElementById("nc-found-row").onclick = async ()=>{
+    document.getElementById("nc-found-row").onclick = ()=>{
       document.getElementById("newchat-overlay").style.display="none";
-      if(!S.contacts.find(c=>c.uid===found.uid)) S.contacts.push(found);
+      if(!S.contacts.find(c=>c.uid===found.uid)){
+        S.contacts.push(found);
+        CACHE.save("contacts",S.contacts);
+      }
       openChat(found.uid);
-      try{ await ensureMutualContact(found.uid); }catch(e){ console.error("ensureMutualContact:",e); }
+      ensureMutualContact(found.uid).catch(()=>{});
     };
   };
 
