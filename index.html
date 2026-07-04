@@ -1095,6 +1095,12 @@ window.clearCallLog=function(){
 function openChat(uid){
   if(!uid)return;
   S.activeId=uid;
+
+  // Effacer la recherche active (sinon la liste semble vide au retour)
+  S.search="";
+  const si=$("search-input");
+  if(si)si.value="";
+
   const c=S.contacts.find(x=>x.uid===uid)||{uid,phone:uid};
   refreshChatHeader(c);
   updateArchBtn();
@@ -1539,7 +1545,11 @@ function renderList(){
 
     // Clic simple → ouvrir discussion
     let longPressTimer=null,longPressed=false,lpX=0,lpY=0;
-    row.onclick=()=>{ if(!longPressed) openChat(c.uid); };
+    row.onclick=e=>{
+      e.stopPropagation();
+      if(!longPressed) openChat(c.uid);
+      longPressed=false; // Reset après clic
+    };
     const lpStart=e=>{
       longPressed=false;
       const pt=e.touches?e.touches[0]:e;
@@ -1549,12 +1559,18 @@ function renderList(){
         longPressed=true;
         if(navigator.vibrate)navigator.vibrate(40);
         showDeleteConvMenu(c,ck,row);
-      },600);
+      },700); // 700ms pour éviter les faux déclenchements
     };
-    const lpEnd=()=>clearTimeout(longPressTimer);
+    const lpEnd=()=>{
+      clearTimeout(longPressTimer);
+      // Ne pas reset longPressed ici — onclick s'en charge
+    };
     const lpMove=e=>{
       const pt=e.touches?e.touches[0]:e;
-      if(Math.abs(pt.clientX-lpX)>10||Math.abs(pt.clientY-lpY)>10)clearTimeout(longPressTimer);
+      if(Math.abs(pt.clientX-lpX)>12||Math.abs(pt.clientY-lpY)>12){
+        clearTimeout(longPressTimer);
+        longPressed=false;
+      }
     };
     row.addEventListener("touchstart",lpStart,{passive:true});
     row.addEventListener("touchend",lpEnd,{passive:true});
