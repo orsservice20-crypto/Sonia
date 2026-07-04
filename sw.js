@@ -1,5 +1,5 @@
 // EniBusiness Pro SW — mise à jour automatique dès que le code change sur GitHub
-const VERSION = "enibusiness-2026-07-04-v25"; // Change automatiquement à chaque déploiement GitHub
+const VERSION = "enibusiness-2026-07-04-v26"; // Change automatiquement à chaque déploiement GitHub
 
 self.addEventListener("install", e => {
   // S'activer immédiatement sans attendre que les anciens onglets se ferment
