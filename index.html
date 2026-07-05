@@ -1094,52 +1094,40 @@ window.clearCallLog=function(){
 // ---- RECHERCHE DANS LA LISTE (filtre le DOM existant sans reconstruire) ----
 function doSearch(val){
   S.search=(val||"").trim().toLowerCase();
+  const si=$("search-input");
   const box=$("contact-list");
   if(!box)return;
-  const rows=box.querySelectorAll(".contact-row");
   if(!S.search){
-    // Pas de recherche → tout afficher
-    rows.forEach(r=>r.style.display="");
-    const empty=box.querySelector(".empty-note");
-    if(empty)empty.style.display=S.contacts.length?"none":"";
+    box.querySelectorAll(".contact-row").forEach(r=>r.style.display="");
+    const nr=document.getElementById("search-no-result");
+    if(nr)nr.remove();
     return;
   }
-  let anyVisible=false;
-  rows.forEach(r=>{
+  let any=false;
+  box.querySelectorAll(".contact-row").forEach(r=>{
     const uid=r.getAttribute("data-uid")||"";
     const c=S.contacts.find(x=>x.uid===uid);
     if(!c){r.style.display="none";return;}
     const nick=CACHE.load("nick_"+uid)||"";
     const name=(nick||c.name||c.phone||"").toLowerCase();
-    const phone=(c.phone||"").toLowerCase();
-    const match=name.includes(S.search)||phone.includes(S.search);
+    const match=name.includes(S.search)||(c.phone||"").toLowerCase().includes(S.search);
     r.style.display=match?"":"none";
-    if(match)anyVisible=true;
+    if(match)any=true;
   });
-  // Afficher/cacher le message "aucun résultat"
-  let noResult=document.getElementById("search-no-result");
-  if(!anyVisible){
-    if(!noResult){
-      noResult=document.createElement("div");
-      noResult.id="search-no-result";
-      noResult.className="empty-note";
-      noResult.textContent="Aucun résultat pour "+val;
-      box.appendChild(noResult);
-    }else noResult.textContent="Aucun résultat pour "+val;
-  }else if(noResult) noResult.remove();
+  let nr=document.getElementById("search-no-result");
+  if(!any){
+    if(!nr){nr=document.createElement("div");nr.id="search-no-result";nr.className="empty-note";box.appendChild(nr);}
+    nr.textContent="Aucun résultat";
+  }else if(nr)nr.remove();
 }
 
-// ---- OUVRIR UNE DISCUSSION ----
 function openChat(uid){
   if(!uid)return;
   S.activeId=uid;
-
-  // Effacer la recherche et rendre toutes les lignes visibles
+  // Effacer la recherche sans reconstruire la liste
   if(S.search){
     S.search="";
-    const si=$("search-input");
-    if(si)si.value="";
-    // Rendre toutes les lignes visibles
+    const si=$("search-input");if(si)si.value="";
     const box=$("contact-list");
     if(box){
       box.querySelectorAll(".contact-row").forEach(r=>r.style.display="");
@@ -1147,7 +1135,6 @@ function openChat(uid){
       if(nr)nr.remove();
     }
   }
-
   const c=S.contacts.find(x=>x.uid===uid)||{uid,phone:uid};
   refreshChatHeader(c);
   updateArchBtn();
@@ -1157,390 +1144,38 @@ function openChat(uid){
   clearUnread(uid,ck);
 }
 
-// ---- NOUVELLE DISCUSSION / RECHERCHE PAR NUMÉRO ----
-window.openNewChatModal=function(){
-  $("nc-phone-input").value="";
-  $("nc-result").innerHTML='<p style="color:var(--sub);font-size:13px;text-align:center;padding:8px 0">Entrez le numéro de votre ami pour le retrouver</p>';
-  $("pick-contact-btn").style.display=("contacts" in navigator && "ContactsManager" in window)?"flex":"none";
-  $("newchat-overlay").style.display="flex";
-  setTimeout(()=>$("nc-phone-input").focus(),200);
-};
-
-// Choisir un contact du téléphone et vérifier s'il est inscrit sur EniBusiness Pro
-window.pickFromPhoneContacts=async function(){
-  try{
-    const props=["name","tel"];
-    const opts={multiple:false};
-    const contacts=await navigator.contacts.select(props,opts);
-    if(!contacts||!contacts.length){return;}
-    const picked=contacts[0];
-    const tel=(picked.tel&&picked.tel[0])||"";
-    if(!tel){toast("Ce contact n'a pas de numéro","err");return;}
-    $("nc-phone-input").value=tel.replace(/[^\d+]/g,"");
-    searchUserByPhone();
-  }catch(e){
-    if(e && e.name!=="AbortError") toast("Impossible d'accéder aux contacts","err");
-  }
-};
-
-let ncSearchTimer=null;
-window.searchUserByPhone=function(){
-  clearTimeout(ncSearchTimer);
-  const raw=$("nc-phone-input").value.trim();
-  const result=$("nc-result");
-  if(raw.replace(/\D/g,"").length<6){
-    result.innerHTML='<p style="color:var(--sub);font-size:13px;text-align:center;padding:8px 0">Entrez le numéro de votre ami pour le retrouver</p>';
-    return;
-  }
-  result.innerHTML='<p style="color:var(--sub);font-size:13px;text-align:center;padding:8px 0">Recherche...</p>';
-  ncSearchTimer=setTimeout(async ()=>{
-    let phone=raw.replace(/\s/g,"");
-    if(!phone.startsWith("+"))phone="+"+phone.replace(/\D/g,"");
-    const digits=phone.replace(/\D/g,"");
-
-    // Chercher dans les contacts déjà chargés (par numéro, comparaison sur les chiffres)
-    let found=S.contacts.find(c=>(c.phone||"").replace(/\D/g,"")===digits);
-
-    // Si non trouvé localement, interroger Firebase directement
-    if(!found && isOnline){
-      try{
-        const snap=await db.ref("users").orderByChild("phone").equalTo(phone).get();
-        if(snap.exists()){
-          snap.forEach(child=>{
-            const u=child.val();
-            if(u.uid!==S.myUid) found=u;
-          });
-        }
-        // Essayer aussi sans le + au cas où le numéro est stocké différemment
-        if(!found){
-          const snap2=await db.ref("users").get();
-          snap2.forEach(child=>{
-            const u=child.val();
-            if(u.uid!==S.myUid && (u.phone||"").replace(/\D/g,"")===digits) found=u;
-          });
-        }
-      }catch(e){}
-    }
-
-    if(found){
-      const avH=(found.avType==="img"&&found.img)?'<img src="'+found.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(found.emoji||"🧑🏾");
-      result.innerHTML=
-        '<div class="contact-row" style="border-bottom:none;border-radius:14px;background:var(--surface);border:1px solid var(--border)" id="nc-found-row">'+
-          '<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(found.online?"online":"offline")+'"></div></div>'+
-          '<div class="row-info"><div class="row-top"><span class="row-name">'+esc(found.name||found.phone||"Inconnu")+'</span></div>'+
-          '<div class="row-bot"><span class="row-last">'+esc(found.phone||"")+'</span></div></div>'+
-          '<span style="color:var(--accent);font-size:22px;padding:0 4px">›</span>'+
-        '</div>';
-      $("nc-found-row").onclick=async ()=>{
-        $("newchat-overlay").style.display="none";
-        // Ajouter localement si pas encore présent
-        if(!S.contacts.find(c=>c.uid===found.uid)){
-          S.contacts.push(found);
-          CACHE.save("contacts",S.contacts);
-        }
-        // Ouvrir la discussion immédiatement
-        openChat(found.uid);
-        // Sauvegarder le lien mutuel en arrière-plan (silencieux)
-        ensureMutualContact(found.uid).catch(()=>{});
-      };
-    } else {
-      result.innerHTML=
-        '<div style="text-align:center;padding:24px 12px">'+
-          '<div style="font-size:40px;margin-bottom:10px">🔍</div>'+
-          '<p style="color:var(--text);font-weight:700;font-size:15px;margin-bottom:6px">Aucun utilisateur trouvé</p>'+
-          '<p style="color:var(--sub);font-size:13px;line-height:1.6">Le numéro <strong style="color:var(--text)">'+esc(phone)+"</strong> n'est pas encore inscrit sur EniBusiness Pro.</p>"+
-          '<button class="big-btn" style="margin-top:16px" onclick="openShareModal();document.getElementById(&quot;newchat-overlay&quot;).style.display=&quot;none&quot;">📤 Inviter sur EniBusiness Pro</button>'+
-        '</div>';
-    }
-  },350);
-};
-
-// ---- CONTACTS ----
-function listenContacts(){
-  if(S.unsubContacts){S.unsubContacts();S.unsubContacts=null;}
-  // Nettoyer les listeners de présence précédents
-  if(S._presenceListeners){
-    S._presenceListeners.forEach(unsub=>{try{unsub();}catch(e){}});
-  }
-  S._presenceListeners=[];
-
-  S.unsubContacts=db.ref("userContacts/"+S.myUid).on("value",async snap=>{
-    const uids=[];
-    snap.forEach(child=>{if(child.key!==S.myUid)uids.push(child.key);});
-    if(!uids.length){
-      S.contacts=[];CACHE.save("contacts",S.contacts);renderList();return;
-    }
-    // Charger tous les profils en parallèle
-    const fetches=uids.map(uid=>
-      db.ref("users/"+uid).get().then(s=>s.exists()?{...s.val(),uid:s.val().uid||uid}:null).catch(()=>null)
-    );
-    const results=await Promise.all(fetches);
-    // Dédupliquer par numéro de téléphone
-    const seen=new Map();
-    results.forEach(c=>{
-      if(!c)return;
-      const k=c.phone||c.uid;
-      const ex=seen.get(k);
-      if(!ex||(c.lastDevice&&(!ex.lastDevice||c.lastDevice>ex.lastDevice)))seen.set(k,c);
-    });
-    S.contacts=Array.from(seen.values());
-    CACHE.save("contacts",S.contacts);
-    renderList();
-    attachContactStatusListeners();
-
-    // Listeners de présence (online/offline) — UN seul par UID
-    // Nettoyer d'abord les anciens
-    S._presenceListeners.forEach(unsub=>{try{unsub();}catch(e){}});
-    S._presenceListeners=[];
-    uids.forEach(uid=>{
-      const ref=db.ref("users/"+uid);
-      const fn=usnap=>{
-        if(!usnap.exists())return;
-        const updated={...usnap.val(),uid:usnap.val().uid||uid};
-        const idx=S.contacts.findIndex(c=>c.uid===uid);
-        if(idx>=0)S.contacts[idx]=updated;
-        else S.contacts.push(updated);
-        CACHE.save("contacts",S.contacts);
-        // Mise à jour sélective sans re-créer toute la liste
-        const ck=chatKey(S.myUid,uid);
-        const row=document.getElementById("row-"+ck);
-        if(row){
-          const dot=row.querySelector(".dot");
-          if(dot)dot.className="dot "+(updated.online?"online":"offline");
-        }
-        if(S.activeId===uid)refreshChatHeader(updated);
-      };
-      ref.on("value",fn);
-      S._presenceListeners.push(()=>ref.off("value",fn));
-    });
-  },err=>{
-    console.error("listenContacts:",err.message);
-    const cc=CACHE.load("contacts");
-    if(cc){S.contacts=cc;renderList();}
-  });
-}
-
-// Ajoute une discussion mutuelle entre 2 utilisateurs (comme WhatsApp : démarrer une conv ajoute le contact pour les 2)
-async function ensureMutualContact(otherUid){
-  if(!S.myUid||!otherUid||otherUid===S.myUid) return;
-
-  // Charger le profil de l'autre utilisateur
-  let otherProfile=null;
-  try{
-    const snap=await db.ref("users/"+otherUid).get();
-    if(snap.exists()) otherProfile=snap.val();
-  }catch(e){}
-
-  // Vérifier si on a déjà un contact avec ce même numéro de téléphone
-  // pour éviter les doublons quand quelqu'un change de téléphone
-  if(otherProfile&&otherProfile.phone){
-    const phone=otherProfile.phone;
-    const duplicate=S.contacts.find(c=>
-      c.uid!==otherUid && (c.phone===phone||(c.name&&c.name===phone))
-    );
-    if(duplicate){
-      // Un contact avec ce numéro existe déjà sous un autre UID
-      // Supprimer l'ancien doublon et garder le plus récent (otherUid)
-      db.ref("userContacts/"+S.myUid+"/"+duplicate.uid).remove().catch(()=>{});
-      db.ref("chats/"+chatKey(S.myUid,duplicate.uid)+"/lastMsg").remove().catch(()=>{});
-    }
-  }
-
-  // Ajouter le contact dans les deux sens
-  await db.ref("userContacts/"+S.myUid+"/"+otherUid).set(true);
-  await db.ref("userContacts/"+otherUid+"/"+S.myUid).set(true);
-}
-
-// ---- MENU CONTEXTUEL DES MESSAGES (copier, supprimer) ----
-function showMsgMenu(m,self,bub){
-  const old=document.getElementById("msg-ctx-menu");if(old)old.remove();
-  const menu=document.createElement("div");
-  menu.id="msg-ctx-menu";
-  menu.style.cssText="position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.35);display:flex;align-items:flex-end";
-
-  const canCopy=m.type==="text"&&m.text&&!m.del;
-  const canDelAll=self&&!m.del&&m.id;
-  const canDelMe=m.id&&!m.del;
-
-  let btns="";
-  if(canCopy) btns+=`<button onclick="copyMsg(${JSON.stringify(m.text||'')})" style="display:flex;align-items:center;gap:14px;width:100%;padding:15px 20px;border-bottom:1px solid var(--border);background:none;border-top:none;border-left:none;border-right:none;color:var(--text);font-size:15px;font-family:inherit;cursor:pointer"><span style="font-size:20px">📋</span>Copier le message</button>`;
-  if(canDelAll) btns+=`<button onclick="delMsg('${m.id}',true);document.getElementById('msg-ctx-menu').remove()" style="display:flex;align-items:center;gap:14px;width:100%;padding:15px 20px;border-bottom:1px solid var(--border);border-top:none;border-left:none;border-right:none;background:none;color:var(--danger);font-size:15px;font-family:inherit;cursor:pointer"><span style="font-size:20px">🗑</span>Supprimer pour tous</button>`;
-  if(canDelMe)  btns+=`<button onclick="delMsg('${m.id}',false);document.getElementById('msg-ctx-menu').remove()" style="display:flex;align-items:center;gap:14px;width:100%;padding:15px 20px;border:none;background:none;color:var(--danger);font-size:15px;font-family:inherit;cursor:pointer;opacity:.7"><span style="font-size:20px">🗑</span>Supprimer pour moi</button>`;
-
-  menu.innerHTML=
-    '<div style="width:100%;background:var(--surface);border-radius:20px 20px 0 0;padding:6px 0 24px">'+
-      '<div style="width:36px;height:4px;border-radius:2px;background:var(--border);margin:8px auto 12px"></div>'+
-      btns+
-      '<button onclick="document.getElementById(\'msg-ctx-menu\').remove()" style="display:flex;align-items:center;justify-content:center;width:calc(100% - 32px);margin:8px 16px 0;padding:14px;border:none;background:var(--bg);border-radius:14px;color:var(--sub);font-size:15px;font-family:inherit;cursor:pointer;font-weight:600">Annuler</button>'+
-    '</div>';
-  menu.onclick=e=>{if(e.target===menu)menu.remove();};
-  document.body.appendChild(menu);
-}
-
-window.copyMsg=function(text){
-  const menu=document.getElementById("msg-ctx-menu");if(menu)menu.remove();
-  if(!text)return;
-  if(navigator.clipboard&&navigator.clipboard.writeText){
-    navigator.clipboard.writeText(text).then(()=>toast("Message copié ✓")).catch(()=>{
-      // Fallback
-      const ta=document.createElement("textarea");
-      ta.value=text;ta.style.position="fixed";ta.style.opacity="0";
-      document.body.appendChild(ta);ta.select();
-      try{document.execCommand("copy");toast("Message copié ✓");}catch(e){toast("Impossible de copier","err");}
-      ta.remove();
-    });
-  } else {
-    const ta=document.createElement("textarea");
-    ta.value=text;ta.style.position="fixed";ta.style.opacity="0";
-    document.body.appendChild(ta);ta.select();
-    try{document.execCommand("copy");toast("Message copié ✓");}catch(e){toast("Impossible de copier","err");}
-    ta.remove();
-  }
-};
-
-function showDeleteConvMenu(c,ck,row){
-  // Supprimer tout menu existant
-  const old=document.getElementById("conv-del-menu");if(old)old.remove();
-  const nick=CACHE.load("nick_"+c.uid)||"";
-  const name=nick||c.name||c.phone||"Inconnu";
-  const menu=document.createElement("div");
-  menu.id="conv-del-menu";
-  menu.style.cssText="position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.4);display:flex;align-items:flex-end";
-  menu.innerHTML=
-    '<div style="width:100%;background:var(--surface);border-radius:20px 20px 0 0;padding:20px 20px 36px;box-shadow:0 -4px 32px rgba(0,0,0,.2)">'+
-      '<div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px">'+esc(name)+'</div>'+
-      '<div style="font-size:13px;color:var(--sub);margin-bottom:20px">Appui long sur la discussion</div>'+
-      '<button onclick="archOrUnarchConv(\''+c.uid+'\',\''+ck+'\')" style="display:flex;align-items:center;gap:14px;width:100%;padding:14px 0;border-bottom:1px solid var(--border);background:none;border-top:none;border-left:none;border-right:none;color:var(--text);font-size:15px;font-family:inherit;cursor:pointer">'+
-        '<span style="font-size:22px">'+(S.arch.has(c.uid)?"📤":"🗄")+'</span>'+(S.arch.has(c.uid)?"Désarchiver":"Archiver")+'</button>'+
-      '<button onclick="deleteConversation(\''+c.uid+'\',\''+ck+'\')" style="display:flex;align-items:center;gap:14px;width:100%;padding:14px 0;border:none;background:none;color:var(--danger);font-size:15px;font-family:inherit;cursor:pointer">'+
-        '<span style="font-size:22px">🗑</span>Supprimer la discussion</button>'+
-      '<button onclick="document.getElementById(\'conv-del-menu\').remove()" style="display:flex;align-items:center;justify-content:center;width:100%;padding:14px 0;margin-top:8px;border:none;background:var(--bg);border-radius:14px;color:var(--sub);font-size:15px;font-family:inherit;cursor:pointer;font-weight:600">Annuler</button>'+
-    '</div>';
-  menu.onclick=e=>{if(e.target===menu)menu.remove();};
-  document.body.appendChild(menu);
-}
-
-window.archOrUnarchConv=function(uid,ck){
-  const menu=document.getElementById("conv-del-menu");if(menu)menu.remove();
-  toggleArch(uid);
-};
-
-window.deleteConversation=function(uid,ck){
-  const menu=document.getElementById("conv-del-menu");if(menu)menu.remove();
-  // Supprimer les messages de la discussion dans Firebase
-  db.ref("chats/"+ck).remove().catch(()=>{});
-  // Retirer le contact de userContacts (les deux sens)
-  db.ref("userContacts/"+S.myUid+"/"+uid).remove().catch(()=>{});
-  // Retirer de la liste locale
-  S.contacts=S.contacts.filter(c=>c.uid!==uid);
-  CACHE.save("contacts",S.contacts);
-  // Supprimer le cache des messages
-  try{localStorage.removeItem("msgs_"+ck);}catch(e){}
-  // Nettoyer le listener Firebase associé à cette conversation
-  if(S.lastMsgListeners&&S.lastMsgListeners[ck]){
-    try{S.lastMsgListeners[ck].ref.off("value",S.lastMsgListeners[ck].handler);}catch(e){}
-    delete S.lastMsgListeners[ck];
-  }
-  toast("Discussion supprimée");
-  renderList();
-};
-
-
-function refreshChatHeader(c){
-  const nick=CACHE.load("nick_"+c.uid);
-  const displayName=nick||c.name||c.phone||"Inconnu";
-  const cav=$("c-av");if(cav)cav.innerHTML=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
-  const cd=$("c-dot");if(cd)cd.className="dot "+(c.online?"online":"offline");
-  const cn=$("c-name");if(cn)cn.textContent=displayName;
-  const cs=$("c-status");if(cs){
-    if(c.online){cs.textContent="● En ligne";cs.style.color="var(--green)";}
-    else if(c.lastSeenTs){cs.textContent="Vu "+formatLastSeen(c.lastSeenTs);cs.style.color="var(--sub)";}
-    else{cs.textContent="";cs.style.color="var(--sub)";}
-  }
-}
-
-// ---- INFOS CONTACT / ENREGISTRER DANS LE TÉLÉPHONE ----
-window.openContactInfo=function(){
-  if(!S.activeId)return;
-  const c=S.contacts.find(x=>x.uid===S.activeId);
-  if(!c)return;
-  const av=$("ci-av");av.innerHTML="";
-  if(c.avType==="img"&&c.img){const img=document.createElement("img");img.src=c.img;img.style.cssText="width:100%;height:100%;object-fit:cover;border-radius:50%";av.appendChild(img);}
-  else{av.innerHTML="<span>"+(c.emoji||"🧑🏾")+"</span>";}
-  $("ci-name").textContent=c.name||c.phone||"Inconnu";
-  $("ci-phone").textContent=c.phone||"";
-  $("ci-status-txt").textContent=c.online?"● En ligne":(c.lastSeenTs?"Vu "+formatLastSeen(c.lastSeenTs):"");
-  // Pré-remplir le surnom avec le nom actuel stocké localement
-  const saved=CACHE.load("nick_"+c.uid);
-  $("ci-nickname-input").value=saved||c.name||"";
-  $("contact-info-overlay").style.display="flex";
-};
-
-window.saveContactNickname=function(){
-  if(!S.activeId)return;
-  const c=S.contacts.find(x=>x.uid===S.activeId);
-  if(!c)return;
-  const nick=$("ci-nickname-input").value.trim();
-  if(!nick){toast("Entrez un nom","err");return;}
-  // Sauvegarder localement (le vrai nom de l'utilisateur dans Firebase ne change pas)
-  CACHE.save("nick_"+c.uid, nick);
-  c.localName=nick;
-  $("ci-name").textContent=nick;
-  // Mettre à jour l'affichage dans la liste et le chat
-  renderList();
-  if(S.activeId===c.uid) refreshChatHeader({...c,name:nick});
-  toast("Nom enregistré ✓");
-  $("contact-info-overlay").style.display="none";
-};
-
-window.downloadContactVcf=function(){
-  if(!S.activeId)return;
-  const c=S.contacts.find(x=>x.uid===S.activeId);
-  if(!c)return;
-  const nick=CACHE.load("nick_"+c.uid);
-  const name=(nick||c.name||c.phone||"Contact").replace(/[\r\n]/g,"");
-  const phone=(c.phone||"").replace(/[\r\n]/g,"");
-  const vcf="BEGIN:VCARD\r\nVERSION:3.0\r\nFN:"+name+"\r\nTEL;TYPE=CELL:"+phone+"\r\nEND:VCARD\r\n";
-  const blob=new Blob([vcf],{type:"text/vcard"});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement("a");a.href=url;a.download=name.replace(/\s+/g,"_")+".vcf";
-  document.body.appendChild(a);a.click();document.body.removeChild(a);
-  setTimeout(()=>URL.revokeObjectURL(url),2000);
-  toast("Contact téléchargé ✓");
-};
-
 function renderList(){
   const box=$("contact-list");
   if(!box)return;
+
   const term=S.search.toLowerCase();
   let vis=S.contacts.filter(c=>{
     const nick=CACHE.load("nick_"+c.uid)||"";
     const name=(nick||c.name||c.phone||"").toLowerCase();
-    const match=name.includes(term)||(c.phone||"").includes(term);
+    const match=name.includes(term)||(c.phone||"").toLowerCase().includes(term);
     return match&&(S.tab==="archived"?S.arch.has(c.uid):!S.arch.has(c.uid));
   });
 
   if(!vis.length){
-    // Nettoyer les anciens listeners lastMsg
     if(S.lastMsgListeners){
       Object.values(S.lastMsgListeners).forEach(l=>{try{l.ref.off("value",l.handler);}catch(e){}});
       S.lastMsgListeners={};
     }
     box.innerHTML=S.tab==="archived"
       ?'<div class="empty-note">Aucune conversation archivée</div>'
-      :'<div class="empty-note">Aucune discussion pour le moment<br/><br/>Appuyez sur ➕ pour trouver un contact</div>';
+      :'<div class="empty-note">Aucune discussion<br/>Appuyez sur ➕ pour trouver un contact</div>';
     return;
   }
 
-  // Trier du plus récent au plus ancien
   vis.sort((a,b)=>{
     const ta=CACHE.load("lastTs_"+chatKey(S.myUid,a.uid))||0;
     const tb=CACHE.load("lastTs_"+chatKey(S.myUid,b.uid))||0;
     return tb-ta;
   });
 
-  // Nettoyer les listeners des contacts qui ne sont plus visibles
-  if(!S.lastMsgListeners) S.lastMsgListeners={};
+  if(!S.lastMsgListeners)S.lastMsgListeners={};
+
+  // Nettoyer listeners des contacts disparus
   const visKeys=new Set(vis.map(c=>chatKey(S.myUid,c.uid)));
   Object.keys(S.lastMsgListeners).forEach(ck=>{
     if(!visKeys.has(ck)){
@@ -1551,30 +1186,27 @@ function renderList(){
 
   box.innerHTML="";
 
-  vis.forEach(c=>{    const nick=CACHE.load("nick_"+c.uid)||"";
+  vis.forEach(c=>{
+    const nick=CACHE.load("nick_"+c.uid)||"";
     const displayName=nick||c.name||c.phone||"Inconnu";
     const ck=chatKey(S.myUid,c.uid);
-
-    const row=document.createElement("div");
-    row.id="row-"+ck;
-    row.setAttribute("data-uid",c.uid);
-    row.className="contact-row"+(S.activeId===c.uid?" active-row":"");
-
-    const avH=(c.avType==="img"&&c.img)
-      ?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>'
-      :(c.emoji||"🧑🏾");
-
-    // Dernier message depuis le cache (affichage instantané)
     const cachedLm=CACHE.load("lastMsg_"+ck);
     const lmText=cachedLm
-      ?(cachedLm.del?"🚫 Message supprimé"
+      ?(cachedLm.del?"🚫 Supprimé"
         :cachedLm.type==="voice"?"🎵 Vocal"
         :cachedLm.type==="photo"?"📷 Photo"
         :cachedLm.type==="video"?"🎥 Vidéo"
         :(cachedLm.text||""))
       :(c.online?"● En ligne":"");
     const lmTime=cachedLm?(cachedLm.t||""):"";
+    const avH=(c.avType==="img"&&c.img)
+      ?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>'
+      :(c.emoji||"🧑🏾");
 
+    const row=document.createElement("div");
+    row.id="row-"+ck;
+    row.setAttribute("data-uid",c.uid);
+    row.className="contact-row"+(S.activeId===c.uid?" active-row":"");
     row.innerHTML=
       '<div class="av-wrap"><div class="av">'+avH+'</div>'
       +'<div class="dot '+(c.online?"online":"offline")+'"></div></div>'
@@ -1583,109 +1215,79 @@ function renderList(){
       +'<span class="row-time" id="lt-'+ck+'">'+esc(lmTime)+'</span></div>'
       +'<div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+esc(lmText)+'</span>'
       +'<span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span>'
-      +'<button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button>'
+      +'<button class="arch-btn" data-uid="'+c.uid+'">'+( S.arch.has(c.uid)?"📤":"🗄")+'</button>'
       +'</div></div>';
 
     row.querySelector(".arch-btn").onclick=ev=>{ev.stopPropagation();toggleArch(c.uid);};
 
-    // Clic simple → ouvrir discussion
-    let longPressTimer=null,longPressed=false,lpX=0,lpY=0;
-    row.onclick=e=>{
-      e.stopPropagation();
-      if(!longPressed) openChat(c.uid);
-      longPressed=false; // Reset après clic
+    // Long press pour supprimer, tap simple pour ouvrir
+    let lpt=null,lpdone=false,lpx=0,lpy=0;
+    const lpS=e=>{
+      lpdone=false;
+      const p=e.touches?e.touches[0]:e;
+      lpx=p.clientX;lpy=p.clientY;
+      clearTimeout(lpt);
+      lpt=setTimeout(()=>{lpdone=true;if(navigator.vibrate)navigator.vibrate(40);showDeleteConvMenu(c,ck,row);},700);
     };
-    const lpStart=e=>{
-      longPressed=false;
-      const pt=e.touches?e.touches[0]:e;
-      lpX=pt.clientX;lpY=pt.clientY;
-      clearTimeout(longPressTimer);
-      longPressTimer=setTimeout(()=>{
-        longPressed=true;
-        if(navigator.vibrate)navigator.vibrate(40);
-        showDeleteConvMenu(c,ck,row);
-      },700); // 700ms pour éviter les faux déclenchements
-    };
-    const lpEnd=()=>{
-      clearTimeout(longPressTimer);
-      // Ne pas reset longPressed ici — onclick s'en charge
-    };
-    const lpMove=e=>{
-      const pt=e.touches?e.touches[0]:e;
-      if(Math.abs(pt.clientX-lpX)>12||Math.abs(pt.clientY-lpY)>12){
-        clearTimeout(longPressTimer);
-        longPressed=false;
-      }
-    };
-    row.addEventListener("touchstart",lpStart,{passive:true});
-    row.addEventListener("touchend",lpEnd,{passive:true});
-    row.addEventListener("touchmove",lpMove,{passive:true});
-    row.addEventListener("touchcancel",lpEnd,{passive:true});
-    row.addEventListener("mousedown",lpStart);
-    row.addEventListener("mouseup",lpEnd);
+    const lpE=()=>clearTimeout(lpt);
+    const lpM=e=>{const p=e.touches?e.touches[0]:e;if(Math.abs(p.clientX-lpx)>12||Math.abs(p.clientY-lpy)>12){clearTimeout(lpt);lpdone=false;}};
+    row.addEventListener("touchstart",lpS,{passive:true});
+    row.addEventListener("touchend",lpE,{passive:true});
+    row.addEventListener("touchmove",lpM,{passive:true});
+    row.addEventListener("touchcancel",lpE,{passive:true});
+    row.addEventListener("mousedown",lpS);
+    row.addEventListener("mouseup",lpE);
     row.addEventListener("contextmenu",e=>e.preventDefault());
+    row.onclick=e=>{if(!lpdone)openChat(c.uid);lpdone=false;};
 
     box.appendChild(row);
     updateUnreadBadge(ck);
 
-    // Listener lastMsg — UN SEUL par conversation, jamais dupliqué
+    // Listener Firebase lastMsg — 1 seul par conversation
     if(!S.lastMsgListeners[ck]){
       const lmRef=db.ref("chats/"+ck+"/lastMsg");
-      const lmHandler=snap=>{
-        const lm=snap.val();
-        if(!lm)return;
-
-        // Mise à jour UI
+      const lmH=snap=>{
+        const lm=snap.val();if(!lm)return;
         const lt=document.getElementById("lt-"+ck);
         const ll=document.getElementById("ll-"+ck);
-        const txt=lm.del?"🚫 Message supprimé"
+        const txt=lm.del?"🚫 Supprimé"
           :lm.type==="voice"?"🎵 Vocal"
           :lm.type==="photo"?"📷 Photo"
           :lm.type==="video"?"🎥 Vidéo"
           :(lm.text||"");
         if(lt)lt.textContent=lm.t||"";
         if(ll)ll.textContent=txt;
-
-        // Cache
         CACHE.save("lastMsg_"+ck,{text:lm.text||"",t:lm.t||"",type:lm.type||"text",del:!!lm.del,from:lm.from||""});
         const ts=lm.ts||Date.now();
-        const prevTs=CACHE.load("lastTs_"+ck)||0;
+        const prev=CACHE.load("lastTs_"+ck)||0;
         CACHE.save("lastTs_"+ck,ts);
-
-        // Badge non-lu si nouveau message d'un autre
-        if(ts>prevTs&&lm.from&&lm.from!==S.myUid&&S.activeId!==c.uid){
+        if(ts>prev&&lm.from&&lm.from!==S.myUid&&S.activeId!==c.uid){
           incrementUnread(c.uid,ck);
         }
-
-        // Remonter la conversation en haut
+        // Monter la conversation en haut sans reconstruire le DOM
         const curBox=$("contact-list");
-        if(curBox) moveRowToTop(ck,curBox);
+        if(curBox)moveRowToTop(ck,curBox);
       };
-      lmRef.on("value",lmHandler);
-      S.lastMsgListeners[ck]={ref:lmRef,handler:lmHandler};
+      lmRef.on("value",lmH);
+      S.lastMsgListeners[ck]={ref:lmRef,handler:lmH};
     }
   });
-
-  // Réappliquer le filtre de recherche si actif
-  if(S.search) doSearch(S.search);
 }
 
-// Déplace la conversation en haut de la liste (le plus récent = premier)
 function moveRowToTop(ck,box){
   const rowEl=document.getElementById("row-"+ck);
-  if(!rowEl||!box)return;
-  if(box.firstChild===rowEl)return; // Déjà en haut
+  if(!rowEl||!box||box.firstChild===rowEl)return;
   const myTs=CACHE.load("lastTs_"+ck)||0;
   const rows=Array.from(box.querySelectorAll(".contact-row"));
-  let insertBefore=null;
   for(const r of rows){
     if(r===rowEl)continue;
     const rCk=chatKey(S.myUid,r.getAttribute("data-uid")||"");
-    const rTs=CACHE.load("lastTs_"+rCk)||0;
-    if(myTs>=rTs){insertBefore=r;break;}
+    if((CACHE.load("lastTs_"+rCk)||0)<myTs){
+      box.insertBefore(rowEl,r);
+      return;
+    }
   }
-  if(insertBefore) box.insertBefore(rowEl,insertBefore);
-  else box.insertBefore(rowEl,box.firstChild);
+  box.insertBefore(rowEl,box.firstChild);
 }
 
 function incrementUnread(uid,ck){
@@ -1702,14 +1304,14 @@ function clearUnread(uid,ck){
 }
 
 function updateUnreadBadge(ck){
-  const badge=document.getElementById("ub-"+ck);
-  if(!badge)return;
+  const b=document.getElementById("ub-"+ck);
+  if(!b)return;
   const n=CACHE.load("unread_"+ck)||0;
-  if(n>0){badge.textContent=n>99?"99+":String(n);badge.style.display="flex";}
-  else badge.style.display="none";
+  if(n>0){b.textContent=n>99?"99+":String(n);b.style.display="flex";}
+  else b.style.display="none";
 }
 
-// Ajoute une bulle avec séparateur de date si nécessaire
+
 function appendBubbleWithDate(box,m){
   const ts=m.ts||Date.now();
   const label=dateLabel(ts);
