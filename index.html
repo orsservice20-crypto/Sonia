@@ -59,14 +59,14 @@ const S={
   profile:{name:"",status:"En ligne",avType:"emoji",emoji:"🧑🏾",img:null},
   contacts:[],activeId:null,arch:new Set(),tab:"chats",search:"",
   currentScreen:"s-splash",
-  unsubMsgs:null,unsubContacts:null,lastMsgListeners:{},statusListeners:{},contactStatuses:{},_presenceListeners:[],
+  unsubMsgs:null,unsubContacts:null,lastMsgListeners:{},
   recPaused:false,recSecs:0,recTick:null,
   recStream:null,recorder:null,recChunks:[],recMimeType:null,
   pendingPhoto:null,pendingVideo:null,pendingVideoFile:null,pendingPhone:null,
   // WebRTC
   pc:null,localStream:null,remoteStream:null,
   callType:null,callDir:null,callPeer:null,callTick:null,callSecs:0,callMuted:false,callCamOff:false,
-  callRef:null,unsubCall:null,unsubIce:null,iceQueue:[],disconnectTimer:null,_callTimeout:null,incomingOffer:null,remoteStream:null,localStream:null,pc:null,_callTimeout:null,
+  callRef:null,unsubCall:null,unsubIce:null,iceQueue:[],disconnectTimer:null,
 };
 
 let isOnline=navigator.onLine;
@@ -85,45 +85,6 @@ const nowDate=()=>{
   if(isYest)return"Hier";
   return d.toLocaleDateString("fr",{day:"2-digit",month:"short"});
 };
-
-// Renvoie un libellé de date pour un timestamp donné : "Aujourd'hui", "Hier", ou "12 juin 2026"
-// Utilisé pour les séparateurs de date entre messages et "Vu à"
-function dateLabel(ts){
-  if(!ts)return"";
-  const d=new Date(ts);
-  const today=new Date();
-  const isToday=d.toDateString()===today.toDateString();
-  if(isToday)return"Aujourd'hui";
-  const yest=new Date();yest.setDate(yest.getDate()-1);
-  const isYest=d.toDateString()===yest.toDateString();
-  if(isYest)return"Hier";
-  const sameYear=d.getFullYear()===today.getFullYear();
-  return d.toLocaleDateString("fr",sameYear?{day:"2-digit",month:"long"}:{day:"2-digit",month:"long",year:"numeric"});
-}
-
-// Formate le statut "Vu à" comme WhatsApp :
-// - Aujourd'hui à 14:32
-// - Hier à 14:32
-// - Plus de 2 jours → date complète + heure : 12 juin à 14:32 (ou avec l'année si différente)
-function formatLastSeen(ts){
-  if(!ts)return"";
-  const d=new Date(ts);
-  const now=Date.now();
-  const diffMs=now-ts;
-  const diffDays=diffMs/(1000*60*60*24);
-  const heure=d.toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"});
-  const today=new Date();
-  const isToday=d.toDateString()===today.toDateString();
-  if(isToday)return"aujourd'hui à "+heure;
-  const yest=new Date();yest.setDate(yest.getDate()-1);
-  const isYest=d.toDateString()===yest.toDateString();
-  if(isYest)return"hier à "+heure;
-  // Plus de 2 jours → date complète
-  const sameYear=d.getFullYear()===today.getFullYear();
-  const dateStr=d.toLocaleDateString("fr",sameYear?{day:"2-digit",month:"long"}:{day:"2-digit",month:"long",year:"numeric"});
-  return"le "+dateStr+" à "+heure;
-}
-
 const esc=t=>String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 const chatKey=(a,b)=>[a,b].sort().join("_");
 
@@ -342,7 +303,7 @@ async function verifyCode(){
         db.ref("users/"+existingUid+"/online").set(true).catch(()=>{});
         db.ref("users/"+existingUid).onDisconnect().update({
           online:false,
-          lastSeenTs:Date.now()
+          lastSeen:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"})
         });
 
         // Afficher avec l'ancien compte (toutes les discussions intactes)
@@ -374,7 +335,7 @@ async function verifyCode(){
         db.ref("users/"+S.myUid+"/online").set(true).catch(()=>{});
         db.ref("users/"+S.myUid).onDisconnect().update({
           online:false,
-          lastSeenTs:Date.now()
+          lastSeen:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"})
         });
         const cc = CACHE.load("contacts"); if(cc) S.contacts=cc;
         updateMyAv(); renderList(); showScreen("s-list");
@@ -504,7 +465,7 @@ async function completeLogin(user){
     db.ref("users/"+S.myUid+"/online").set(true).catch(()=>{});
     db.ref("users/"+S.myUid).onDisconnect().update({
       online:false,
-      lastSeenTs:Date.now()
+      lastSeen:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"})
     });
     listenContacts();listenIncomingCalls();listenIncomingMessages();
   }catch(e){console.error("login sync:",e.message);}
@@ -568,45 +529,32 @@ auth.onAuthStateChanged(async user=>{
 });
 
 // ==================== APPELS WEBRTC ====================
-// ======================================================
-// SYSTÈME D'APPEL WEBRTC — TRICKLE ICE (comme WhatsApp)
-// Envoie les candidats ICE au fil de l'eau = connexion rapide
-// même sur réseaux lents (Afrique, 4G instable, Europe)
-// ======================================================
-
-const ICE_CFG={iceServers:[
+const ICE_SERVERS={iceServers:[
   {urls:"stun:stun.l.google.com:19302"},
   {urls:"stun:stun1.l.google.com:19302"},
   {urls:"stun:stun2.l.google.com:19302"},
-  {urls:"stun:stun4.l.google.com:19302"},
   {urls:"stun:global.stun.twilio.com:3478"},
-  // TURN relay — ports 80/443 passent les pare-feux opérateurs
-  {urls:"turn:openrelay.metered.ca:80",
-   username:"openrelayproject",credential:"openrelayproject"},
-  {urls:"turn:openrelay.metered.ca:443",
-   username:"openrelayproject",credential:"openrelayproject"},
-  {urls:"turns:openrelay.metered.ca:443",
-   username:"openrelayproject",credential:"openrelayproject"},
-  {urls:"turn:openrelay.metered.ca:80?transport=tcp",
-   username:"openrelayproject",credential:"openrelayproject"},
-  {urls:"turn:numb.viagenie.ca",
-   username:"webrtc@live.com",credential:"muazkh"},
-],iceCandidatePoolSize:8,bundlePolicy:"max-bundle",rtcpMuxPolicy:"require"};
+  // TURN servers - multiples pour fiabilité maximale
+  {urls:"turn:openrelay.metered.ca:80",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turn:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turns:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turn:openrelay.metered.ca:80?transport=tcp",username:"openrelayproject",credential:"openrelayproject"},
+]};
 
-// === UI HELPERS ===
-function setCallUI(c){
-  const av=$("call-av-big");if(!av)return;
-  av.innerHTML="";
-  if(c&&c.avType==="img"&&c.img){const img=document.createElement("img");img.src=c.img;av.appendChild(img);}
-  else{av.textContent=(c&&c.emoji)||"🧑🏾";}
-  const nick=c&&c.uid?CACHE.load("nick_"+c.uid):null;
-  const nm=$("call-name-big");if(nm)nm.textContent=nick||(c&&(c.name||c.phone))||"Inconnu";
+function setCallUI(contact){
+  const av=$("call-av-big");av.innerHTML="";
+  if(contact&&contact.avType==="img"&&contact.img){const img=document.createElement("img");img.src=contact.img;av.appendChild(img);}
+  else{av.textContent=(contact&&contact.emoji)||"🧑🏾";}
+  const nick=contact&&contact.uid?CACHE.load("nick_"+contact.uid):null;
+  $("call-name-big").textContent=nick||(contact&&(contact.name||contact.phone))||"Inconnu";
 }
 
 function resetCallOverlay(){
-  [$("call-overlay")].forEach(el=>{if(el)el.style.display="none";});
-  [$("call-remote-video"),$("call-local-video")].forEach(v=>{if(v){v.style.display="none";v.srcObject=null;}});
-  [$("call-active-actions"),$("call-incoming-actions")].forEach(el=>{if(el)el.style.display="none";});
+  const co=$("call-overlay");if(co)co.style.display="none";
+  const rv=$("call-remote-video");if(rv){rv.style.display="none";rv.srcObject=null;}
+  const lv=$("call-local-video");if(lv){lv.style.display="none";lv.srcObject=null;}
+  const aa=$("call-active-actions");if(aa)aa.style.display="none";
+  const ia=$("call-incoming-actions");if(ia)ia.style.display="none";
   const st=$("call-state-text");if(st)st.textContent="";
   const mb=$("call-mute-btn");if(mb){mb.className="cb-btn";mb.textContent="🎤";}
   const cb=$("call-cam-btn");if(cb){cb.className="cb-btn";cb.textContent="📷";}
@@ -616,29 +564,26 @@ function resetCallOverlay(){
 }
 
 function getLocalStream(type){
-  const c=type==="video"
-    ?{audio:true,video:{facingMode:"user",width:{ideal:640},height:{ideal:480}}}
-    :{audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true},video:false};
-  return navigator.mediaDevices.getUserMedia(c);
+  return navigator.mediaDevices.getUserMedia(
+    type==="video"?{audio:true,video:{facingMode:"user",width:{ideal:640},height:{ideal:480}}}:{audio:true,video:false}
+  );
 }
 
-// === PEER CONNECTION ===
-function makePC(){
-  // Capturer la référence au moment de la création du PC
-  const createdForRef=S.callRef;
-  const pc=new RTCPeerConnection(ICE_CFG);
+function createPC(){
+  const pc=new RTCPeerConnection({
+    iceServers:ICE_SERVERS.iceServers,
+    iceCandidatePoolSize:10,
+    bundlePolicy:"max-bundle",
+    rtcpMuxPolicy:"require"
+  });
 
-  // Trickle ICE : envoyer chaque candidat dès qu'il arrive
   pc.onicecandidate=e=>{
-    if(!e.candidate)return;
-    if(S.pc!==pc)return; // PC obsolète
-    const ref=S.callRef||createdForRef;
-    if(!ref)return; // Plus d'appel actif
-    db.ref(ref+"/ice/"+S.myUid).push(e.candidate.toJSON()).catch(()=>{});
+    if(e.candidate&&S.callRef&&S.pc===pc)
+      db.ref(S.callRef+"/ice/"+S.myUid).push(e.candidate.toJSON()).catch(()=>{});
   };
 
   pc.ontrack=e=>{
-    if(S.pc!==pc)return;
+    if(S.pc!==pc)return; // Ignorer si ce n'est plus le PC actif
     if(!S.remoteStream)S.remoteStream=new MediaStream();
     e.streams[0].getTracks().forEach(tr=>{
       if(!S.remoteStream.getTracks().find(t=>t.id===tr.id))
@@ -649,189 +594,215 @@ function makePC(){
   };
 
   pc.onconnectionstatechange=()=>{
-    if(S.pc!==pc)return; // PC obsolète — ignorer
+    if(S.pc!==pc)return; // PC obsolète → ignorer
     const st=pc.connectionState;
     if(st==="connected"){
       clearTimeout(S.disconnectTimer);S.disconnectTimer=null;
-      const el=$("call-state-text");if(el)el.textContent="";
-      if(!S.callTick)S.callTick=setInterval(()=>{
-        S.callSecs++;const el=$("call-state-text");
-        if(el)el.textContent=fmt(S.callSecs);
-      },1000);
-    }else if(st==="disconnected"){
-      const el=$("call-state-text");if(el)el.textContent="Reconnexion...";
+      const stEl=$("call-state-text");if(stEl)stEl.textContent="";
+      if(!S.callTick)
+        S.callTick=setInterval(()=>{
+          S.callSecs++;
+          const stEl=$("call-state-text");
+          if(stEl)stEl.textContent=fmt(S.callSecs);
+        },1000);
+    } else if(st==="disconnected"){
+      const stEl=$("call-state-text");if(stEl)stEl.textContent="Reconnexion...";
       clearTimeout(S.disconnectTimer);
       S.disconnectTimer=setTimeout(()=>{
-        if(S.pc!==pc)return;
-        if(pc.connectionState==="failed"||pc.connectionState==="disconnected"){
+        if(S.pc!==pc||!S.callRef)return;
+        if(pc.connectionState==="disconnected"||pc.connectionState==="failed"){
           try{pc.restartIce();}catch(e){}
           S.disconnectTimer=setTimeout(()=>{
-            if(S.pc!==pc)return;
-            if(pc.connectionState!=="connected")endCall();
-          },10000);
+            if(S.pc!==pc||!S.callRef)return;
+            if(pc.connectionState==="disconnected"||pc.connectionState==="failed")endCall();
+          },8000);
         }
       },5000);
-    }else if(st==="failed"){
+    } else if(st==="failed"){
       clearTimeout(S.disconnectTimer);
-      if(S.pc!==pc)return;
+      if(S.pc!==pc||!S.callRef)return;
       try{pc.restartIce();}catch(e){}
       S.disconnectTimer=setTimeout(()=>{
-        if(S.pc!==pc)return;
-        if(pc.connectionState!=="connected")endCall();
+        if(S.pc!==pc||!S.callRef)return;
+        if(pc.connectionState==="failed"||pc.connectionState==="disconnected")endCall();
       },8000);
-    }else if(st==="closed"){
-      clearTimeout(S.disconnectTimer);
+    }
+  };
+
+  pc.oniceconnectionstatechange=()=>{
+    if(S.pc!==pc)return;
+    const ist=pc.iceConnectionState;
+    if(ist==="connected"||ist==="completed"){
+      clearTimeout(S.disconnectTimer);S.disconnectTimer=null;
+    } else if(ist==="failed"){
+      try{pc.restartIce();}catch(e){}
     }
   };
 
   return pc;
 }
 
-// Écouter et appliquer les ICE candidats de l'autre côté (Trickle ICE)
-function watchIce(otherUid){
-  if(S.unsubIce){try{S.unsubIce();}catch(e){}S.unsubIce=null;}
+function listenIce(otherUid){
+  if(S.unsubIce){
+    try{S.unsubIce();}catch(e){}
+    S.unsubIce=null;
+  }
   if(!S.callRef)return;
-  // Capturer callRef maintenant — évite l'erreur "invalid path=null"
-  // quand le listener Firebase se déclenche après endCall()
-  const capturedRef=S.callRef;
-  const ref=db.ref(capturedRef+"/ice/"+otherUid);
-  const fn=snap=>{
-    // Vérifier que l'appel est toujours actif AVANT d'accéder à S.pc
-    if(!S.callRef||S.callRef!==capturedRef)return;
-    const c=snap.val();if(!c||!S.pc)return;
+  S.iceQueue=[];
+  const ref=db.ref(S.callRef+"/ice/"+otherUid);
+  const iceHandler=snap=>{
+    const c=snap.val();
+    if(!c||!S.pc)return;
     if(S.pc.remoteDescription&&S.pc.remoteDescription.type){
-      S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{});
-    }else{
+      S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(e=>{
+        if(e.message&&!e.message.includes("closed")&&!e.message.includes("wrong state"))
+          console.warn("ICE:",e.message);
+      });
+    } else {
       S.iceQueue.push(c);
     }
   };
-  ref.on("child_added",fn);
-  S.unsubIce=()=>ref.off("child_added",fn);
+  ref.on("child_added",iceHandler);
+  S.unsubIce=()=>ref.off("child_added",iceHandler);
 }
 
-// Appliquer les ICE en attente après setRemoteDescription
-function drainIce(){
-  if(!S.pc||!S.iceQueue.length)return;
-  const q=[...S.iceQueue];S.iceQueue=[];
-  q.forEach(c=>S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{}));
+function flushIceQueue(){
+  if(!S.pc||!S.iceQueue||!S.iceQueue.length)return;
+  const q=[...S.iceQueue];
+  S.iceQueue=[];
+  q.forEach(c=>{
+    if(S.pc)S.pc.addIceCandidate(new RTCIceCandidate(c)).catch(()=>{});
+  });
 }
 
-// === APPEL SORTANT ===
+// ---- APPEL SORTANT ----
 window.startCall=async function(type){
   if(!S.activeId||S.callDir)return;
-  const contact=S.contacts.find(c=>c.uid===S.activeId)||{uid:S.activeId};
+  const contact=S.contacts.find(c=>c.uid===S.activeId)||{uid:S.activeId,phone:S.activeId};
 
-  // Initialiser l'état
   S.callType=type;S.callDir="out";S.callPeer=S.activeId;
   S.callRef="callSignals/"+S.activeId+"/"+S.myUid;
   S.iceQueue=[];
-
-  // Afficher l'UI
   resetCallOverlay();
   setCallUI(contact);
   $("call-overlay").style.display="flex";
-  $("call-state-text").textContent="Connexion du micro...";
+  $("call-state-text").textContent="Préparation...";
   $("call-active-actions").style.display="flex";
   if(type!=="video")$("call-cam-wrap").style.display="none";
 
-  // 1. Acquérir le micro/caméra
-  try{S.localStream=await getLocalStream(type);}
-  catch(e){toast("Micro inaccessible : "+e.message,"err");endCall(true);return;}
+  // 1. Micro/caméra
+  try{
+    S.localStream=await getLocalStream(type);
+  }catch(e){
+    toast("Micro/caméra inaccessible","err");
+    endCall(true);return;
+  }
   if(type==="video"){const lv=$("call-local-video");lv.srcObject=S.localStream;lv.style.display="block";}
 
-  // 2. Créer la connexion WebRTC
-  S.pc=makePC();
+  // 2. Créer PC + offre
+  S.pc=createPC();
   S.localStream.getTracks().forEach(tr=>S.pc.addTrack(tr,S.localStream));
 
-  // 3. Commencer à écouter les ICE DE L'AUTRE CÔTÉ immédiatement (Trickle ICE)
-  watchIce(S.activeId);
+  // Écouter les ICE DÈS MAINTENANT (avant setLocalDescription)
+  listenIce(S.activeId);
 
-  // 4. Créer l'offre et l'envoyer IMMÉDIATEMENT (sans attendre le gathering)
   let offer;
   try{
     offer=await S.pc.createOffer();
     await S.pc.setLocalDescription(offer);
-    // NB: on n'attend PAS iceGatheringState === "complete"
-    // Les candidats ICE seront envoyés au fil de l'eau via onicecandidate
-  }catch(e){toast("Erreur offre : "+e.message,"err");endCall(true);return;}
+  }catch(e){
+    toast("Erreur création appel : "+e.message,"err");
+    endCall(true);return;
+  }
 
-  // 5. Publier le signal sur Firebase
   $("call-state-text").textContent="Sonnerie...";
+
+  // 3. Écrire dans Firebase (signal complet avec offre)
+  const ringData={
+    type,from:S.myUid,
+    fromName:S.profile.name||S.myPhone||"Inconnu",
+    fromEmoji:S.profile.emoji||"🧑🏾",
+    fromAvType:S.profile.avType||"emoji",
+    fromImg:S.profile.img||null,
+    to:S.activeId,
+    offer:{type:offer.type,sdp:offer.sdp},
+    status:"ringing",
+    ts:Date.now()
+  };
   try{
-    await db.ref(S.callRef).set({
-      type,from:S.myUid,
-      fromName:S.profile.name||S.myPhone||"",
-      fromEmoji:S.profile.emoji||"🧑🏾",
-      fromAvType:S.profile.avType||"emoji",
-      fromImg:S.profile.img||null,
-      to:S.activeId,
-      offer:{type:offer.type,sdp:offer.sdp},
-      status:"ringing",ts:Date.now()
-    });
+    await db.ref(S.callRef).set(ringData);
     db.ref("inbox/"+S.activeId+"/"+S.myUid).set({
       from:S.myUid,fromPhone:S.myPhone||"",
       fromName:S.profile.name||S.myPhone||"",ts:Date.now()
     }).catch(()=>{});
-  }catch(e){toast("Erreur envoi signal : "+e.message,"err");endCall(true);return;}
+  }catch(e){
+    toast("Impossible de démarrer l'appel : "+e.message,"err");
+    endCall(true);return;
+  }
 
-  // 6. Écouter la réponse
+  // 4. Écouter la réponse
   if(S.unsubCall){try{S.unsubCall();}catch(e){}}
   const ref=db.ref(S.callRef);
-  const onVal=async snap=>{
-    const d=snap.val();
-    if(!d){endCall(true);return;}
-    if(d.status==="ended"||d.status==="rejected"||d.status==="busy"){
-      const msg=d.status==="rejected"?"Appel refusé":d.status==="busy"?"📵 Occupé":"Appel terminé";
-      const el=$("call-state-text");if(el)el.textContent=msg;
-      setTimeout(()=>endCall(true),1500);return;
+  const handler=async snap=>{
+    const data=snap.val();
+    if(!data||data.status==="ended"||data.status==="rejected"||data.status==="busy"){
+      let msg=!data||data.status==="ended"?"Appel terminé":data.status==="rejected"?"Appel refusé":"📵 Occupé";
+      const stEl=$("call-state-text");if(stEl)stEl.textContent=msg;
+      setTimeout(()=>endCall(true),1500);
+      return;
     }
-    if(d.answer&&S.pc&&!S.pc.currentRemoteDescription){
+    if(data.answer&&S.pc&&!S.pc.currentRemoteDescription){
       try{
-        await S.pc.setRemoteDescription(new RTCSessionDescription(d.answer));
-        drainIce(); // Appliquer les ICE reçus pendant l'attente
-        const el=$("call-state-text");if(el)el.textContent="Connexion en cours...";
-      }catch(e){console.error("SRD:",e.message);}
+        await S.pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+        flushIceQueue();
+        const stEl=$("call-state-text");if(stEl)stEl.textContent="Connexion...";
+      }catch(e){console.error("SRD err:",e.message);}
     }
   };
-  ref.on("value",onVal);
-  S.unsubCall=()=>ref.off("value",onVal);
+  ref.on("value",handler);
+  S.unsubCall=()=>ref.off("value",handler);
 
-  // 7. Timeout 60s sans réponse
-  S._callTimeout=setTimeout(()=>{
-    if(S.callDir==="out"&&S.callSecs===0){
-      const el=$("call-state-text");if(el)el.textContent="Pas de réponse";
+  // 5. Timeout 60s
+  const callStartTime=Date.now();
+  setTimeout(()=>{
+    if(S.callRef&&S.callDir==="out"&&S.callSecs===0&&Date.now()-callStartTime>=59000){
+      const stEl=$("call-state-text");if(stEl)stEl.textContent="Pas de réponse";
       endCall();
     }
   },60000);
 };
 
-// === SONNERIE ENTRANTE ===
+// ---- SONNERIE ENTRANTE ----
 function listenIncomingCalls(){
   if(!S.myUid)return;
   db.ref("callSignals/"+S.myUid).on("child_added",snap=>{
     handleRing(snap.key,snap.val());
   });
   db.ref("callSignals/"+S.myUid).on("child_changed",snap=>{
-    const d=snap.val();
-    if(d&&(d.status==="ended"||d.status==="rejected")&&S.callPeer===snap.key)
+    const data=snap.val();
+    if(data&&(data.status==="ended"||data.status==="rejected")&&S.callPeer===snap.key){
       endCall(true);
+    }
   });
 }
 
-function handleRing(callerUid,d){
-  if(!d||d.status!=="ringing"||!d.offer)return;
-  if(!d.ts||Date.now()-d.ts>60000)return;
+function handleRing(callerUid,data){
+  if(!data||data.status!=="ringing")return;
+  if(!data.offer)return;
+  if(!data.ts||Date.now()-data.ts>60000)return;
 
   if(S.callDir||$("call-overlay").style.display==="flex"){
-    // Occupé
     const busyRef="callSignals/"+S.myUid+"/"+callerUid;
     db.ref(busyRef).update({status:"busy"}).then(()=>{
       setTimeout(()=>db.ref(busyRef).remove().catch(()=>{}),1500);
     }).catch(()=>{});
-    toast("📵 "+(d.fromName||"Quelqu'un")+" a essayé de vous appeler");
+    toast("📵 "+(data.fromName||"Quelqu'un")+" a essayé de vous appeler");
+    const contact=S.contacts.find(c=>c.uid===callerUid)||{};
+    const nick=CACHE.load("nick_"+callerUid)||"";
     db.ref("callLog/"+S.myUid).push({
-      peer:callerUid,peerName:d.fromName||callerUid,
-      peerEmoji:d.fromEmoji||"🧑🏾",dir:"in",type:d.type||"audio",
+      peer:callerUid,peerName:nick||data.fromName||contact.name||contact.phone||callerUid,
+      peerEmoji:data.fromEmoji||contact.emoji||"🧑🏾",peerAvType:data.fromAvType||"emoji",
+      peerImg:data.fromImg||null,dir:"in",type:data.type||"audio",
       duration:0,missed:true,ts:Date.now(),
       time:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"}),
       date:new Date().toLocaleDateString("fr",{day:"2-digit",month:"short"})
@@ -839,175 +810,163 @@ function handleRing(callerUid,d){
     return;
   }
 
-  S.callType=d.type;S.callDir="in";S.callPeer=callerUid;
+  S.callType=data.type;S.callDir="in";S.callPeer=callerUid;
   S.callRef="callSignals/"+S.myUid+"/"+callerUid;
-  S.incomingOffer=d.offer;
+  S.incomingOffer=data.offer;
   S.iceQueue=[];
 
   resetCallOverlay();
-  setCallUI({name:d.fromName,emoji:d.fromEmoji,avType:d.fromAvType,img:d.fromImg});
+  setCallUI({name:data.fromName,emoji:data.fromEmoji,avType:data.fromAvType,img:data.fromImg});
   $("call-overlay").style.display="flex";
-  $("call-state-text").textContent=d.type==="video"?"📹 Appel vidéo":"🎙 Appel audio";
+  $("call-state-text").textContent=data.type==="video"?"📹 Appel vidéo entrant":"🎙 Appel audio entrant";
   $("call-incoming-actions").style.display="flex";
   startRingtone();
 
-  // Commencer à collecter les ICE du caller dès la sonnerie (Trickle ICE)
-  watchIce(callerUid);
+  // Écouter les ICE entrants DÈS LA SONNERIE (pas après acceptation)
+  // pour ne pas perdre les candidats ICE qui arrivent rapidement
+  listenIce(callerUid);
 
-  // Auto-refus après 60s
   setTimeout(()=>{
     if(S.callDir==="in"&&$("call-incoming-actions").style.display==="flex")rejectCall();
   },60000);
 }
 
-// Sonnerie
-let ringtoneCtx=null,ringtoneInterval=null;
+// ---- SONNERIE PROFESSIONNELLE ----
+let ringtoneCtx=null;
+let ringtoneInterval=null;
 function startRingtone(){
   stopRingtone();
   try{
-    ringtoneCtx=new(window.AudioContext||window.webkitAudioContext)();
-    playRing();ringtoneInterval=setInterval(playRing,3200);
+    ringtoneCtx=new (window.AudioContext||window.webkitAudioContext)();
+    playRingtoneCycle();
+    ringtoneInterval=setInterval(playRingtoneCycle,3200);
   }catch(e){}
 }
-function playRing(){
+function playRingtoneCycle(){
   if(!ringtoneCtx)return;
   const now=ringtoneCtx.currentTime;
-  const tone=(f,t,d,v)=>{
-    const o=ringtoneCtx.createOscillator(),g=ringtoneCtx.createGain();
-    o.type="sine";o.frequency.value=f;
-    g.gain.setValueAtTime(0,now+t);
-    g.gain.linearRampToValueAtTime(v,now+t+0.05);
-    g.gain.linearRampToValueAtTime(0,now+t+d);
-    o.connect(g);g.connect(ringtoneCtx.destination);
-    o.start(now+t);o.stop(now+t+d+0.05);
+  const playTone=(freq,start,dur,vol)=>{
+    const osc=ringtoneCtx.createOscillator();
+    const gain=ringtoneCtx.createGain();
+    osc.type="sine";osc.frequency.value=freq;
+    gain.gain.setValueAtTime(0,now+start);
+    gain.gain.linearRampToValueAtTime(vol,now+start+0.05);
+    gain.gain.linearRampToValueAtTime(0,now+start+dur);
+    osc.connect(gain);gain.connect(ringtoneCtx.destination);
+    osc.start(now+start);osc.stop(now+start+dur+0.05);
   };
-  tone(659,0,0.35,0.18);tone(523,0.35,0.45,0.18);
-  tone(659,1.4,0.35,0.18);tone(523,1.75,0.45,0.18);
+  playTone(659.25,0,0.35,0.18);playTone(523.25,0.35,0.45,0.18);
+  playTone(659.25,1.4,0.35,0.18);playTone(523.25,1.75,0.45,0.18);
 }
 function stopRingtone(){
   clearInterval(ringtoneInterval);ringtoneInterval=null;
   if(ringtoneCtx){try{ringtoneCtx.close();}catch(e){}ringtoneCtx=null;}
 }
 
-// === ACCEPTER ===
+// ---- ACCEPTER ----
 window.acceptCall=async function(){
   stopRingtone();
   $("call-incoming-actions").style.display="none";
   $("call-state-text").textContent="Connexion...";
-  if(!S.incomingOffer){toast("Erreur : offre manquante","err");endCall(true);return;}
+
+  if(!S.incomingOffer){toast("Erreur : offre non reçue","err");endCall(true);return;}
 
   try{S.localStream=await getLocalStream(S.callType);}
-  catch(e){toast("Micro inaccessible : "+e.message,"err");rejectCall();return;}
+  catch(e){toast("Micro/caméra inaccessible","err");rejectCall();return;}
 
   if(S.callType==="video"){const lv=$("call-local-video");lv.srcObject=S.localStream;lv.style.display="block";}
   $("call-active-actions").style.display="flex";
   if(S.callType!=="video")$("call-cam-wrap").style.display="none";
 
-  // Créer le PC (le watchIce de handleRing continue de collecter les ICE du caller)
-  S.pc=makePC();
+  S.pc=createPC();
   S.localStream.getTracks().forEach(tr=>S.pc.addTrack(tr,S.localStream));
 
-  // Réactiver watchIce avec le nouveau PC (sans perdre la queue existante)
-  // (les ICE du caller collectés pendant la sonnerie sont déjà dans S.iceQueue)
-  watchIce(S.callPeer);
+  // Mettre à jour listenIce pour utiliser le bon PC (créé juste au-dessus)
+  // Les ICE déjà en queue seront appliqués après setRemoteDescription
+  listenIce(S.callPeer);
 
   try{
-    // Appliquer l'offre
     await S.pc.setRemoteDescription(new RTCSessionDescription(S.incomingOffer));
-    drainIce(); // Vider la queue ICE immédiatement
-    // Créer et envoyer la réponse (sans attendre le gathering)
-    const ans=await S.pc.createAnswer();
-    await S.pc.setLocalDescription(ans);
-    const callRefCaptured=S.callRef;
-    if(!callRefCaptured){toast("Erreur: appel interrompu","err");endCall(true);return;}
-    await db.ref(callRefCaptured).update({
-      answer:{type:ans.type,sdp:ans.sdp},status:"connected"
-    });
-  }catch(e){toast("Erreur connexion : "+e.message,"err");endCall(true);return;}
+    flushIceQueue(); // Appliquer les ICE reçus pendant la sonnerie
+    const answer=await S.pc.createAnswer();
+    await S.pc.setLocalDescription(answer);
+    await db.ref(S.callRef).update({answer:{type:answer.type,sdp:answer.sdp},status:"connected"});
+  }catch(e){
+    toast("Erreur connexion : "+e.message,"err");
+    endCall(true);return;
+  }
 
-  // Écouter si le caller raccroche
   if(S.unsubCall){try{S.unsubCall();}catch(e){}}
-  const capturedCallRef=S.callRef;
-  if(!capturedCallRef)return;
-  const ref=db.ref(capturedCallRef);
-  const fn=snap=>{const d=snap.val();if(!d||d.status==="ended")endCall(true);};
-  ref.on("value",fn);
-  S.unsubCall=()=>ref.off("value",fn);
+  const ref=db.ref(S.callRef);
+  const handler=snap=>{
+    const d=snap.val();
+    if(!d||d.status==="ended")endCall(true);
+  };
+  ref.on("value",handler);
+  S.unsubCall=()=>ref.off("value",handler);
 };
 
-// === REFUSER ===
+// ---- REFUSER ----
 window.rejectCall=function(){
-  stopRingtone();
-  const rp=S.callRef;
-  if(rp){
-    db.ref(rp).update({status:"rejected"}).then(()=>{
-      setTimeout(()=>db.ref(rp).remove().catch(()=>{}),1500);
+  const refPath=S.callRef;
+  if(refPath){
+    db.ref(refPath).update({status:"rejected"}).then(()=>{
+      setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),1500);
     }).catch(()=>{});
   }
   endCall(true);
 };
 
-// === RACCROCHER ===
 window.endCall=function(silent){
   stopRingtone();
-  clearTimeout(S._callTimeout);S._callTimeout=null;
-  clearTimeout(S.disconnectTimer);S.disconnectTimer=null;
-
-  // Capturer tout avant de nullifier (évite les erreurs "invalid path=null")
+  if(!S.callRef&&!S.pc&&!S.localStream)return;
   const refPath=S.callRef;
   const peer=S.callPeer;
   const dir=S.callDir;
   const type=S.callType;
   const secs=S.callSecs;
 
-  // Nullifier immédiatement pour bloquer les callbacks futurs
-  S.callRef=null;S.callDir=null;S.callPeer=null;S.incomingOffer=null;S.iceQueue=[];
-
-  // Nettoyer les listeners Firebase
-  if(S.unsubCall){try{S.unsubCall();}catch(e){}S.unsubCall=null;}
-  if(S.unsubIce){try{S.unsubIce();}catch(e){}S.unsubIce=null;}
-
-  // Fermer la connexion WebRTC
-  if(S.pc){try{S.pc.close();}catch(e){}S.pc=null;}
-  if(S.localStream){S.localStream.getTracks().forEach(t=>{try{t.stop();}catch(e){}});S.localStream=null;}
-  S.remoteStream=null;
-
-  // Arrêter le timer d'appel
-  clearInterval(S.callTick);S.callTick=null;S.callSecs=0;
-
-  // Mettre à jour Firebase seulement si on avait un chemin valide
-  if(refPath){
-    if(!silent){
-      db.ref(refPath).update({status:"ended"}).then(()=>{
-        setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),2000);
-      }).catch(()=>{
-        db.ref(refPath).remove().catch(()=>{});
-      });
-    }else{
-      setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),2500);
-    }
+  if(!silent&&refPath){
+    db.ref(refPath).update({status:"ended"}).then(()=>{
+      setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),2000);
+    }).catch(()=>{});
+  } else if(refPath){
+    setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),2500);
   }
 
-  // Réinitialiser l'UI
+  if(S.unsubCall){try{S.unsubCall();}catch(e){} S.unsubCall=null;}
+  if(S.unsubIce){try{S.unsubIce();}catch(e){} S.unsubIce=null;}
+  clearTimeout(S.disconnectTimer);S.disconnectTimer=null;
+  if(S.pc){try{S.pc.close();}catch(e){} S.pc=null;}
+  if(S.localStream){S.localStream.getTracks().forEach(t=>{try{t.stop();}catch(e){}});S.localStream=null;}
+  S.remoteStream=null;
+  S.callRef=null;S.callDir=null;S.callPeer=null;S.incomingOffer=null;S.iceQueue=[];
   resetCallOverlay();
 
-  // Enregistrer dans l'historique des appels
+  // Sauvegarder dans l'historique des appels
   if(peer&&dir&&S.myUid){
-    const ct=S.contacts.find(c=>c.uid===peer)||{};
+    const contact=S.contacts.find(c=>c.uid===peer)||{};
     const nick=CACHE.load("nick_"+peer)||"";
-    db.ref("callLog/"+S.myUid).push({
-      peer,peerName:nick||ct.name||ct.phone||peer,
-      peerEmoji:ct.emoji||"🧑🏾",peerAvType:ct.avType||"emoji",peerImg:ct.img||null,
-      dir,type:type||"audio",duration:secs||0,
-      missed:secs===0&&dir==="in",ts:Date.now(),
+    const entry={
+      peer,
+      peerName:nick||contact.name||contact.phone||peer,
+      peerEmoji:contact.emoji||"🧑🏾",
+      peerAvType:contact.avType||"emoji",
+      peerImg:contact.img||null,
+      dir, // "out" ou "in"
+      type:type||"audio",
+      duration:secs||0,
+      missed: secs===0 && dir==="in",
+      ts:Date.now(),
       time:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"}),
       date:new Date().toLocaleDateString("fr",{day:"2-digit",month:"short"})
-    }).then(()=>{
-      if(S.currentScreen==="s-calls"&&typeof loadCallLog==="function")loadCallLog();
+    };
+    db.ref("callLog/"+S.myUid).push(entry).then(()=>{
+      // Rafraîchir l'écran Appels si actuellement affiché
+      if(S.currentScreen==="s-calls" && typeof loadCallLog==="function") loadCallLog();
     }).catch(()=>{});
   }
 };
-
 
 window.callToggleMute=function(){
   if(!S.localStream)return;
@@ -1091,219 +1050,456 @@ window.clearCallLog=function(){
 };
 // ==================== FIN APPELS WEBRTC ====================
 
-// ---- RECHERCHE DANS LA LISTE (filtre le DOM existant sans reconstruire) ----
-function doSearch(val){
-  S.search=(val||"").trim().toLowerCase();
-  const si=$("search-input");
-  const box=$("contact-list");
-  if(!box)return;
-  if(!S.search){
-    box.querySelectorAll(".contact-row").forEach(r=>r.style.display="");
-    const nr=document.getElementById("search-no-result");
-    if(nr)nr.remove();
+// ---- NOUVELLE DISCUSSION / RECHERCHE PAR NUMÉRO ----
+window.openNewChatModal=function(){
+  $("nc-phone-input").value="";
+  $("nc-result").innerHTML='<p style="color:var(--sub);font-size:13px;text-align:center;padding:8px 0">Entrez le numéro de votre ami pour le retrouver</p>';
+  $("pick-contact-btn").style.display=("contacts" in navigator && "ContactsManager" in window)?"flex":"none";
+  $("newchat-overlay").style.display="flex";
+  setTimeout(()=>$("nc-phone-input").focus(),200);
+};
+
+// Choisir un contact du téléphone et vérifier s'il est inscrit sur EniBusiness Pro
+window.pickFromPhoneContacts=async function(){
+  try{
+    const props=["name","tel"];
+    const opts={multiple:false};
+    const contacts=await navigator.contacts.select(props,opts);
+    if(!contacts||!contacts.length){return;}
+    const picked=contacts[0];
+    const tel=(picked.tel&&picked.tel[0])||"";
+    if(!tel){toast("Ce contact n'a pas de numéro","err");return;}
+    $("nc-phone-input").value=tel.replace(/[^\d+]/g,"");
+    searchUserByPhone();
+  }catch(e){
+    if(e && e.name!=="AbortError") toast("Impossible d'accéder aux contacts","err");
+  }
+};
+
+let ncSearchTimer=null;
+window.searchUserByPhone=function(){
+  clearTimeout(ncSearchTimer);
+  const raw=$("nc-phone-input").value.trim();
+  const result=$("nc-result");
+  if(raw.replace(/\D/g,"").length<6){
+    result.innerHTML='<p style="color:var(--sub);font-size:13px;text-align:center;padding:8px 0">Entrez le numéro de votre ami pour le retrouver</p>';
     return;
   }
-  let any=false;
-  box.querySelectorAll(".contact-row").forEach(r=>{
-    const uid=r.getAttribute("data-uid")||"";
-    const c=S.contacts.find(x=>x.uid===uid);
-    if(!c){r.style.display="none";return;}
-    const nick=CACHE.load("nick_"+uid)||"";
-    const name=(nick||c.name||c.phone||"").toLowerCase();
-    const match=name.includes(S.search)||(c.phone||"").toLowerCase().includes(S.search);
-    r.style.display=match?"":"none";
-    if(match)any=true;
+  result.innerHTML='<p style="color:var(--sub);font-size:13px;text-align:center;padding:8px 0">Recherche...</p>';
+  ncSearchTimer=setTimeout(async ()=>{
+    let phone=raw.replace(/\s/g,"");
+    if(!phone.startsWith("+"))phone="+"+phone.replace(/\D/g,"");
+    const digits=phone.replace(/\D/g,"");
+
+    // Chercher dans les contacts déjà chargés (par numéro, comparaison sur les chiffres)
+    let found=S.contacts.find(c=>(c.phone||"").replace(/\D/g,"")===digits);
+
+    // Si non trouvé localement, interroger Firebase directement
+    if(!found && isOnline){
+      try{
+        const snap=await db.ref("users").orderByChild("phone").equalTo(phone).get();
+        if(snap.exists()){
+          snap.forEach(child=>{
+            const u=child.val();
+            if(u.uid!==S.myUid) found=u;
+          });
+        }
+        // Essayer aussi sans le + au cas où le numéro est stocké différemment
+        if(!found){
+          const snap2=await db.ref("users").get();
+          snap2.forEach(child=>{
+            const u=child.val();
+            if(u.uid!==S.myUid && (u.phone||"").replace(/\D/g,"")===digits) found=u;
+          });
+        }
+      }catch(e){}
+    }
+
+    if(found){
+      const avH=(found.avType==="img"&&found.img)?'<img src="'+found.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(found.emoji||"🧑🏾");
+      result.innerHTML=
+        '<div class="contact-row" style="border-bottom:none;border-radius:14px;background:var(--surface);border:1px solid var(--border)" id="nc-found-row">'+
+          '<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(found.online?"online":"offline")+'"></div></div>'+
+          '<div class="row-info"><div class="row-top"><span class="row-name">'+esc(found.name||found.phone||"Inconnu")+'</span></div>'+
+          '<div class="row-bot"><span class="row-last">'+esc(found.phone||"")+'</span></div></div>'+
+          '<span style="color:var(--accent);font-size:22px;padding:0 4px">›</span>'+
+        '</div>';
+      $("nc-found-row").onclick=async ()=>{
+        $("newchat-overlay").style.display="none";
+        if(!S.contacts.find(c=>c.uid===found.uid)) S.contacts.push(found);
+        openChat(found.uid);
+        try{ await ensureMutualContact(found.uid); }catch(e){ console.error("ensureMutualContact:",e); }
+      };
+    } else {
+      result.innerHTML=
+        '<div style="text-align:center;padding:24px 12px">'+
+          '<div style="font-size:40px;margin-bottom:10px">🔍</div>'+
+          '<p style="color:var(--text);font-weight:700;font-size:15px;margin-bottom:6px">Aucun utilisateur trouvé</p>'+
+          '<p style="color:var(--sub);font-size:13px;line-height:1.6">Le numéro <strong style="color:var(--text)">'+esc(phone)+"</strong> n'est pas encore inscrit sur EniBusiness Pro.</p>"+
+          '<button class="big-btn" style="margin-top:16px" onclick="openShareModal();document.getElementById(&quot;newchat-overlay&quot;).style.display=&quot;none&quot;">📤 Inviter sur EniBusiness Pro</button>'+
+        '</div>';
+    }
+  },350);
+};
+
+// ---- CONTACTS ----
+function listenContacts(){
+  if(S.unsubContacts){S.unsubContacts();S.unsubContacts=null;}
+  S.unsubContacts=db.ref("userContacts/"+S.myUid).on("value",async snap=>{
+    const uids=[];
+    snap.forEach(child=>{ if(child.key!==S.myUid) uids.push(child.key); });
+    if(!uids.length){
+      S.contacts=[];
+      CACHE.save("contacts",S.contacts);
+      renderList();
+      return;
+    }
+    // Charger tous les profils en PARALLÈLE (beaucoup plus rapide)
+    const fetches=uids.map(uid=>
+      db.ref("users/"+uid).get().then(s=>s.exists()?s.val():null).catch(()=>null)
+    );
+    const results=await Promise.all(fetches);
+    // Dédupliquer par numéro de téléphone (garde le plus récent)
+    const seen=new Map();
+    results.forEach(c=>{
+      if(!c)return;
+      const key=c.phone||c.uid;
+      const existing=seen.get(key);
+      // Garder celui avec le timestamp le plus récent (lastDevice) ou le premier
+      if(!existing||(c.lastDevice&&existing.lastDevice&&c.lastDevice>existing.lastDevice)){
+        seen.set(key,c);
+      }
+    });
+    S.contacts=Array.from(seen.values());
+    CACHE.save("contacts",S.contacts);
+    renderList();
+    // Écouter les changements de statut/présence en temps réel
+    uids.forEach(uid=>{
+      db.ref("users/"+uid).on("value",usnap=>{
+        if(!usnap.exists())return;
+        const updated=usnap.val();
+        const idx=S.contacts.findIndex(c=>c.uid===uid);
+        if(idx>=0) S.contacts[idx]=updated;
+        else S.contacts.push(updated);
+        CACHE.save("contacts",S.contacts);
+        renderList();
+        if(S.activeId===uid) refreshChatHeader(updated);
+      });
+    });
+  },err=>{
+    console.error("listenContacts:",err.message);
+    const cc=CACHE.load("contacts");
+    if(cc){S.contacts=cc;renderList();}
   });
-  let nr=document.getElementById("search-no-result");
-  if(!any){
-    if(!nr){nr=document.createElement("div");nr.id="search-no-result";nr.className="empty-note";box.appendChild(nr);}
-    nr.textContent="Aucun résultat";
-  }else if(nr)nr.remove();
 }
 
-function openChat(uid){
-  if(!uid)return;
-  S.activeId=uid;
+// Ajoute une discussion mutuelle entre 2 utilisateurs (comme WhatsApp : démarrer une conv ajoute le contact pour les 2)
+async function ensureMutualContact(otherUid){
+  if(!S.myUid||!otherUid||otherUid===S.myUid) return;
 
-  // Effacer la recherche sans reconstruire la liste
-  if(S.search){
-    S.search="";
-    const si=$("search-input");if(si)si.value="";
-    const box=$("contact-list");
-    if(box){
-      box.querySelectorAll(".contact-row").forEach(r=>r.style.display="");
-      const nr=document.getElementById("search-no-result");
-      if(nr)nr.remove();
+  // Charger le profil de l'autre utilisateur
+  let otherProfile=null;
+  try{
+    const snap=await db.ref("users/"+otherUid).get();
+    if(snap.exists()) otherProfile=snap.val();
+  }catch(e){}
+
+  // Vérifier si on a déjà un contact avec ce même numéro de téléphone
+  // pour éviter les doublons quand quelqu'un change de téléphone
+  if(otherProfile&&otherProfile.phone){
+    const phone=otherProfile.phone;
+    const duplicate=S.contacts.find(c=>
+      c.uid!==otherUid && (c.phone===phone||(c.name&&c.name===phone))
+    );
+    if(duplicate){
+      // Un contact avec ce numéro existe déjà sous un autre UID
+      // Supprimer l'ancien doublon et garder le plus récent (otherUid)
+      db.ref("userContacts/"+S.myUid+"/"+duplicate.uid).remove().catch(()=>{});
+      db.ref("chats/"+chatKey(S.myUid,duplicate.uid)+"/lastMsg").remove().catch(()=>{});
     }
   }
 
-  // Fermer tous les overlays ouverts avant d'ouvrir le chat
-  document.querySelectorAll(".overlay").forEach(ov=>{
-    if(ov.style.display==="flex"||ov.style.display==="block")
-      ov.style.display="none";
-  });
-
-  const c=S.contacts.find(x=>x.uid===uid)||{uid,phone:uid};
-  refreshChatHeader(c);
-  updateArchBtn();
-  showScreen("s-chat");
-  // Pousser un état history pour que le bouton retour Android fonctionne
-  history.pushState({sonia:"app"},"","");
-  listenMsgs();
-  const ck=chatKey(S.myUid,uid);
-  clearUnread(uid,ck);
+  // Ajouter le contact dans les deux sens
+  await db.ref("userContacts/"+S.myUid+"/"+otherUid).set(true);
+  await db.ref("userContacts/"+otherUid+"/"+S.myUid).set(true);
 }
 
-function renderList(){
-  const box=$("contact-list");
-  if(!box)return;
+// ---- MENU CONTEXTUEL DES MESSAGES (copier, supprimer) ----
+function showMsgMenu(m,self,bub){
+  const old=document.getElementById("msg-ctx-menu");if(old)old.remove();
+  const menu=document.createElement("div");
+  menu.id="msg-ctx-menu";
+  menu.style.cssText="position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.35);display:flex;align-items:flex-end";
 
+  const canCopy=m.type==="text"&&m.text&&!m.del;
+  const canDelAll=self&&!m.del&&m.id;
+  const canDelMe=m.id&&!m.del;
+
+  let btns="";
+  if(canCopy) btns+=`<button onclick="copyMsg(${JSON.stringify(m.text||'')})" style="display:flex;align-items:center;gap:14px;width:100%;padding:15px 20px;border-bottom:1px solid var(--border);background:none;border-top:none;border-left:none;border-right:none;color:var(--text);font-size:15px;font-family:inherit;cursor:pointer"><span style="font-size:20px">📋</span>Copier le message</button>`;
+  if(canDelAll) btns+=`<button onclick="delMsg('${m.id}',true);document.getElementById('msg-ctx-menu').remove()" style="display:flex;align-items:center;gap:14px;width:100%;padding:15px 20px;border-bottom:1px solid var(--border);border-top:none;border-left:none;border-right:none;background:none;color:var(--danger);font-size:15px;font-family:inherit;cursor:pointer"><span style="font-size:20px">🗑</span>Supprimer pour tous</button>`;
+  if(canDelMe)  btns+=`<button onclick="delMsg('${m.id}',false);document.getElementById('msg-ctx-menu').remove()" style="display:flex;align-items:center;gap:14px;width:100%;padding:15px 20px;border:none;background:none;color:var(--danger);font-size:15px;font-family:inherit;cursor:pointer;opacity:.7"><span style="font-size:20px">🗑</span>Supprimer pour moi</button>`;
+
+  menu.innerHTML=
+    '<div style="width:100%;background:var(--surface);border-radius:20px 20px 0 0;padding:6px 0 24px">'+
+      '<div style="width:36px;height:4px;border-radius:2px;background:var(--border);margin:8px auto 12px"></div>'+
+      btns+
+      '<button onclick="document.getElementById(\'msg-ctx-menu\').remove()" style="display:flex;align-items:center;justify-content:center;width:calc(100% - 32px);margin:8px 16px 0;padding:14px;border:none;background:var(--bg);border-radius:14px;color:var(--sub);font-size:15px;font-family:inherit;cursor:pointer;font-weight:600">Annuler</button>'+
+    '</div>';
+  menu.onclick=e=>{if(e.target===menu)menu.remove();};
+  document.body.appendChild(menu);
+}
+
+window.copyMsg=function(text){
+  const menu=document.getElementById("msg-ctx-menu");if(menu)menu.remove();
+  if(!text)return;
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>toast("Message copié ✓")).catch(()=>{
+      // Fallback
+      const ta=document.createElement("textarea");
+      ta.value=text;ta.style.position="fixed";ta.style.opacity="0";
+      document.body.appendChild(ta);ta.select();
+      try{document.execCommand("copy");toast("Message copié ✓");}catch(e){toast("Impossible de copier","err");}
+      ta.remove();
+    });
+  } else {
+    const ta=document.createElement("textarea");
+    ta.value=text;ta.style.position="fixed";ta.style.opacity="0";
+    document.body.appendChild(ta);ta.select();
+    try{document.execCommand("copy");toast("Message copié ✓");}catch(e){toast("Impossible de copier","err");}
+    ta.remove();
+  }
+};
+
+function showDeleteConvMenu(c,ck,row){
+  // Supprimer tout menu existant
+  const old=document.getElementById("conv-del-menu");if(old)old.remove();
+  const nick=CACHE.load("nick_"+c.uid)||"";
+  const name=nick||c.name||c.phone||"Inconnu";
+  const menu=document.createElement("div");
+  menu.id="conv-del-menu";
+  menu.style.cssText="position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.4);display:flex;align-items:flex-end";
+  menu.innerHTML=
+    '<div style="width:100%;background:var(--surface);border-radius:20px 20px 0 0;padding:20px 20px 36px;box-shadow:0 -4px 32px rgba(0,0,0,.2)">'+
+      '<div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px">'+esc(name)+'</div>'+
+      '<div style="font-size:13px;color:var(--sub);margin-bottom:20px">Appui long sur la discussion</div>'+
+      '<button onclick="archOrUnarchConv(\''+c.uid+'\',\''+ck+'\')" style="display:flex;align-items:center;gap:14px;width:100%;padding:14px 0;border-bottom:1px solid var(--border);background:none;border-top:none;border-left:none;border-right:none;color:var(--text);font-size:15px;font-family:inherit;cursor:pointer">'+
+        '<span style="font-size:22px">'+(S.arch.has(c.uid)?"📤":"🗄")+'</span>'+(S.arch.has(c.uid)?"Désarchiver":"Archiver")+'</button>'+
+      '<button onclick="deleteConversation(\''+c.uid+'\',\''+ck+'\')" style="display:flex;align-items:center;gap:14px;width:100%;padding:14px 0;border:none;background:none;color:var(--danger);font-size:15px;font-family:inherit;cursor:pointer">'+
+        '<span style="font-size:22px">🗑</span>Supprimer la discussion</button>'+
+      '<button onclick="document.getElementById(\'conv-del-menu\').remove()" style="display:flex;align-items:center;justify-content:center;width:100%;padding:14px 0;margin-top:8px;border:none;background:var(--bg);border-radius:14px;color:var(--sub);font-size:15px;font-family:inherit;cursor:pointer;font-weight:600">Annuler</button>'+
+    '</div>';
+  menu.onclick=e=>{if(e.target===menu)menu.remove();};
+  document.body.appendChild(menu);
+}
+
+window.archOrUnarchConv=function(uid,ck){
+  const menu=document.getElementById("conv-del-menu");if(menu)menu.remove();
+  toggleArch(uid);
+};
+
+window.deleteConversation=function(uid,ck){
+  const menu=document.getElementById("conv-del-menu");if(menu)menu.remove();
+  // Supprimer les messages de la discussion dans Firebase
+  db.ref("chats/"+ck).remove().catch(()=>{});
+  // Retirer le contact de userContacts (les deux sens)
+  db.ref("userContacts/"+S.myUid+"/"+uid).remove().catch(()=>{});
+  // Retirer de la liste locale
+  S.contacts=S.contacts.filter(c=>c.uid!==uid);
+  CACHE.save("contacts",S.contacts);
+  // Supprimer le cache des messages
+  try{localStorage.removeItem("msgs_"+ck);}catch(e){}
+  // Nettoyer le listener Firebase associé à cette conversation
+  if(S.lastMsgListeners&&S.lastMsgListeners[ck]){
+    try{S.lastMsgListeners[ck].ref.off("value",S.lastMsgListeners[ck].handler);}catch(e){}
+    delete S.lastMsgListeners[ck];
+  }
+  toast("Discussion supprimée");
+  renderList();
+};
+
+
+function refreshChatHeader(c){
+  const nick=CACHE.load("nick_"+c.uid);
+  const displayName=nick||c.name||c.phone||"Inconnu";
+  const cav=$("c-av");if(cav)cav.innerHTML=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
+  const cd=$("c-dot");if(cd)cd.className="dot "+(c.online?"online":"offline");
+  const cn=$("c-name");if(cn)cn.textContent=displayName;
+  const cs=$("c-status");if(cs){
+    if(c.online){cs.textContent="● En ligne";cs.style.color="var(--green)";}
+    else{cs.textContent=c.lastSeen?"⚫ Vu à "+c.lastSeen:"⚫ Hors ligne";cs.style.color="var(--sub)";}
+  }
+}
+
+// ---- INFOS CONTACT / ENREGISTRER DANS LE TÉLÉPHONE ----
+window.openContactInfo=function(){
+  if(!S.activeId)return;
+  const c=S.contacts.find(x=>x.uid===S.activeId);
+  if(!c)return;
+  const av=$("ci-av");av.innerHTML="";
+  if(c.avType==="img"&&c.img){const img=document.createElement("img");img.src=c.img;img.style.cssText="width:100%;height:100%;object-fit:cover;border-radius:50%";av.appendChild(img);}
+  else{av.innerHTML="<span>"+(c.emoji||"🧑🏾")+"</span>";}
+  $("ci-name").textContent=c.name||c.phone||"Inconnu";
+  $("ci-phone").textContent=c.phone||"";
+  $("ci-status-txt").textContent=c.online?"● En ligne":(c.lastSeen?"⚫ Vu à "+c.lastSeen:"⚫ Hors ligne");
+  // Pré-remplir le surnom avec le nom actuel stocké localement
+  const saved=CACHE.load("nick_"+c.uid);
+  $("ci-nickname-input").value=saved||c.name||"";
+  $("contact-info-overlay").style.display="flex";
+};
+
+window.saveContactNickname=function(){
+  if(!S.activeId)return;
+  const c=S.contacts.find(x=>x.uid===S.activeId);
+  if(!c)return;
+  const nick=$("ci-nickname-input").value.trim();
+  if(!nick){toast("Entrez un nom","err");return;}
+  // Sauvegarder localement (le vrai nom de l'utilisateur dans Firebase ne change pas)
+  CACHE.save("nick_"+c.uid, nick);
+  c.localName=nick;
+  $("ci-name").textContent=nick;
+  // Mettre à jour l'affichage dans la liste et le chat
+  renderList();
+  if(S.activeId===c.uid) refreshChatHeader({...c,name:nick});
+  toast("Nom enregistré ✓");
+  $("contact-info-overlay").style.display="none";
+};
+
+window.downloadContactVcf=function(){
+  if(!S.activeId)return;
+  const c=S.contacts.find(x=>x.uid===S.activeId);
+  if(!c)return;
+  const nick=CACHE.load("nick_"+c.uid);
+  const name=(nick||c.name||c.phone||"Contact").replace(/[\r\n]/g,"");
+  const phone=(c.phone||"").replace(/[\r\n]/g,"");
+  const vcf="BEGIN:VCARD\r\nVERSION:3.0\r\nFN:"+name+"\r\nTEL;TYPE=CELL:"+phone+"\r\nEND:VCARD\r\n";
+  const blob=new Blob([vcf],{type:"text/vcard"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");a.href=url;a.download=name.replace(/\s+/g,"_")+".vcf";
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+  toast("Contact téléchargé ✓");
+};
+
+function renderList(){
+  const box=$("contact-list");if(!box)return;
+  box.innerHTML="";
   const term=S.search.toLowerCase();
   let vis=S.contacts.filter(c=>{
     const nick=CACHE.load("nick_"+c.uid)||"";
-    const name=(nick||c.name||c.phone||"").toLowerCase();
-    const match=name.includes(term)||(c.phone||"").toLowerCase().includes(term);
-    return match&&(S.tab==="archived"?S.arch.has(c.uid):!S.arch.has(c.uid));
+    const displayName=(nick||c.name||c.phone||"").toLowerCase();
+    const match=displayName.includes(term)||(c.phone||"").includes(term);
+    const arch=S.arch.has(c.uid);
+    return match&&(S.tab==="archived"?arch:!arch);
   });
-
   if(!vis.length){
-    if(S.lastMsgListeners){
-      Object.values(S.lastMsgListeners).forEach(l=>{try{l.ref.off("value",l.handler);}catch(e){}});
-      S.lastMsgListeners={};
-    }
-    box.innerHTML=S.tab==="archived"
-      ?'<div class="empty-note">Aucune conversation archivée</div>'
-      :'<div class="empty-note">Aucune discussion<br/>Appuyez sur ➕ pour trouver un contact</div>';
+    box.innerHTML = S.tab==="archived"
+      ? '<div class="empty-note">Aucune conversation archivée</div>'
+      : '<div class="empty-note">Aucune discussion pour le moment<br/><br/>Appuyez sur ➕ pour trouver un ami par son numéro ou son nom</div>';
     return;
   }
 
+  // Trier par timestamp du dernier message (plus récent en haut)
   vis.sort((a,b)=>{
     const ta=CACHE.load("lastTs_"+chatKey(S.myUid,a.uid))||0;
     const tb=CACHE.load("lastTs_"+chatKey(S.myUid,b.uid))||0;
     return tb-ta;
   });
 
-  if(!S.lastMsgListeners)S.lastMsgListeners={};
-
-  // Nettoyer listeners des contacts disparus
-  const visKeys=new Set(vis.map(c=>chatKey(S.myUid,c.uid)));
-  Object.keys(S.lastMsgListeners).forEach(ck=>{
-    if(!visKeys.has(ck)){
-      try{S.lastMsgListeners[ck].ref.off("value",S.lastMsgListeners[ck].handler);}catch(e){}
-      delete S.lastMsgListeners[ck];
-    }
-  });
-
-  box.innerHTML="";
-
   vis.forEach(c=>{
     const nick=CACHE.load("nick_"+c.uid)||"";
     const displayName=nick||c.name||c.phone||"Inconnu";
     const ck=chatKey(S.myUid,c.uid);
-    const cachedLm=CACHE.load("lastMsg_"+ck);
-    const lmText=cachedLm
-      ?(cachedLm.del?"🚫 Supprimé"
-        :cachedLm.type==="voice"?"🎵 Vocal"
-        :cachedLm.type==="photo"?"📷 Photo"
-        :cachedLm.type==="video"?"🎥 Vidéo"
-        :(cachedLm.text||""))
-      :(c.online?"● En ligne":"");
-    const lmTime=cachedLm?(cachedLm.t||""):"";
-    const avH=(c.avType==="img"&&c.img)
-      ?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>'
-      :(c.emoji||"🧑🏾");
-
     const row=document.createElement("div");
     row.id="row-"+ck;
     row.setAttribute("data-uid",c.uid);
     row.className="contact-row"+(S.activeId===c.uid?" active-row":"");
-    row.innerHTML=
-      '<div class="av-wrap"><div class="av">'+avH+'</div>'
-      +'<div class="dot '+(c.online?"online":"offline")+'"></div></div>'
-      +'<div class="row-info">'
-      +'<div class="row-top"><span class="row-name">'+esc(displayName)+'</span>'
-      +'<span class="row-time" id="lt-'+ck+'">'+esc(lmTime)+'</span></div>'
-      +'<div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+esc(lmText)+'</span>'
-      +'<span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span>'
-      +'<button class="arch-btn" data-uid="'+c.uid+'">'+( S.arch.has(c.uid)?"📤":"🗄")+'</button>'
-      +'</div></div>';
+    const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
+    // Afficher immédiatement le dernier message depuis le cache local
+    const cachedLm=CACHE.load("lastMsg_"+ck);
+    const subStatus=c.online?"● En ligne":"";
+    const initialText=cachedLm?
+      (cachedLm.del?"🚫 Message supprimé":
+       cachedLm.type==="voice"?"🎵 Vocal":
+       cachedLm.type==="photo"?"📷 Photo":
+       cachedLm.type==="video"?"🎥 Vidéo":
+       (cachedLm.text||subStatus||""))
+      :(subStatus||"");
+    const initialTime=cachedLm?(cachedLm.t||""):"";
 
+    row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span><span class="row-time" id="lt-'+ck+'">'+initialTime+'</span></div><div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+esc(initialText)+'</span><span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span><button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button></div></div>';
     row.querySelector(".arch-btn").onclick=ev=>{ev.stopPropagation();toggleArch(c.uid);};
+    row.onclick=()=>openChat(c.uid);
 
-    // Long press pour supprimer, tap simple pour ouvrir
-    let lpt=null,lpdone=false,lpx=0,lpy=0;
-    const lpS=e=>{
-      lpdone=false;
-      const p=e.touches?e.touches[0]:e;
-      lpx=p.clientX;lpy=p.clientY;
-      clearTimeout(lpt);
-      lpt=setTimeout(()=>{lpdone=true;if(navigator.vibrate)navigator.vibrate(40);showDeleteConvMenu(c,ck,row);},700);
+    // Appui long → supprimer la discussion
+    let rowPressTimer=null;
+    const startRowPress=()=>{
+      rowPressTimer=setTimeout(()=>{
+        if(navigator.vibrate)navigator.vibrate(40);
+        showDeleteConvMenu(c,ck,row);
+      },600);
     };
-    const lpE=()=>clearTimeout(lpt);
-    const lpM=e=>{const p=e.touches?e.touches[0]:e;if(Math.abs(p.clientX-lpx)>12||Math.abs(p.clientY-lpy)>12){clearTimeout(lpt);lpdone=false;}};
-    row.addEventListener("touchstart",lpS,{passive:true});
-    row.addEventListener("touchend",lpE,{passive:true});
-    row.addEventListener("touchmove",lpM,{passive:true});
-    row.addEventListener("touchcancel",lpE,{passive:true});
-    row.addEventListener("mousedown",lpS);
-    row.addEventListener("mouseup",lpE);
-    row.addEventListener("contextmenu",e=>e.preventDefault());
-    row.onclick=e=>{if(!lpdone)openChat(c.uid);lpdone=false;};
+    const cancelRowPress=()=>clearTimeout(rowPressTimer);
+    row.addEventListener("touchstart",startRowPress,{passive:true});
+    row.addEventListener("touchend",cancelRowPress);
+    row.addEventListener("touchmove",cancelRowPress);
+    row.addEventListener("mousedown",startRowPress);
+    row.addEventListener("mouseup",cancelRowPress);
+    row.addEventListener("mouseleave",cancelRowPress);
+    row.addEventListener("contextmenu",e=>{e.preventDefault();showDeleteConvMenu(c,ck,row);});
 
     box.appendChild(row);
+
+    // Afficher le badge non lu si en cache
     updateUnreadBadge(ck);
 
-    // Listener Firebase lastMsg — 1 seul par conversation
+    // Écouter le dernier message — UN SEUL listener actif par conversation
+    if(!S.lastMsgListeners) S.lastMsgListeners={};
     if(!S.lastMsgListeners[ck]){
       const lmRef=db.ref("chats/"+ck+"/lastMsg");
-      const lmH=snap=>{
-        const lm=snap.val();if(!lm)return;
+      const lmHandler=snap2=>{
+        const lm=snap2.val();
+        if(!lm)return;
         const lt=document.getElementById("lt-"+ck);
         const ll=document.getElementById("ll-"+ck);
-        const txt=lm.del?"🚫 Supprimé"
-          :lm.type==="voice"?"🎵 Vocal"
-          :lm.type==="photo"?"📷 Photo"
-          :lm.type==="video"?"🎥 Vidéo"
-          :(lm.text||"");
+        const txt=lm.del?"🚫 Message supprimé":
+          lm.type==="voice"?"🎵 Vocal":
+          lm.type==="photo"?"📷 Photo":
+          lm.type==="video"?"🎥 Vidéo":
+          (lm.text||"");
         if(lt)lt.textContent=lm.t||"";
         if(ll)ll.textContent=txt;
-        CACHE.save("lastMsg_"+ck,{text:lm.text||"",t:lm.t||"",type:lm.type||"text",del:!!lm.del,from:lm.from||""});
+
+        // Sauvegarder en cache pour affichage instantané au prochain chargement
+        CACHE.save("lastMsg_"+ck, {text:lm.text||"",t:lm.t||"",type:lm.type||"text",del:!!lm.del});
+
         const ts=lm.ts||Date.now();
-        const prev=CACHE.load("lastTs_"+ck)||0;
-        CACHE.save("lastTs_"+ck,ts);
-        if(ts>prev&&lm.from&&lm.from!==S.myUid&&S.activeId!==c.uid){
+        const prevTs=CACHE.load("lastTs_"+ck)||0;
+        CACHE.save("lastTs_"+ck, ts);
+
+        if(ts>prevTs && lm.from!==S.myUid && S.activeId!==c.uid){
           incrementUnread(c.uid,ck);
+          toast("💬 Nouveau message de "+(displayName||"un contact"));
         }
-        // Monter la conversation en haut sans reconstruire le DOM
+
         const curBox=$("contact-list");
-        if(curBox)moveRowToTop(ck,curBox);
+        if(curBox) repositionRow(c.uid,ck,curBox);
       };
-      lmRef.on("value",lmH);
-      S.lastMsgListeners[ck]={ref:lmRef,handler:lmH};
+      lmRef.on("value",lmHandler);
+      S.lastMsgListeners[ck]={ref:lmRef,handler:lmHandler};
     }
+
+    // Afficher le badge actuel s'il y en a un en cache
+    updateUnreadBadge(ck);
   });
 }
 
-function moveRowToTop(ck,box){
-  const rowEl=document.getElementById("row-"+ck);
-  if(!rowEl||!box||box.firstChild===rowEl)return;
-  const myTs=CACHE.load("lastTs_"+ck)||0;
-  const rows=Array.from(box.querySelectorAll(".contact-row"));
-  for(const r of rows){
-    if(r===rowEl)continue;
-    const rCk=chatKey(S.myUid,r.getAttribute("data-uid")||"");
-    if((CACHE.load("lastTs_"+rCk)||0)<myTs){
-      box.insertBefore(rowEl,r);
-      return;
-    }
-  }
-  box.insertBefore(rowEl,box.firstChild);
-}
-
+// ---- COMPTEUR DE MESSAGES NON LUS ----
 function incrementUnread(uid,ck){
-  const n=(CACHE.load("unread_"+ck)||0)+1;
-  CACHE.save("unread_"+ck,n);
-  db.ref("unreadCount/"+S.myUid+"/"+uid).set(n).catch(()=>{});
+  const current=CACHE.load("unread_"+ck)||0;
+  const next=current+1;
+  CACHE.save("unread_"+ck,next);
+  db.ref("unreadCount/"+S.myUid+"/"+uid).set(next).catch(()=>{});
   updateUnreadBadge(ck);
 }
 
@@ -1314,27 +1510,52 @@ function clearUnread(uid,ck){
 }
 
 function updateUnreadBadge(ck){
-  const b=document.getElementById("ub-"+ck);
-  if(!b)return;
-  const n=CACHE.load("unread_"+ck)||0;
-  if(n>0){b.textContent=n>99?"99+":String(n);b.style.display="flex";}
-  else b.style.display="none";
+  const badge=document.getElementById("ub-"+ck);
+  if(!badge)return;
+  const count=CACHE.load("unread_"+ck)||0;
+  if(count>0){
+    badge.textContent=count>99?"99+":String(count);
+    badge.style.display="flex";
+  } else {
+    badge.style.display="none";
+  }
 }
 
-
-function appendBubbleWithDate(box,m){
-  const ts=m.ts||Date.now();
-  const label=dateLabel(ts);
-  if(box.dataset.lastDateLabel!==label){
-    const sep=document.createElement("div");
-    sep.className="date-sep";
-    sep.innerHTML='<span>'+esc(label)+'</span>';
-    box.appendChild(sep);
-    box.dataset.lastDateLabel=label;
+// Replace la ligne dans le bon ordre chronologique (le plus récent en haut)
+function repositionRow(uid,ck,box){
+  const rowEl=document.getElementById("row-"+ck);
+  if(!rowEl)return;
+  const myTs=CACHE.load("lastTs_"+ck)||0;
+  const rows=Array.from(box.querySelectorAll(".contact-row"));
+  let insertBeforeEl=null;
+  for(const r of rows){
+    if(r===rowEl)continue;
+    const rUid=r.getAttribute("data-uid");
+    const rCk=chatKey(S.myUid,rUid);
+    const rTs=CACHE.load("lastTs_"+rCk)||0;
+    if(myTs>rTs){ insertBeforeEl=r; break; }
   }
-  const row=makeBubble(m);
-  box.appendChild(row);
-  return row;
+  if(insertBeforeEl){
+    if(rowEl!==insertBeforeEl.previousSibling) box.insertBefore(rowEl,insertBeforeEl);
+  } else if(rowEl!==box.lastChild){
+    box.appendChild(rowEl);
+  }
+}
+
+function toggleArch(uid){S.arch.has(uid)?S.arch.delete(uid):S.arch.add(uid);renderList();if(S.activeId===uid)updateArchBtn();}
+function updateArchBtn(){const b=$("arch-btn");if(b)b.textContent=S.arch.has(S.activeId)?"📤":"🗄";}
+
+// ---- CHAT ----
+function openChat(uid){
+  S.activeId=uid;
+  const c=S.contacts.find(x=>x.uid===uid)||{phone:uid};
+  refreshChatHeader(c);
+  updateArchBtn();
+  showScreen("s-chat");
+  listenMsgs();
+  // Marquer comme lu
+  const ck=chatKey(S.myUid,uid);
+  clearUnread(uid,ck);
 }
 
 function listenMsgs(){
@@ -1343,68 +1564,93 @@ function listenMsgs(){
   const box=$("msg-list");
   if(!box)return;
   box.innerHTML="";
-  box.dataset.lastDateLabel="";
 
   const rendered=new Set();
   let anyShown=false;
 
-  // 1. Afficher immédiatement depuis le cache
+  // ---- 1. AFFICHAGE INSTANTANÉ depuis le cache local (même hors-ligne) ----
   let cached=null;
-  try{cached=CACHE.load("msgs_"+key);}catch(e){}
-  if(cached&&cached.length){
+  try{ cached=CACHE.load("msgs_"+key); }catch(e){ console.error("cache load:",e); }
+
+  if(cached && cached.length){
     cached.forEach(m=>{
-      if(!m||!m.id||rendered.has(m.id))return;
+      if(!m || !m.id || rendered.has(m.id))return;
       try{
-        appendBubbleWithDate(box,m);
+        const row=makeBubble(m);
+        box.appendChild(row);
         rendered.add(m.id);
         anyShown=true;
-      }catch(e){console.error("bubble cache:",e.message);}
+      }catch(e){ console.error("bubble cache erreur:",e.message,m); }
     });
     requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
   }
 
+  // Si on a essayé d'afficher le cache mais que RIEN n'est apparu (erreur silencieuse) → message clair
+  if(cached && cached.length && !anyShown){
+    box.innerHTML='<div class="empty-note">Erreur d\'affichage des messages.<br/>Tirez vers le bas pour réessayer ou rouvrez la discussion.</div>';
+  }
+
+  // ---- 2. SYNCHRONISATION avec Firebase en arrière-plan ----
   if(!navigator.onLine){
-    if(!anyShown) box.innerHTML='<div class="empty-note">Pas de connexion internet.</div>';
+    if(!anyShown){
+      box.innerHTML='<div class="empty-note">📡 Pas de connexion internet.<br/>Les messages s\'afficheront dès que vous serez en ligne.</div>';
+    }
     return;
   }
 
-  // 2. Écouter Firebase en temps réel
-  const allMsgs={};
-  if(cached) cached.forEach(m=>{if(m&&m.id)allMsgs[m.id]=m;});
-
-  let loadTimer=null;
-  if(!anyShown){
-    loadTimer=setTimeout(()=>{
-      if(!anyShown&&box.innerHTML==="") box.innerHTML='<div class="empty-note">Chargement...</div>';
-    },600);
+  if(!db){
+    box.innerHTML='<div class="empty-note">Erreur : connexion au serveur indisponible.</div>';
+    return;
   }
 
   const ref=db.ref("chats/"+key+"/messages");
+  const allMsgs={};
+  if(cached) cached.forEach(m=>{ if(m && m.id) allMsgs[m.id]=m; });
+
+  // Indicateur de chargement si rien n'est encore affiché
+  let loadingTimer=null;
+  if(!anyShown){
+    loadingTimer=setTimeout(()=>{
+      if(!anyShown && box.innerHTML===""){
+        box.innerHTML='<div class="empty-note">Chargement des messages...</div>';
+      }
+    },800);
+  }
 
   const onAdded=ref.on("child_added",snap=>{
-    clearTimeout(loadTimer);
+    clearTimeout(loadingTimer);
     let m;
-    try{m={id:snap.key,...snap.val()};}catch(e){return;}
+    try{ m={id:snap.key,...snap.val()}; }catch(e){ console.error("parse msg:",e); return; }
     allMsgs[m.id]=m;
     saveMsgsCache(key,allMsgs);
+
     if(rendered.has(snap.key)){
-      // Mettre à jour la bulle existante si nécessaire (ex: src arrivé après cache)
-      if(m.src&&!m.mediaCached){
-        const existing=document.getElementById("bub-"+snap.key);
-        if(existing)try{const nr=makeBubble(m);existing.replaceWith(nr);}catch(e){}
+      // Déjà affiché depuis le cache — si la version cache était dégradée
+      // (média non sauvegardé) et qu'on a maintenant la vraie donnée, remplacer la bulle
+      const existing=document.getElementById("bub-"+snap.key);
+      if(existing && m.src){
+        try{
+          const newRow=makeBubble(m);
+          existing.replaceWith(newRow);
+        }catch(e){console.error("bubble refresh erreur:",e.message);}
       }
       return;
     }
     rendered.add(snap.key);
-    if(!anyShown){box.innerHTML="";box.dataset.lastDateLabel="";anyShown=true;}
     try{
-      appendBubbleWithDate(box,m);
-      if(box.scrollHeight-box.scrollTop-box.clientHeight<120)
+      if(!anyShown){ box.innerHTML=""; anyShown=true; } // Effacer le message "chargement"/"vide"
+      const row=makeBubble(m);
+      box.appendChild(row);
+      if(box.scrollHeight - box.scrollTop - box.clientHeight < 100){
         requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
-    }catch(e){console.error("bubble add:",e.message);}
+      }
+    }catch(e){console.error("bubble add erreur:",e.message,m);}
   },err=>{
-    clearTimeout(loadTimer);
-    if(!anyShown) box.innerHTML='<div class="empty-note">Erreur : '+esc(err.message)+'</div>';
+    clearTimeout(loadingTimer);
+    console.error("listenMsgs Firebase err:",err.code,err.message);
+    if(!anyShown){
+      box.innerHTML='<div class="empty-note">Erreur de connexion : '+esc(err.message)+'<br/>Vérifiez votre connexion ou réessayez.</div>';
+    }
   });
 
   const onChanged=ref.on("child_changed",snap=>{
@@ -1412,15 +1658,27 @@ function listenMsgs(){
       const m={id:snap.key,...snap.val()};
       allMsgs[m.id]=m;
       saveMsgsCache(key,allMsgs);
-      const ex=document.getElementById("bub-"+snap.key);
-      if(ex)try{ex.replaceWith(makeBubble(m));}catch(e){}
-    }catch(e){}
+      const existing=document.getElementById("bub-"+snap.key);
+      if(existing){
+        const newRow=makeBubble(m);
+        existing.replaceWith(newRow);
+      }
+    }catch(e){console.error("bubble change erreur:",e.message);}
   });
 
+  // Si après 4s rien n'est arrivé ET aucune erreur, mais toujours rien affiché → notifier
+  setTimeout(()=>{
+    if(!anyShown && box.querySelector(".empty-note")){
+      box.innerHTML='<div class="empty-note">Aucun message dans cette discussion.<br/>Envoyez le premier message !</div>';
+    }
+  },4000);
+
   ref.once("value",()=>{
-    clearTimeout(loadTimer);
+    clearTimeout(loadingTimer);
     requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
-  }).catch(()=>{});
+  }).catch(err=>{
+    console.error("once value err:",err.message);
+  });
 
   S.unsubMsgs=()=>{
     ref.off("child_added",onAdded);
@@ -1428,23 +1686,26 @@ function listenMsgs(){
   };
 }
 
-let _saveCacheTimer=null;
+// Sauvegarde le cache des messages (limité aux 200 derniers pour rester léger)
+let saveCacheTimer=null;
 function saveMsgsCache(key,allMsgsMap){
-  clearTimeout(_saveCacheTimer);
-  _saveCacheTimer=setTimeout(()=>{
+  clearTimeout(saveCacheTimer);
+  saveCacheTimer=setTimeout(()=>{
     try{
-      let list=Object.values(allMsgsMap).filter(Boolean);
+      let list=Object.values(allMsgsMap);
       list.sort((a,b)=>(a.ts||0)-(b.ts||0));
-      if(list.length>200) list=list.slice(-200);
-      // Alléger les gros médias (photo/video), garder le texte et l'audio intacts
-      const light=list.map(m=>{
-        if(m.src&&m.src.length>60000&&(m.type==="photo"||m.type==="video"))
-          return{...m,src:null,mediaCached:false};
+      if(list.length>200) list=list.slice(list.length-200);
+      // Ne pas stocker les gros médias base64 dans le cache localStorage (limite ~5-10Mo)
+      // Les messages vocaux restent TOUJOURS complets (nécessaires pour la lecture)
+      const lightList=list.map(m=>{
+        if(m.src && m.src.length>50000 && (m.type==="photo"||m.type==="video")){
+          return {...m, src:null, mediaCached:false};
+        }
         return m;
       });
-      CACHE.save("msgs_"+key,light);
-    }catch(e){}
-  },400);
+      CACHE.save("msgs_"+key,lightList);
+    }catch(e){console.error("saveMsgsCache:",e);}
+  },300);
 }
 
 function makeBubble(m){
@@ -1456,56 +1717,21 @@ function makeBubble(m){
   if(m.del){bub.className="bubble del";bub.textContent=t("msgSupprime");row.appendChild(bub);return row;}
   bub.className="bubble "+(self?"out":"in");
 
-  // APPUI LONG UNIQUEMENT (800ms) → menu copier/supprimer
-  // Simple tap → rien ne se passe
-  let msgPressTimer=null;
-  let msgLongPressed=false;
-  let msgStartX=0, msgStartY=0;
-  let msgTouchActive=false;
-
-  const msgPressStart=e=>{
-    // Ne pas bloquer les clics sur boutons (lecture audio, vitesse, etc.)
-    if(e.target&&(e.target.tagName==="BUTTON"||e.target.closest&&e.target.closest("button"))) return;
-    if(e.cancelable) e.preventDefault();
-    msgLongPressed=false;
-    msgTouchActive=true;
-    const pt=e.touches?e.touches[0]:e;
-    msgStartX=pt.clientX; msgStartY=pt.clientY;
-    clearTimeout(msgPressTimer);
-    msgPressTimer=setTimeout(()=>{
-      if(!msgTouchActive)return;
-      msgLongPressed=true;
-      if(navigator.vibrate)navigator.vibrate(60);
+  // Appui long → menu contextuel (copier, supprimer)
+  let pressTimer=null;
+  const onPress=e=>{
+    pressTimer=setTimeout(()=>{
+      if(navigator.vibrate)navigator.vibrate(40);
       showMsgMenu(m,self,bub);
-    },800);
+    },500);
   };
-  const msgPressEnd=()=>{
-    msgTouchActive=false;
-    clearTimeout(msgPressTimer); // TOUJOURS annuler dès que le doigt se lève
-  };
-  const msgPressMove=e=>{
-    const pt=e.touches?e.touches[0]:e;
-    const dx=Math.abs(pt.clientX-msgStartX);
-    const dy=Math.abs(pt.clientY-msgStartY);
-    if(dx>6||dy>6){ // Moindre mouvement → annuler
-      clearTimeout(msgPressTimer);
-      msgTouchActive=false;
-    }
-  };
-
-  // Attacher sur `row` ET `bub` pour couvrir toute la zone de la bulle
-  // IMPORTANT : {passive:false} sur touchstart pour que preventDefault() fonctionne
-  row.addEventListener("touchstart",msgPressStart,{passive:false});
-  row.addEventListener("touchend",msgPressEnd,{passive:true});
-  row.addEventListener("touchmove",msgPressMove,{passive:true});
-  row.addEventListener("touchcancel",msgPressEnd,{passive:true});
-  row.addEventListener("mousedown",msgPressStart);
-  row.addEventListener("mouseup",msgPressEnd);
-  row.addEventListener("mousemove",msgPressMove);
-  row.addEventListener("mouseleave",msgPressEnd);
-  // Bloquer le menu contextuel natif du navigateur/WebView dans tous les cas
-  row.addEventListener("contextmenu",e=>{e.preventDefault();e.stopPropagation();});
-  bub.addEventListener("contextmenu",e=>{e.preventDefault();e.stopPropagation();});
+  const cancelPress=()=>clearTimeout(pressTimer);
+  row.addEventListener("touchstart",onPress,{passive:true});
+  row.addEventListener("touchend",cancelPress);
+  row.addEventListener("touchmove",cancelPress);
+  row.addEventListener("mousedown",onPress);
+  row.addEventListener("mouseup",cancelPress);
+  row.addEventListener("contextmenu",e=>{e.preventDefault();showMsgMenu(m,self,bub);});
   if(m.type==="voice"){
     // Générer une forme d'onde (barres de hauteurs variées pour un look réaliste)
     const barCount=28;
@@ -1523,7 +1749,7 @@ function makeBubble(m){
           '<button class="vspeed" id="vs-'+m.id+'">1×</button>'+
         '</div>'+
       '</div>'+
-      '<div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+      '<div class="b-meta"><span class="b-time">'+(m.dateStr?m.dateStr+' · ':'')+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
     setTimeout(()=>{
       const pb=document.getElementById("vp-"+m.id);
       const wp=document.getElementById("vwp-"+m.id);
@@ -1581,6 +1807,15 @@ function makeBubble(m){
     bub.innerHTML='<div class="b-text">'+esc(m.text||"")+'</div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
   }
 
+  // Appui long → nouveau menu unifié (copier + supprimer)
+  bub.addEventListener("touchstart",e=>{pressTimer=setTimeout(()=>{if(navigator.vibrate)navigator.vibrate(40);showMsgMenu(m,self,bub);},500);},{passive:true});
+  bub.addEventListener("touchend",()=>clearTimeout(pressTimer));
+  bub.addEventListener("touchmove",()=>clearTimeout(pressTimer));
+  bub.addEventListener("mousedown",e=>{pressTimer=setTimeout(()=>{showMsgMenu(m,self,bub);},500);});
+  bub.addEventListener("mouseup",()=>clearTimeout(pressTimer));
+  bub.addEventListener("mouseleave",()=>clearTimeout(pressTimer));
+  bub.addEventListener("contextmenu",e=>e.preventDefault());
+
   row.appendChild(bub);return row;
 }
 
@@ -1621,7 +1856,7 @@ function pushMsg(m){
   CACHE.save("lastTs_"+key,m.ts);
 
   return msgRef.push(m).then(()=>{
-    lastRef.set({text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts,from:m.from}).catch(()=>{});
+    lastRef.set({text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts}).catch(()=>{});
   }).catch(e=>{
     toast("Échec de l'envoi : "+e.message,"err");
     throw e;
@@ -1704,7 +1939,6 @@ function updateMyAv(){
 let svItems=[],svIdx=0,svTimer=null;
 
 function loadStatuses(){
-  // Mes propres statuts : chargement à la demande (pas besoin de temps réel ici)
   db.ref("statuses/"+S.myUid).once("value",snap=>{
     const now24=Date.now()-24*60*60*1000;const myItems=[];const strip=$("my-statuses-strip");strip.innerHTML="";
     snap.forEach(child=>{const s={id:child.key,...child.val()};if(s.ts>=now24)myItems.push(s);});
@@ -1716,58 +1950,22 @@ function loadStatuses(){
       });
     } else {$("my-status-count-el").textContent=t("ajouterStatut");strip.style.display="none";}
   }).catch(e=>{console.error("loadStatuses (moi):",e.message);});
-
-  // S'assurer que les listeners temps réel des contacts sont actifs
-  // (statuts publiés par un contact apparaissent automatiquement, sans recharger)
-  attachContactStatusListeners();
-  renderContactsStatusList();
-}
-
-// Cache des statuts de chaque contact, mis à jour en temps réel
-S.contactStatuses=S.contactStatuses||{};
-
-function attachContactStatusListeners(){
-  if(!S.statusListeners) S.statusListeners={};
+  const cl=$("contacts-statuses-list");cl.innerHTML="";let hasAny=false;
+  const now24=Date.now()-24*60*60*1000;
   S.contacts.forEach(c=>{
-    if(S.statusListeners[c.uid])return; // Déjà attaché
-    const ref=db.ref("statuses/"+c.uid);
-    const handler=snap=>{
-      const now24=Date.now()-24*60*60*1000;
-      const items=[];
-      snap.forEach(child=>{const s={id:child.key,...child.val()};if(s.ts>=now24)items.push(s);});
-      S.contactStatuses[c.uid]=items;
-      // Re-render la liste seulement si l'onglet Statuts est actuellement affiché
-      if(S.currentScreen==="s-status") renderContactsStatusList();
-      // Notification discrète si un nouveau statut vient d'arriver (pas au premier chargement)
-      if(S.statusListeners[c.uid].loaded && items.length>(S.statusListeners[c.uid].lastCount||0)){
-        const nick=CACHE.load("nick_"+c.uid)||"";
-        toast("🔵 Nouveau statut de "+(nick||c.name||c.phone||"un contact"));
-      }
-      S.statusListeners[c.uid].lastCount=items.length;
-      S.statusListeners[c.uid].loaded=true;
-    };
-    ref.on("value",handler);
-    S.statusListeners[c.uid]={ref,handler,loaded:false,lastCount:0};
-  });
-}
-
-function renderContactsStatusList(){
-  const cl=$("contacts-statuses-list");
-  if(!cl)return;
-  cl.innerHTML="";let hasAny=false;
-  S.contacts.forEach(c=>{
-    const items=S.contactStatuses[c.uid];
-    if(!items||!items.length)return;
-    hasAny=true;
-    $("contacts-statuses-section").style.display="block";$("no-contacts-status").style.display="none";
-    const seen=items.every(s=>s.viewers&&s.viewers[S.myUid]);
-    const row=document.createElement("div");row.className="status-contact-row";
-    const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'"/>':'<span style="font-size:24px">'+(c.emoji||"🧑🏾")+'</span>';
-    const ago=timeSince(items[items.length-1].ts);
-    const nick=CACHE.load("nick_"+c.uid)||"";
-    row.innerHTML='<div class="status-ring'+(seen?" seen":"")+'"><div class="status-ring-inner">'+avH+'</div></div><div class="status-row-info"><div class="status-row-name">'+esc(nick||c.name||c.phone||"Inconnu")+'</div><div class="status-row-time">'+ago+'</div></div>';
-    row.onclick=()=>openStatusViewer(items,0,false,c);
-    row.id="sr-"+c.uid;cl.appendChild(row);
+    db.ref("statuses/"+c.uid).once("value",snap=>{
+      const items=[];snap.forEach(child=>{const s={id:child.key,...child.val()};if(s.ts>=now24)items.push(s);});
+      if(!items.length)return;
+      hasAny=true;$("contacts-statuses-section").style.display="block";$("no-contacts-status").style.display="none";
+      const seen=items.every(s=>s.viewers&&s.viewers[S.myUid]);
+      const row=document.createElement("div");row.className="status-contact-row";
+      const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'"/>':'<span style="font-size:24px">'+(c.emoji||"🧑🏾")+'</span>';
+      const ago=timeSince(items[items.length-1].ts);
+      row.innerHTML='<div class="status-ring'+(seen?" seen":"")+'"><div class="status-ring-inner">'+avH+'</div></div><div class="status-row-info"><div class="status-row-name">'+esc(c.name||c.phone||"Inconnu")+'</div><div class="status-row-time">'+ago+'</div></div>';
+      row.onclick=()=>openStatusViewer(items,0,false,c);
+      const old=document.getElementById("sr-"+c.uid);if(old)old.remove();
+      row.id="sr-"+c.uid;cl.appendChild(row);
+    }).catch(e=>{console.error("loadStatuses (contact "+c.uid+"):",e.message);});
   });
   if(!hasAny){$("no-contacts-status").style.display="block";$("contacts-statuses-section").style.display="none";}
 }
@@ -1785,16 +1983,10 @@ function openStatusViewer(items,startIdx,isMine,contact){
   showStatusItem(svIdx,isMine);
 }
 
-let currentStatusViewers=[];
-let currentStatusUid=null;
-let currentStatusId=null;
-let currentStatusIsMine=false;
-
 function showStatusItem(idx,isMine){
   clearTimeout(svTimer);
   if(idx>=svItems.length){closeStatusViewer();return;}
   const s=svItems[idx];
-  currentStatusUid=s.uid;currentStatusId=s.id;currentStatusIsMine=isMine;
   $("sv-img").style.display="none";$("sv-img").src="";
   $("sv-vid").style.display="none";$("sv-vid").src="";
   $("sv-text-el").style.display="none";$("sv-text-el").textContent="";
@@ -1813,7 +2005,6 @@ function showStatusItem(idx,isMine){
   }
   if(isMine){
     $("sv-viewers-el").style.display="flex";
-    $("sv-viewers-count").textContent="...";
     // Charger les vues en direct depuis Firebase
     db.ref("statuses/"+s.uid+"/"+s.id+"/viewers").get().then(snap=>{
       const viewers=[];
@@ -1835,35 +2026,9 @@ function showStatusItem(idx,isMine){
   for(let i=0;i<idx;i++){const f=document.getElementById("svbar-"+i);if(f)f.style.width="100%";}
 }
 
+let currentStatusViewers=[];
+
 window.openViewersList=function(){
-  const body=$("viewers-list-body");
-  if(!body||!currentStatusUid||!currentStatusId)return;
-
-  // Mettre en pause le défilement automatique du statut pendant la consultation
-  clearTimeout(svTimer);
-  const fill=document.getElementById("svbar-"+svIdx);
-  if(fill) fill.style.transition="none"; // Geler la barre de progression visuelle
-  const vidEl=$("sv-vid");
-  if(vidEl&&vidEl.style.display==="block") vidEl.pause();
-
-  // Afficher l'overlay immédiatement avec un état de chargement
-  $("viewers-list-title").textContent="👁 Vu par...";
-  body.innerHTML='<div style="text-align:center;color:var(--sub);font-size:14px;padding:30px 20px">Chargement...</div>';
-  $("viewers-list-overlay").style.display="flex";
-
-  // Recharger les vues EN DIRECT (toujours à jour, jamais de données périmées)
-  db.ref("statuses/"+currentStatusUid+"/"+currentStatusId+"/viewers").get().then(snap=>{
-    const viewers=[];
-    snap.forEach(child=>viewers.push(child.val()));
-    viewers.sort((a,b)=>(b.ts||0)-(a.ts||0));
-    currentStatusViewers=viewers;
-    renderViewersList();
-  }).catch(()=>{
-    renderViewersList(); // Repli sur les données déjà connues
-  });
-};
-
-function renderViewersList(){
   const body=$("viewers-list-body");
   if(!body)return;
   if(!currentStatusViewers.length){
@@ -1879,25 +2044,11 @@ function renderViewersList(){
     }).join("");
   }
   $("viewers-list-title").textContent="👁 Vu par "+currentStatusViewers.length;
-}
+  $("viewers-list-overlay").style.display="flex";
+};
 
 window.closeViewersList=function(){
   $("viewers-list-overlay").style.display="none";
-  // Reprendre le défilement du statut là où il était
-  if(currentStatusIsMine&&svItems[svIdx]){
-    const s=svItems[svIdx];
-    if(s.type==="video"){
-      const vidEl=$("sv-vid");
-      if(vidEl) vidEl.play();
-    } else {
-      const fill=document.getElementById("svbar-"+svIdx);
-      if(fill){
-        fill.style.transition="width 5s linear";
-        fill.style.width="100%";
-      }
-      svTimer=setTimeout(()=>{showStatusItem(svIdx+1,true);},5000);
-    }
-  }
 };
 
 function markViewed(s){
@@ -1921,7 +2072,7 @@ function closeStatusViewer(){
 const APP_MSG="💬 Rejoins-moi sur EniBusiness Pro !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-const CURRENT_BUILD = "v2026-07-02-icefix";
+const CURRENT_BUILD = "v2026-06-28-callfix-final";
 
 if("serviceWorker" in navigator){
   const lastSeenBuild = localStorage.getItem("sonia_last_build");
@@ -2043,10 +2194,8 @@ input,textarea{font-family:inherit;border:none;outline:none}
 .call-btns{display:flex;gap:8px}
 .call-btn-sm{width:38px;height:38px;border-radius:11px;background:var(--card);border:1px solid var(--border);font-size:17px;display:flex;align-items:center;justify-content:center;cursor:pointer}
 #msg-list{flex:1;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:3px;background:var(--chat-bg)}
-.bubble-row{display:flex;-webkit-user-select:none;user-select:none}.bubble-row.out{justify-content:flex-end}.bubble-row.in{justify-content:flex-start}
-.date-sep{display:flex;justify-content:center;margin:14px 0 8px}
-.date-sep span{background:var(--card);color:var(--sub);font-size:12px;font-weight:700;padding:6px 14px;border-radius:10px;box-shadow:0 1px 2px rgba(0,0,0,.08)}
-.bubble{max-width:78%;padding:9px 13px;font-size:14px;line-height:1.5;position:relative;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+.bubble-row{display:flex}.bubble-row.out{justify-content:flex-end}.bubble-row.in{justify-content:flex-start}
+.bubble{max-width:78%;padding:9px 13px;font-size:14px;line-height:1.5;position:relative}
 .bubble.out{background:var(--bubble-out);border-radius:18px 18px 4px 18px;color:var(--text)}
 .bubble.in{background:var(--bubble-in);border-radius:18px 18px 18px 4px;color:var(--text)}
 .bubble.del{background:rgba(255,255,255,.04)!important;border:1px dashed var(--border)!important;border-radius:14px!important;color:var(--dim)!important;font-style:italic}
@@ -2325,7 +2474,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
   </div></div>
   <div class="search-wrap"><div class="search-box">
     <span style="color:var(--dim);font-size:16px">🔍</span>
-    <input id="search-input" placeholder="Rechercher..." oninput="doSearch(this.value)"/>
+    <input id="search-input" placeholder="Rechercher..." oninput="S.search=this.value;renderList()"/>
   </div></div>
   <div class="list-body" id="contact-list"></div>
   <div class="bottom-nav">
@@ -2976,14 +3125,11 @@ window.addEventListener("DOMContentLoaded",()=>{
     }
     const avH = (found.avType==="img"&&found.img)?'<img src="'+found.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>': (found.emoji||"🧑🏾");
     result.innerHTML='<div class="contact-row" style="border-bottom:none;border-radius:14px;background:var(--surface);border:1px solid var(--border)" id="nc-found-row"><div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(found.online?"online":"offline")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(found.name||found.phone||"Inconnu")+'</span></div><div class="row-bot"><span class="row-last">'+esc(found.phone||"")+'</span></div></div><span style="color:var(--accent);font-size:22px;padding:0 4px">›</span></div>';
-    document.getElementById("nc-found-row").onclick = ()=>{
+    document.getElementById("nc-found-row").onclick = async ()=>{
       document.getElementById("newchat-overlay").style.display="none";
-      if(!S.contacts.find(c=>c.uid===found.uid)){
-        S.contacts.push(found);
-        CACHE.save("contacts",S.contacts);
-      }
+      if(!S.contacts.find(c=>c.uid===found.uid)) S.contacts.push(found);
       openChat(found.uid);
-      ensureMutualContact(found.uid).catch(()=>{});
+      try{ await ensureMutualContact(found.uid); }catch(e){ console.error("ensureMutualContact:",e); }
     };
   };
 
