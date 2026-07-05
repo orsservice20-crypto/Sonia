@@ -1124,6 +1124,7 @@ function doSearch(val){
 function openChat(uid){
   if(!uid)return;
   S.activeId=uid;
+
   // Effacer la recherche sans reconstruire la liste
   if(S.search){
     S.search="";
@@ -1135,10 +1136,19 @@ function openChat(uid){
       if(nr)nr.remove();
     }
   }
+
+  // Fermer tous les overlays ouverts avant d'ouvrir le chat
+  document.querySelectorAll(".overlay").forEach(ov=>{
+    if(ov.style.display==="flex"||ov.style.display==="block")
+      ov.style.display="none";
+  });
+
   const c=S.contacts.find(x=>x.uid===uid)||{uid,phone:uid};
   refreshChatHeader(c);
   updateArchBtn();
   showScreen("s-chat");
+  // Pousser un état history pour que le bouton retour Android fonctionne
+  history.pushState({sonia:"app"},"","");
   listenMsgs();
   const ck=chatKey(S.myUid,uid);
   clearUnread(uid,ck);
