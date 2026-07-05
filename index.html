@@ -1091,22 +1091,68 @@ window.clearCallLog=function(){
 };
 // ==================== FIN APPELS WEBRTC ====================
 
+// ---- RECHERCHE DANS LA LISTE (filtre le DOM existant sans reconstruire) ----
+function doSearch(val){
+  S.search=(val||"").trim().toLowerCase();
+  const box=$("contact-list");
+  if(!box)return;
+  const rows=box.querySelectorAll(".contact-row");
+  if(!S.search){
+    // Pas de recherche → tout afficher
+    rows.forEach(r=>r.style.display="");
+    const empty=box.querySelector(".empty-note");
+    if(empty)empty.style.display=S.contacts.length?"none":"";
+    return;
+  }
+  let anyVisible=false;
+  rows.forEach(r=>{
+    const uid=r.getAttribute("data-uid")||"";
+    const c=S.contacts.find(x=>x.uid===uid);
+    if(!c){r.style.display="none";return;}
+    const nick=CACHE.load("nick_"+uid)||"";
+    const name=(nick||c.name||c.phone||"").toLowerCase();
+    const phone=(c.phone||"").toLowerCase();
+    const match=name.includes(S.search)||phone.includes(S.search);
+    r.style.display=match?"":"none";
+    if(match)anyVisible=true;
+  });
+  // Afficher/cacher le message "aucun résultat"
+  let noResult=document.getElementById("search-no-result");
+  if(!anyVisible){
+    if(!noResult){
+      noResult=document.createElement("div");
+      noResult.id="search-no-result";
+      noResult.className="empty-note";
+      noResult.textContent="Aucun résultat pour "+val;
+      box.appendChild(noResult);
+    }else noResult.textContent="Aucun résultat pour "+val;
+  }else if(noResult) noResult.remove();
+}
+
 // ---- OUVRIR UNE DISCUSSION ----
 function openChat(uid){
   if(!uid)return;
   S.activeId=uid;
 
-  // Effacer la recherche active (sinon la liste semble vide au retour)
-  S.search="";
-  const si=$("search-input");
-  if(si)si.value="";
+  // Effacer la recherche et rendre toutes les lignes visibles
+  if(S.search){
+    S.search="";
+    const si=$("search-input");
+    if(si)si.value="";
+    // Rendre toutes les lignes visibles
+    const box=$("contact-list");
+    if(box){
+      box.querySelectorAll(".contact-row").forEach(r=>r.style.display="");
+      const nr=document.getElementById("search-no-result");
+      if(nr)nr.remove();
+    }
+  }
 
   const c=S.contacts.find(x=>x.uid===uid)||{uid,phone:uid};
   refreshChatHeader(c);
   updateArchBtn();
   showScreen("s-chat");
   listenMsgs();
-  // Marquer comme lu
   const ck=chatKey(S.myUid,uid);
   clearUnread(uid,ck);
 }
@@ -1505,8 +1551,7 @@ function renderList(){
 
   box.innerHTML="";
 
-  vis.forEach(c=>{
-    const nick=CACHE.load("nick_"+c.uid)||"";
+  vis.forEach(c=>{    const nick=CACHE.load("nick_"+c.uid)||"";
     const displayName=nick||c.name||c.phone||"Inconnu";
     const ck=chatKey(S.myUid,c.uid);
 
@@ -1620,6 +1665,9 @@ function renderList(){
       S.lastMsgListeners[ck]={ref:lmRef,handler:lmHandler};
     }
   });
+
+  // Réappliquer le filtre de recherche si actif
+  if(S.search) doSearch(S.search);
 }
 
 // Déplace la conversation en haut de la liste (le plus récent = premier)
@@ -2665,7 +2713,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
   </div></div>
   <div class="search-wrap"><div class="search-box">
     <span style="color:var(--dim);font-size:16px">🔍</span>
-    <input id="search-input" placeholder="Rechercher..." oninput="S.search=this.value;renderList()"/>
+    <input id="search-input" placeholder="Rechercher..." oninput="doSearch(this.value)"/>
   </div></div>
   <div class="list-body" id="contact-list"></div>
   <div class="bottom-nav">
