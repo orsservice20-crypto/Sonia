@@ -94,6 +94,10 @@ function showScreen(id){
   document.querySelectorAll(".screen").forEach(s=>s.classList.add("off"));
   $(id).classList.remove("off");
   S.currentScreen=id;
+  // Nettoyage systématique : le menu contextuel de message (copier/supprimer) et sa
+  // boîte de confirmation ne doivent jamais survivre à un changement d'écran.
+  const ctxMenu=document.getElementById("msg-ctx-menu");if(ctxMenu)ctxMenu.remove();
+  const delConfirm=document.getElementById("msg-del-confirm");if(delConfirm)delConfirm.remove();
 }
 
 // ---- BOUTON RETOUR ANDROID ----
@@ -110,6 +114,16 @@ window.addEventListener("popstate",function(e){
   // Si ce n'est pas notre état "app", reconstruire
   if(!state||state.sonia!=="app"){
     history.pushState({sonia:"app"},"","");
+  }
+
+  // 0. Menu contextuel de message (copier/supprimer) ouvert → le fermer en priorité
+  const ctxMenu=document.getElementById("msg-ctx-menu");
+  const delConfirm=document.getElementById("msg-del-confirm");
+  if(ctxMenu||delConfirm){
+    if(ctxMenu)ctxMenu.remove();
+    if(delConfirm)delConfirm.remove();
+    history.pushState({sonia:"app"},"","");
+    return;
   }
 
   // 1. Appel en cours → ne rien faire (protéger l'appel)
@@ -1936,6 +1950,12 @@ function makeBubble(m){
   const triggerMenu=()=>{
     clearPress();
     if(document.getElementById("msg-ctx-menu"))return; // déjà ouvert, ne pas ré-ouvrir
+    // Filet de sécurité : effacer toute sélection de texte native que le long-press
+    // aurait pu déclencher avant que la règle CSS user-select:none ne s'applique.
+    if(window.getSelection){
+      const sel=window.getSelection();
+      if(sel&&sel.removeAllRanges)sel.removeAllRanges();
+    }
     if(navigator.vibrate)navigator.vibrate(40);
     showMsgMenu(m,self,bub);
   };
@@ -2409,7 +2429,7 @@ input,textarea{font-family:inherit;border:none;outline:none}
 .call-btn-sm{width:38px;height:38px;border-radius:11px;background:var(--card);border:1px solid var(--border);font-size:17px;display:flex;align-items:center;justify-content:center;cursor:pointer}
 #msg-list{flex:1;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:3px;background:var(--chat-bg)}
 .bubble-row{display:flex}.bubble-row.out{justify-content:flex-end}.bubble-row.in{justify-content:flex-start}
-.bubble{max-width:78%;padding:9px 13px;font-size:14px;line-height:1.5;position:relative}
+.bubble{max-width:78%;padding:9px 13px;font-size:14px;line-height:1.5;position:relative;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .bubble.out{background:var(--bubble-out);border-radius:18px 18px 4px 18px;color:var(--text)}
 .bubble.in{background:var(--bubble-in);border-radius:18px 18px 18px 4px;color:var(--text)}
 .bubble.del{background:rgba(255,255,255,.04)!important;border:1px dashed var(--border)!important;border-radius:14px!important;color:var(--dim)!important;font-style:italic}
