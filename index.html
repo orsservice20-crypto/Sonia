@@ -94,10 +94,11 @@ function showScreen(id){
   document.querySelectorAll(".screen").forEach(s=>s.classList.add("off"));
   $(id).classList.remove("off");
   S.currentScreen=id;
-  // Nettoyage systématique : le menu contextuel de message (copier/supprimer) et sa
-  // boîte de confirmation ne doivent jamais survivre à un changement d'écran.
+  // Nettoyage systématique : aucun menu/overlay flottant ne doit survivre à un changement d'écran.
   const ctxMenu=document.getElementById("msg-ctx-menu");if(ctxMenu)ctxMenu.remove();
   const delConfirm=document.getElementById("msg-del-confirm");if(delConfirm)delConfirm.remove();
+  const convDelMenu=document.getElementById("conv-del-menu");if(convDelMenu)convDelMenu.remove();
+  const viewersList=$("viewers-list-overlay");if(viewersList)viewersList.style.display="none";
 }
 
 // ---- BOUTON RETOUR ANDROID ----
@@ -109,12 +110,28 @@ function showScreen(id){
 history.pushState({sonia:"app"},"","");
 
 window.addEventListener("popstate",function(e){
-  // 0. Menu contextuel de message (copier/supprimer) ouvert → le fermer en priorité
+  // 0. Menu contextuel de message (copier/supprimer) ou menu suppression conversation ouvert
   const ctxMenu=document.getElementById("msg-ctx-menu");
   const delConfirm=document.getElementById("msg-del-confirm");
-  if(ctxMenu||delConfirm){
+  const convDelMenu=document.getElementById("conv-del-menu");
+  if(ctxMenu||delConfirm||convDelMenu){
     if(ctxMenu)ctxMenu.remove();
     if(delConfirm)delConfirm.remove();
+    if(convDelMenu)convDelMenu.remove();
+    history.pushState({sonia:"app"},"","");
+    return;
+  }
+
+  // 0bis. Liste des personnes ayant vu un statut / panneau emoji (n'ont pas la classe .overlay)
+  const viewersList=$("viewers-list-overlay");
+  if(viewersList&&viewersList.style.display==="flex"){
+    viewersList.style.display="none";
+    history.pushState({sonia:"app"},"","");
+    return;
+  }
+  const emojiPanel=$("emoji-panel");
+  if(emojiPanel&&emojiPanel.style.display!=="none"&&emojiPanel.style.display!==""){
+    emojiPanel.style.display="none";
     history.pushState({sonia:"app"},"","");
     return;
   }
