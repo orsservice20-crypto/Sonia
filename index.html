@@ -17,6 +17,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-storage-compat.js"></script>
 <script>
 window.addEventListener("error", function(e){
   console.error("ERREUR JS:", e.message, "ligne", e.lineno);
@@ -28,6 +29,7 @@ const firebaseConfig={apiKey:"AIzaSyD8TsBNkUQ_ymSbhOxNaOcq_j-w38OHrSg",authDomai
 firebase.initializeApp(firebaseConfig);
 const auth=firebase.auth();
 const db=firebase.database();
+const storage=firebase.storage();
 // ---- SMS via Seven.io ----
 const SMS_KEY = "6IMieB6iuVzvA8Exbi9KBQChlqhFt1TGhxClLBlosuZ7zbimeowQk0BMXj8cJTbG";
 
@@ -1969,11 +1971,12 @@ function stopRec(){
 function openViewer(src){$("photo-viewer-img").src=src;$("photo-viewer").style.display="flex";}
 function openVideoViewer(src){$("video-viewer-el").src=src;$("video-viewer").style.display="flex";$("video-viewer-el").play();}
 
-// Enregistre une image/vidéo (base64 dataURL) dans la galerie/téléchargements de l'appareil.
-window.downloadMedia=function(src,kind){
+// Enregistre une image/vidéo (base64 dataURL) directement dans la galerie/Photos de l'appareil,
+// à la manière de WhatsApp : aucune interaction supplémentaire, juste un toast "Enregistré".
+window.downloadMedia=async function(src,kind){
   if(!src){toast("Média indisponible","err");return;}
+  const isVideo=kind==="video";
   try{
-    const isVideo=kind==="video";
     const match=/^data:([^;]+);base64,/.exec(src);
     const mime=match?match[1]:(isVideo?"video/mp4":"image/jpeg");
     let ext="jpg";
@@ -1985,13 +1988,42 @@ window.downloadMedia=function(src,kind){
     else if(mime.includes("quicktime"))ext="mov";
     const filename=(isVideo?"video_":"photo_")+Date.now()+"."+ext;
 
-    // Convertit le dataURL en Blob pour un téléchargement fiable sur mobile (Android/iOS via navigateur ou wrapper Median.co)
+    // Cas 1 : app enveloppée par Median.co -> on utilise le pont natif pour sauvegarder
+    // directement dans la galerie/Photos (comportement identique à WhatsApp).
+    if(window.median&&window.median.share){
+      // Median a besoin d'une URL http(s) publique : on héberge le fichier temporairement
+      // sur Firebase Storage, on demande la sauvegarde native, puis on supprime le fichier distant.
+      const bstr=atob(src.split(",")[1]);
+      const arr=new Uint8Array(bstr.length);
+      for(let i=0;i<bstr.length;i++)arr[i]=bstr.charCodeAt(i);
+      const blob=new Blob([arr],{type:mime});
+
+      const tmpRef=storage.ref("tmp_downloads/"+(S.myUid||"anon")+"/"+filename);
+      await tmpRef.put(blob,{contentType:mime});
+      const publicUrl=await tmpRef.getDownloadURL();
+
+      try{
+        if(isVideo){
+          // Pas d'équivalent "downloadImage" pour la vidéo côté Median : on utilise
+          // downloadFile, qui déclenche l'enregistrement natif / partage vers Fichiers-Photos.
+          await window.median.share.downloadFile({url:publicUrl,open:false});
+        }else{
+          await window.median.share.downloadImage({url:publicUrl});
+        }
+        toast(isVideo?"📹 Vidéo enregistrée":"🖼️ Photo enregistrée");
+      }finally{
+        tmpRef.delete().catch(()=>{});
+      }
+      return;
+    }
+
+    // Cas 2 : navigateur classique (pas de wrapper natif) -> téléchargement standard,
+    // qui atterrit dans le dossier Téléchargements/Photos selon le navigateur.
     const bstr=atob(src.split(",")[1]);
     const arr=new Uint8Array(bstr.length);
     for(let i=0;i<bstr.length;i++)arr[i]=bstr.charCodeAt(i);
     const blob=new Blob([arr],{type:mime});
     const url=URL.createObjectURL(blob);
-
     const a=document.createElement("a");
     a.href=url;a.download=filename;
     document.body.appendChild(a);a.click();document.body.removeChild(a);
