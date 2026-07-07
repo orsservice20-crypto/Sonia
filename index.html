@@ -541,6 +541,16 @@ const ICE_SERVERS={iceServers:[
   {urls:"turn:openrelay.metered.ca:80?transport=tcp",username:"openrelayproject",credential:"openrelayproject"},
 ]};
 
+// Vérifie qu'un chemin Firebase est utilisable (non null/undefined/vide, pas de caractères interdits)
+function isValidRefPath(p){
+  return typeof p==="string"&&p.length>0&&!/[.#$\[\]]/.test(p);
+}
+// Construit une ref Firebase seulement si le chemin est valide, sinon renvoie null (au lieu de throw)
+function safeDbRef(path){
+  if(!isValidRefPath(path))return null;
+  try{return db.ref(path);}catch(e){console.warn("safeDbRef:",e.message);return null;}
+}
+
 function setCallUI(contact){
   const av=$("call-av-big");av.innerHTML="";
   if(contact&&contact.avType==="img"&&contact.img){const img=document.createElement("img");img.src=contact.img;av.appendChild(img);}
@@ -578,8 +588,11 @@ function createPC(){
   });
 
   pc.onicecandidate=e=>{
-    if(e.candidate&&S.callRef&&S.pc===pc)
+    if(!e.candidate||S.pc!==pc)return;
+    if(!isValidRefPath(S.callRef)||!S.myUid)return;
+    try{
       db.ref(S.callRef+"/ice/"+S.myUid).push(e.candidate.toJSON()).catch(()=>{});
+    }catch(err){console.warn("ICE push ignoré:",err.message);}
   };
 
   pc.ontrack=e=>{
@@ -647,9 +660,10 @@ function listenIce(otherUid){
     try{S.unsubIce();}catch(e){}
     S.unsubIce=null;
   }
-  if(!S.callRef)return;
+  if(!isValidRefPath(S.callRef)||!isValidRefPath(otherUid))return;
   S.iceQueue=[];
-  const ref=db.ref(S.callRef+"/ice/"+otherUid);
+  const ref=safeDbRef(S.callRef+"/ice/"+otherUid);
+  if(!ref)return;
   const iceHandler=snap=>{
     const c=snap.val();
     if(!c||!S.pc)return;
@@ -678,6 +692,10 @@ function flushIceQueue(){
 // ---- APPEL SORTANT ----
 window.startCall=async function(type){
   if(!S.activeId||S.callDir)return;
+  if(!isValidRefPath(S.activeId)||!isValidRefPath(S.myUid)){
+    toast("Impossible de démarrer l'appel : identifiant invalide","err");
+    return;
+  }
   const contact=S.contacts.find(c=>c.uid===S.activeId)||{uid:S.activeId,phone:S.activeId};
 
   S.callType=type;S.callDir="out";S.callPeer=S.activeId;
@@ -729,12 +747,20 @@ window.startCall=async function(type){
     status:"ringing",
     ts:Date.now()
   };
+  const callSetRef=safeDbRef(S.callRef);
+  if(!callSetRef){
+    toast("Impossible de démarrer l'appel : chemin invalide","err");
+    endCall(true);return;
+  }
   try{
-    await db.ref(S.callRef).set(ringData);
-    db.ref("inbox/"+S.activeId+"/"+S.myUid).set({
-      from:S.myUid,fromPhone:S.myPhone||"",
-      fromName:S.profile.name||S.myPhone||"",ts:Date.now()
-    }).catch(()=>{});
+    await callSetRef.set(ringData);
+    const inboxRef=safeDbRef("inbox/"+S.activeId+"/"+S.myUid);
+    if(inboxRef){
+      inboxRef.set({
+        from:S.myUid,fromPhone:S.myPhone||"",
+        fromName:S.profile.name||S.myPhone||"",ts:Date.now()
+      }).catch(()=>{});
+    }
   }catch(e){
     toast("Impossible de démarrer l'appel : "+e.message,"err");
     endCall(true);return;
@@ -742,7 +768,8 @@ window.startCall=async function(type){
 
   // 4. Écouter la réponse
   if(S.unsubCall){try{S.unsubCall();}catch(e){}}
-  const ref=db.ref(S.callRef);
+  const ref=safeDbRef(S.callRef);
+  if(!ref){endCall(true);return;}
   const handler=async snap=>{
     const data=snap.val();
     if(!data||data.status==="ended"||data.status==="rejected"||data.status==="busy"){
@@ -774,11 +801,13 @@ window.startCall=async function(type){
 
 // ---- SONNERIE ENTRANTE ----
 function listenIncomingCalls(){
-  if(!S.myUid)return;
-  db.ref("callSignals/"+S.myUid).on("child_added",snap=>{
+  if(!isValidRefPath(S.myUid))return;
+  const incomingRef=safeDbRef("callSignals/"+S.myUid);
+  if(!incomingRef)return;
+  incomingRef.on("child_added",snap=>{
     handleRing(snap.key,snap.val());
   });
-  db.ref("callSignals/"+S.myUid).on("child_changed",snap=>{
+  incomingRef.on("child_changed",snap=>{
     const data=snap.val();
     if(data&&(data.status==="ended"||data.status==="rejected")&&S.callPeer===snap.key){
       endCall(true);
@@ -792,14 +821,18 @@ function handleRing(callerUid,data){
   if(!data.ts||Date.now()-data.ts>60000)return;
 
   if(S.callDir||$("call-overlay").style.display==="flex"){
-    const busyRef="callSignals/"+S.myUid+"/"+callerUid;
-    db.ref(busyRef).update({status:"busy"}).then(()=>{
-      setTimeout(()=>db.ref(busyRef).remove().catch(()=>{}),1500);
-    }).catch(()=>{});
+    const busyPath="callSignals/"+S.myUid+"/"+callerUid;
+    const busyRef=safeDbRef(busyPath);
+    if(busyRef){
+      busyRef.update({status:"busy"}).then(()=>{
+        setTimeout(()=>{const r=safeDbRef(busyPath);if(r)r.remove().catch(()=>{});},1500);
+      }).catch(()=>{});
+    }
     toast("📵 "+(data.fromName||"Quelqu'un")+" a essayé de vous appeler");
     const contact=S.contacts.find(c=>c.uid===callerUid)||{};
     const nick=CACHE.load("nick_"+callerUid)||"";
-    db.ref("callLog/"+S.myUid).push({
+    const logRef=safeDbRef("callLog/"+S.myUid);
+    if(logRef)logRef.push({
       peer:callerUid,peerName:nick||data.fromName||contact.name||contact.phone||callerUid,
       peerEmoji:data.fromEmoji||contact.emoji||"🧑🏾",peerAvType:data.fromAvType||"emoji",
       peerImg:data.fromImg||null,dir:"in",type:data.type||"audio",
@@ -885,19 +918,25 @@ window.acceptCall=async function(){
   // Les ICE déjà en queue seront appliqués après setRemoteDescription
   listenIce(S.callPeer);
 
+  const acceptRef=safeDbRef(S.callRef);
+  if(!acceptRef){
+    toast("Erreur connexion : chemin d'appel invalide","err");
+    endCall(true);return;
+  }
   try{
     await S.pc.setRemoteDescription(new RTCSessionDescription(S.incomingOffer));
     flushIceQueue(); // Appliquer les ICE reçus pendant la sonnerie
     const answer=await S.pc.createAnswer();
     await S.pc.setLocalDescription(answer);
-    await db.ref(S.callRef).update({answer:{type:answer.type,sdp:answer.sdp},status:"connected"});
+    await acceptRef.update({answer:{type:answer.type,sdp:answer.sdp},status:"connected"});
   }catch(e){
     toast("Erreur connexion : "+e.message,"err");
     endCall(true);return;
   }
 
   if(S.unsubCall){try{S.unsubCall();}catch(e){}}
-  const ref=db.ref(S.callRef);
+  const ref=safeDbRef(S.callRef);
+  if(!ref){endCall(true);return;}
   const handler=snap=>{
     const d=snap.val();
     if(!d||d.status==="ended")endCall(true);
@@ -909,9 +948,10 @@ window.acceptCall=async function(){
 // ---- REFUSER ----
 window.rejectCall=function(){
   const refPath=S.callRef;
-  if(refPath){
-    db.ref(refPath).update({status:"rejected"}).then(()=>{
-      setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),1500);
+  const rRef=safeDbRef(refPath);
+  if(rRef){
+    rRef.update({status:"rejected"}).then(()=>{
+      setTimeout(()=>{const r=safeDbRef(refPath);if(r)r.remove().catch(()=>{});},1500);
     }).catch(()=>{});
   }
   endCall(true);
@@ -926,12 +966,13 @@ window.endCall=function(silent){
   const type=S.callType;
   const secs=S.callSecs;
 
-  if(!silent&&refPath){
-    db.ref(refPath).update({status:"ended"}).then(()=>{
-      setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),2000);
+  const endRef=safeDbRef(refPath);
+  if(!silent&&endRef){
+    endRef.update({status:"ended"}).then(()=>{
+      setTimeout(()=>{const r=safeDbRef(refPath);if(r)r.remove().catch(()=>{});},2000);
     }).catch(()=>{});
-  } else if(refPath){
-    setTimeout(()=>db.ref(refPath).remove().catch(()=>{}),2500);
+  } else if(endRef){
+    setTimeout(()=>{const r=safeDbRef(refPath);if(r)r.remove().catch(()=>{});},2500);
   }
 
   if(S.unsubCall){try{S.unsubCall();}catch(e){} S.unsubCall=null;}
@@ -961,10 +1002,13 @@ window.endCall=function(silent){
       time:new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"}),
       date:new Date().toLocaleDateString("fr",{day:"2-digit",month:"short"})
     };
-    db.ref("callLog/"+S.myUid).push(entry).then(()=>{
-      // Rafraîchir l'écran Appels si actuellement affiché
-      if(S.currentScreen==="s-calls" && typeof loadCallLog==="function") loadCallLog();
-    }).catch(()=>{});
+    const clRef=safeDbRef("callLog/"+S.myUid);
+    if(clRef){
+      clRef.push(entry).then(()=>{
+        // Rafraîchir l'écran Appels si actuellement affiché
+        if(S.currentScreen==="s-calls" && typeof loadCallLog==="function") loadCallLog();
+      }).catch(()=>{});
+    }
   }
 };
 
