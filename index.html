@@ -1316,7 +1316,13 @@ function showMsgMenu(m,self,bub){
   sheet.appendChild(cancelBtn);
 
   menu.appendChild(sheet);
+  sheet.addEventListener("click",e=>e.stopPropagation());
   menu.onclick=e=>{if(e.target===menu)menu.remove();};
+  // Ignorer les clics pendant les ~350ms suivant l'ouverture : sur mobile, le relâchement
+  // du doigt après l'appui long qui a ouvert ce menu génère un "click" fantôme qui peut
+  // sinon atterrir sur un bouton du menu (souvent "Copier") et le déclencher/fermer à tort.
+  menu.style.pointerEvents="none";
+  setTimeout(()=>{menu.style.pointerEvents="auto";},350);
   document.body.appendChild(menu);
 }
 
