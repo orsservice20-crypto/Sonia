@@ -101,21 +101,14 @@ function showScreen(id){
 }
 
 // ---- BOUTON RETOUR ANDROID ----
-// Stratégie : garder 2 entrées dans l'historique.
-// Page ouverte → history = [base, app].
-// Bouton retour Android → popstate → on gère nous-mêmes → on repousse "app".
-// Ainsi le bouton retour ne quitte jamais l'app (sauf si on est sur la liste principale
-// et qu'il n'y a rien à fermer → on laisse Android minimiser l'app).
-history.replaceState({sonia:"base"},"","");
+// Stratégie : une seule entrée d'historique supplémentaire par-dessus la page de base.
+// Tant qu'il y a quelque chose à fermer (chat ouvert, overlay, viewer, menu...), le retour
+// ferme cet élément et repousse une entrée pour intercepter le prochain retour.
+// Sur l'écran principal sans rien d'ouvert, on ne repousse RIEN : le popstate suit son
+// cours naturel et Android quitte l'app dès le premier appui.
 history.pushState({sonia:"app"},"","");
 
 window.addEventListener("popstate",function(e){
-  const state=e.state;
-  // Si ce n'est pas notre état "app", reconstruire
-  if(!state||state.sonia!=="app"){
-    history.pushState({sonia:"app"},"","");
-  }
-
   // 0. Menu contextuel de message (copier/supprimer) ouvert → le fermer en priorité
   const ctxMenu=document.getElementById("msg-ctx-menu");
   const delConfirm=document.getElementById("msg-del-confirm");
@@ -183,11 +176,8 @@ window.addEventListener("popstate",function(e){
     return;
   }
 
-  // 7. Sur la liste principale → laisser Android minimiser l'app
-  // Ne pas repousser l'état → Android fera son travail (minimiser)
-  // Mais on remet quand même la base pour le prochain retour
-  history.replaceState({sonia:"base"},"","");
-  history.pushState({sonia:"app"},"","");
+  // 7. Sur la liste principale (écran d'accueil), rien d'ouvert → laisser Android
+  // quitter l'app dès ce premier appui. Ne rien repousser dans l'historique.
 });
 
 function toast(msg,type){const t=document.createElement("div");t.className="toast"+(type==="err"?" toast-err":"");t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.classList.add("show"),10);setTimeout(()=>{t.classList.remove("show");setTimeout(()=>t.remove(),400);},3000);}
