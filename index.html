@@ -1275,45 +1275,78 @@ function showMsgMenu(m,self,bub){
   const old=document.getElementById("msg-ctx-menu");if(old)old.remove();
   const menu=document.createElement("div");
   menu.id="msg-ctx-menu";
-  menu.style.cssText="position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.35);display:flex;align-items:flex-end";
+  menu.style.cssText="position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.45);display:flex;align-items:flex-end";
 
   const canCopy=m.type==="text"&&m.text&&!m.del;
   const canDelAll=self&&!m.del&&m.id;
   const canDelMe=m.id&&!m.del;
 
+  const btnStyle="display:flex;align-items:center;gap:16px;width:100%;padding:17px 20px;background:none;border:none;font-size:16px;font-weight:600;font-family:inherit;cursor:pointer;text-align:left";
+
   let btns="";
-  if(canCopy) btns+=`<button onclick="copyMsg(${JSON.stringify(m.text||'')})" style="display:flex;align-items:center;gap:14px;width:100%;padding:15px 20px;border-bottom:1px solid var(--border);background:none;border-top:none;border-left:none;border-right:none;color:var(--text);font-size:15px;font-family:inherit;cursor:pointer"><span style="font-size:20px">📋</span>Copier le message</button>`;
-  if(canDelAll) btns+=`<button onclick="delMsg('${m.id}',true);document.getElementById('msg-ctx-menu').remove()" style="display:flex;align-items:center;gap:14px;width:100%;padding:15px 20px;border-bottom:1px solid var(--border);border-top:none;border-left:none;border-right:none;background:none;color:var(--danger);font-size:15px;font-family:inherit;cursor:pointer"><span style="font-size:20px">🗑</span>Supprimer pour tous</button>`;
-  if(canDelMe)  btns+=`<button onclick="delMsg('${m.id}',false);document.getElementById('msg-ctx-menu').remove()" style="display:flex;align-items:center;gap:14px;width:100%;padding:15px 20px;border:none;background:none;color:var(--danger);font-size:15px;font-family:inherit;cursor:pointer;opacity:.7"><span style="font-size:20px">🗑</span>Supprimer pour moi</button>`;
+  if(canCopy) btns+=`<button onclick="copyMsg(${JSON.stringify(m.text||'')})" style="${btnStyle};color:var(--text);border-bottom:1px solid var(--border)"><span style="font-size:22px">📋</span>Copier le message</button>`;
+  if(canDelAll) btns+=`<button onclick="confirmDelMsg('${m.id}',true)" style="${btnStyle};color:#ff3b30;border-bottom:1px solid var(--border)"><span style="font-size:22px">🗑️</span>Supprimer pour tous</button>`;
+  if(canDelMe)  btns+=`<button onclick="confirmDelMsg('${m.id}',false)" style="${btnStyle};color:#ff3b30"><span style="font-size:22px">🗑️</span>Supprimer pour moi</button>`;
 
   menu.innerHTML=
-    '<div style="width:100%;background:var(--surface);border-radius:20px 20px 0 0;padding:6px 0 24px">'+
+    '<div style="width:100%;background:var(--surface);border-radius:20px 20px 0 0;padding:6px 0 max(24px,env(safe-area-inset-bottom));box-shadow:0 -4px 32px rgba(0,0,0,.25)">'+
       '<div style="width:36px;height:4px;border-radius:2px;background:var(--border);margin:8px auto 12px"></div>'+
       btns+
-      '<button onclick="document.getElementById(\'msg-ctx-menu\').remove()" style="display:flex;align-items:center;justify-content:center;width:calc(100% - 32px);margin:8px 16px 0;padding:14px;border:none;background:var(--bg);border-radius:14px;color:var(--sub);font-size:15px;font-family:inherit;cursor:pointer;font-weight:600">Annuler</button>'+
+      '<button onclick="document.getElementById(\'msg-ctx-menu\').remove()" style="display:flex;align-items:center;justify-content:center;width:calc(100% - 32px);margin:10px 16px 0;padding:15px;border:none;background:var(--bg);border-radius:14px;color:var(--sub);font-size:16px;font-family:inherit;cursor:pointer;font-weight:700">Annuler</button>'+
     '</div>';
   menu.onclick=e=>{if(e.target===menu)menu.remove();};
   document.body.appendChild(menu);
 }
 
+// Confirmation avant suppression, pour éviter les suppressions accidentelles
+window.confirmDelMsg=function(msgId,forEveryone){
+  const menu=document.getElementById("msg-ctx-menu");if(menu)menu.remove();
+  const label=forEveryone?"Supprimer ce message pour tout le monde ?":"Supprimer ce message pour vous uniquement ?";
+  const confirmBox=document.createElement("div");
+  confirmBox.id="msg-del-confirm";
+  confirmBox.style.cssText="position:fixed;inset:0;z-index:501;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:24px";
+  confirmBox.innerHTML=
+    '<div style="width:100%;max-width:320px;background:var(--surface);border-radius:18px;padding:22px 20px;box-shadow:0 8px 32px rgba(0,0,0,.3)">'+
+      '<div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:20px;text-align:center">'+label+'</div>'+
+      '<div style="display:flex;gap:10px">'+
+        '<button onclick="document.getElementById(\'msg-del-confirm\').remove()" style="flex:1;padding:13px;border:none;border-radius:12px;background:var(--bg);color:var(--text);font-size:15px;font-weight:700;font-family:inherit;cursor:pointer">Annuler</button>'+
+        '<button onclick="delMsg(\''+msgId+'\','+(forEveryone?"true":"false")+');document.getElementById(\'msg-del-confirm\').remove()" style="flex:1;padding:13px;border:none;border-radius:12px;background:#ff3b30;color:#fff;font-size:15px;font-weight:700;font-family:inherit;cursor:pointer">Supprimer</button>'+
+      '</div>'+
+    '</div>';
+  confirmBox.onclick=e=>{if(e.target===confirmBox)confirmBox.remove();};
+  document.body.appendChild(confirmBox);
+};
+
 window.copyMsg=function(text){
   const menu=document.getElementById("msg-ctx-menu");if(menu)menu.remove();
-  if(!text)return;
-  if(navigator.clipboard&&navigator.clipboard.writeText){
-    navigator.clipboard.writeText(text).then(()=>toast("Message copié ✓")).catch(()=>{
-      // Fallback
+  if(!text){toast("Rien à copier","err");return;}
+
+  const fallbackCopy=()=>{
+    try{
       const ta=document.createElement("textarea");
-      ta.value=text;ta.style.position="fixed";ta.style.opacity="0";
-      document.body.appendChild(ta);ta.select();
-      try{document.execCommand("copy");toast("Message copié ✓");}catch(e){toast("Impossible de copier","err");}
+      ta.value=text;
+      ta.style.position="fixed";
+      ta.style.top="0";ta.style.left="0";
+      ta.style.opacity="0";
+      document.body.appendChild(ta);
+      ta.focus();ta.select();
+      const ok=document.execCommand("copy");
       ta.remove();
-    });
-  } else {
-    const ta=document.createElement("textarea");
-    ta.value=text;ta.style.position="fixed";ta.style.opacity="0";
-    document.body.appendChild(ta);ta.select();
-    try{document.execCommand("copy");toast("Message copié ✓");}catch(e){toast("Impossible de copier","err");}
-    ta.remove();
+      if(ok)toast("Message copié ✓");
+      else toast("Impossible de copier","err");
+    }catch(e){
+      toast("Impossible de copier","err");
+    }
+  };
+
+  try{
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(()=>toast("Message copié ✓")).catch(fallbackCopy);
+    } else {
+      fallbackCopy();
+    }
+  }catch(e){
+    fallbackCopy();
   }
 };
 
@@ -1592,6 +1625,15 @@ function toggleArch(uid){S.arch.has(uid)?S.arch.delete(uid):S.arch.add(uid);rend
 function updateArchBtn(){const b=$("arch-btn");if(b)b.textContent=S.arch.has(S.activeId)?"📤":"🗄";}
 
 // ---- CHAT ----
+// ---- SUPPRESSION LOCALE ("pour moi") : liste d'IDs cachés, propre à cet appareil ----
+function getHiddenMsgs(key){
+  try{return CACHE.load("hiddenMsgs_"+key)||[];}catch(e){return [];}
+}
+function hideMsgLocally(key,msgId){
+  const list=getHiddenMsgs(key);
+  if(!list.includes(msgId)){list.push(msgId);CACHE.save("hiddenMsgs_"+key,list);}
+}
+
 function openChat(uid){
   S.activeId=uid;
   const c=S.contacts.find(x=>x.uid===uid)||{phone:uid};
@@ -1613,6 +1655,7 @@ function listenMsgs(){
 
   const rendered=new Set();
   let anyShown=false;
+  const hiddenIds=getHiddenMsgs(key);
 
   // ---- 1. AFFICHAGE INSTANTANÉ depuis le cache local (même hors-ligne) ----
   let cached=null;
@@ -1620,7 +1663,7 @@ function listenMsgs(){
 
   if(cached && cached.length){
     cached.forEach(m=>{
-      if(!m || !m.id || rendered.has(m.id))return;
+      if(!m || !m.id || rendered.has(m.id) || hiddenIds.includes(m.id))return;
       try{
         const row=makeBubble(m);
         box.appendChild(row);
@@ -1669,6 +1712,8 @@ function listenMsgs(){
     try{ m={id:snap.key,...snap.val()}; }catch(e){ console.error("parse msg:",e); return; }
     allMsgs[m.id]=m;
     saveMsgsCache(key,allMsgs);
+
+    if(hiddenIds.includes(m.id))return; // supprimé localement sur cet appareil
 
     if(rendered.has(snap.key)){
       // Déjà affiché depuis le cache — si la version cache était dégradée
@@ -1762,22 +1807,6 @@ function makeBubble(m){
   const bub=document.createElement("div");
   if(m.del){bub.className="bubble del";bub.textContent=t("msgSupprime");row.appendChild(bub);return row;}
   bub.className="bubble "+(self?"out":"in");
-
-  // Appui long → menu contextuel (copier, supprimer)
-  let pressTimer=null;
-  const onPress=e=>{
-    pressTimer=setTimeout(()=>{
-      if(navigator.vibrate)navigator.vibrate(40);
-      showMsgMenu(m,self,bub);
-    },500);
-  };
-  const cancelPress=()=>clearTimeout(pressTimer);
-  row.addEventListener("touchstart",onPress,{passive:true});
-  row.addEventListener("touchend",cancelPress);
-  row.addEventListener("touchmove",cancelPress);
-  row.addEventListener("mousedown",onPress);
-  row.addEventListener("mouseup",cancelPress);
-  row.addEventListener("contextmenu",e=>{e.preventDefault();showMsgMenu(m,self,bub);});
   if(m.type==="voice"){
     // Générer une forme d'onde (barres de hauteurs variées pour un look réaliste)
     const barCount=28;
@@ -1853,13 +1882,33 @@ function makeBubble(m){
     bub.innerHTML='<div class="b-text">'+esc(m.text||"")+'</div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
   }
 
-  // Appui long → nouveau menu unifié (copier + supprimer)
-  bub.addEventListener("touchstart",e=>{pressTimer=setTimeout(()=>{if(navigator.vibrate)navigator.vibrate(40);showMsgMenu(m,self,bub);},500);},{passive:true});
-  bub.addEventListener("touchend",()=>clearTimeout(pressTimer));
-  bub.addEventListener("touchmove",()=>clearTimeout(pressTimer));
-  bub.addEventListener("mousedown",e=>{pressTimer=setTimeout(()=>{showMsgMenu(m,self,bub);},500);});
-  bub.addEventListener("mouseup",()=>clearTimeout(pressTimer));
-  bub.addEventListener("mouseleave",()=>clearTimeout(pressTimer));
+  // Appui long (500ms) → menu contextuel (copier, supprimer). Un seul jeu d'écouteurs,
+  // avec tolérance de mouvement pour ne pas se déclencher pendant un scroll.
+  let pressTimer=null;
+  let pressStartXY=null;
+  const MOVE_TOLERANCE=10;
+  const clearPress=()=>{clearTimeout(pressTimer);pressTimer=null;pressStartXY=null;};
+  const triggerMenu=()=>{
+    clearPress();
+    if(document.getElementById("msg-ctx-menu"))return; // déjà ouvert, ne pas ré-ouvrir
+    if(navigator.vibrate)navigator.vibrate(40);
+    showMsgMenu(m,self,bub);
+  };
+  bub.addEventListener("touchstart",e=>{
+    const tch=e.touches&&e.touches[0];
+    pressStartXY=tch?{x:tch.clientX,y:tch.clientY}:null;
+    pressTimer=setTimeout(triggerMenu,500);
+  },{passive:true});
+  bub.addEventListener("touchmove",e=>{
+    if(!pressStartXY)return;
+    const tch=e.touches&&e.touches[0];if(!tch)return;
+    if(Math.abs(tch.clientX-pressStartXY.x)>MOVE_TOLERANCE||Math.abs(tch.clientY-pressStartXY.y)>MOVE_TOLERANCE)clearPress();
+  },{passive:true});
+  bub.addEventListener("touchend",clearPress);
+  bub.addEventListener("touchcancel",clearPress);
+  bub.addEventListener("mousedown",()=>{pressTimer=setTimeout(triggerMenu,500);});
+  bub.addEventListener("mouseup",clearPress);
+  bub.addEventListener("mouseleave",clearPress);
   bub.addEventListener("contextmenu",e=>e.preventDefault());
 
   row.appendChild(bub);return row;
@@ -1868,11 +1917,21 @@ function makeBubble(m){
 function delMsg(msgId, forEveryone){
   const key=chatKey(S.myUid,S.activeId);
   if(forEveryone){
-    // Supprimer pour tous : mettre à jour dans Firebase
-    db.ref("chats/"+key+"/messages/"+msgId).update({del:true,text:"",src:""});
+    // Supprimer pour tous : mettre à jour dans Firebase, visible pour les deux participants
+    db.ref("chats/"+key+"/messages/"+msgId).update({del:true,text:"",src:""}).catch(()=>{
+      toast("Impossible de supprimer le message","err");
+    });
   } else {
-    // Supprimer pour moi : marquer localement dans le cache uniquement
-    db.ref("chats/"+key+"/messages/"+msgId).update({del:true,text:"",src:""});
+    // Supprimer pour moi : masquage local uniquement, aucune écriture Firebase,
+    // l'autre participant continue de voir le message normalement.
+    hideMsgLocally(key,msgId);
+    const row=document.getElementById("bub-"+msgId);
+    if(row)row.remove();
+    // Retirer aussi du cache local pour ne pas le réafficher au prochain chargement
+    try{
+      const cached=CACHE.load("msgs_"+key)||[];
+      CACHE.save("msgs_"+key,cached.filter(x=>x&&x.id!==msgId));
+    }catch(e){}
   }
 }
 
