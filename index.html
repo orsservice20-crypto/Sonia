@@ -2024,6 +2024,14 @@ function delMsg(msgId, forEveryone){
     db.ref("chats/"+key+"/messages/"+msgId).update({del:true,text:"",src:""}).catch(()=>{
       toast("Impossible de supprimer le message","err");
     });
+    // Si le message supprimé était le dernier de la conversation, mettre aussi à jour
+    // le nœud partagé lastMsg pour que l'aperçu dans la liste se rafraîchisse pour les DEUX participants.
+    db.ref("chats/"+key+"/lastMsg").once("value").then(snap=>{
+      const lm=snap.val();
+      if(lm && lm.msgId===msgId){
+        db.ref("chats/"+key+"/lastMsg").update({del:true,text:"",src:""}).catch(()=>{});
+      }
+    }).catch(()=>{});
   } else {
     // Supprimer pour moi : masquage local uniquement, aucune écriture Firebase,
     // l'autre participant continue de voir le message normalement.
@@ -2031,9 +2039,28 @@ function delMsg(msgId, forEveryone){
     const row=document.getElementById("bub-"+msgId);
     if(row)row.remove();
     // Retirer aussi du cache local pour ne pas le réafficher au prochain chargement
+    let remaining=[];
     try{
       const cached=CACHE.load("msgs_"+key)||[];
-      CACHE.save("msgs_"+key,cached.filter(x=>x&&x.id!==msgId));
+      remaining=cached.filter(x=>x&&x.id!==msgId);
+      CACHE.save("msgs_"+key,remaining);
+    }catch(e){}
+    // Recalculer l'aperçu local (lastMsg_/lastTs_) à partir du message restant le plus récent,
+    // pour que la liste des discussions ne continue pas d'afficher le message supprimé, sur cet appareil.
+    try{
+      const ck=key;
+      const newest=remaining.length?remaining.reduce((a,b)=>((b.ts||0)>(a.ts||0)?b:a)):null;
+      if(newest){
+        CACHE.save("lastMsg_"+ck,{text:newest.text||"",t:newest.t||"",type:newest.type||"text",del:!!newest.del});
+        CACHE.save("lastTs_"+ck,newest.ts||0);
+      } else {
+        CACHE.save("lastMsg_"+ck,{text:"",t:"",type:"text",del:false});
+        CACHE.save("lastTs_"+ck,0);
+      }
+      const ll=document.getElementById("ll-"+ck);
+      const lt=document.getElementById("lt-"+ck);
+      if(ll)ll.textContent=newest?(newest.del?"🚫 Message supprimé":newest.type==="voice"?"🎵 Vocal":newest.type==="photo"?"📷 Photo":newest.type==="video"?"🎥 Vidéo":(newest.text||"")):"";
+      if(lt)lt.textContent=newest?(newest.t||""):"";
     }catch(e){}
   }
 }
@@ -2063,8 +2090,9 @@ function pushMsg(m){
   CACHE.save("lastMsg_"+key,{text:m.text||"",t:m.t||"",type:m.type||"text",del:false});
   CACHE.save("lastTs_"+key,m.ts);
 
-  return msgRef.push(m).then(()=>{
-    lastRef.set({text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts}).catch(()=>{});
+  const newMsgRef=msgRef.push();
+  return newMsgRef.set(m).then(()=>{
+    lastRef.set({text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts,msgId:newMsgRef.key}).catch(()=>{});
   }).catch(e=>{
     toast("Échec de l'envoi : "+e.message,"err");
     throw e;
