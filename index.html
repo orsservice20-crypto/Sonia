@@ -1749,6 +1749,10 @@ function listenMsgs(){
   const box=$("msg-list");
   if(!box)return;
   box.innerHTML="";
+  S.bubbleRefreshers={};
+  S.selMode=false;
+  S.selectedIds=new Set();
+  const selBarEl=$("sel-bar"); if(selBarEl) selBarEl.classList.remove("active");
 
   const rendered=new Set();
   let anyShown=false;
@@ -1758,6 +1762,7 @@ function listenMsgs(){
   let cached=null;
   try{ cached=CACHE.load("msgs_"+key); }catch(e){ console.error("cache load:",e); }
 
+  let renderErrorCount=0;
   if(cached && cached.length){
     cached.forEach(m=>{
       if(!m || !m.id || rendered.has(m.id) || hiddenIds.includes(m.id))return;
@@ -1766,14 +1771,18 @@ function listenMsgs(){
         box.appendChild(row);
         rendered.add(m.id);
         anyShown=true;
-      }catch(e){ console.error("bubble cache erreur:",e.message,m); }
+      }catch(e){ renderErrorCount++; console.error("bubble cache erreur:",e.message,m); }
     });
     requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
   }
 
-  // Si on a essayé d'afficher le cache mais que RIEN n'est apparu (erreur silencieuse) → message clair
-  if(cached && cached.length && !anyShown){
+  // N'afficher "Erreur d'affichage" que si des bulles ont réellement échoué au rendu.
+  // Si tous les messages en cache sont simplement masqués (supprimés localement), la discussion est vide — normal.
+  const allCachedHidden = cached && cached.length && cached.every(m=>!m || !m.id || hiddenIds.includes(m.id));
+  if(cached && cached.length && !anyShown && renderErrorCount>0){
     box.innerHTML='<div class="empty-note">Erreur d\'affichage des messages.<br/>Tirez vers le bas pour réessayer ou rouvrez la discussion.</div>';
+  } else if(allCachedHidden && !anyShown){
+    box.innerHTML='<div class="empty-note">Aucun message dans cette discussion.</div>';
   }
 
   // ---- 2. SYNCHRONISATION avec Firebase en arrière-plan ----
@@ -1979,7 +1988,25 @@ function makeBubble(m){
     bub.innerHTML='<div class="b-text">'+esc(m.text||"")+'</div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
   }
 
-  // Appui long (500ms) → menu contextuel (copier, supprimer). Un seul jeu d'écouteurs,
+  // Checkbox de sélection (visible seulement en mode sélection, via CSS).
+  // L'ordre visuel gauche/droite est géré en CSS par .bubble-row.out.sel-mode{flex-direction:row-reverse}.
+  const checkEl=document.createElement("div");
+  checkEl.className="bubble-check";
+  checkEl.textContent="✓";
+  row.appendChild(checkEl);
+
+  function applySelState(){
+    const on=S.selMode && S.selectedIds && S.selectedIds.has(m.id);
+    row.classList.toggle("sel-mode",!!S.selMode);
+    row.classList.toggle("sel-checked",!!on);
+  }
+  if(m.id){
+    if(!S.bubbleRefreshers) S.bubbleRefreshers={};
+    S.bubbleRefreshers[m.id]=applySelState;
+  }
+  applySelState();
+
+  // Appui long (500ms) → mode sélection multiple (façon WhatsApp). Un seul jeu d'écouteurs,
   // avec tolérance de mouvement pour ne pas se déclencher pendant un scroll.
   let pressTimer=null;
   let pressStartXY=null;
@@ -1987,15 +2014,23 @@ function makeBubble(m){
   const clearPress=()=>{clearTimeout(pressTimer);pressTimer=null;pressStartXY=null;};
   const triggerMenu=()=>{
     clearPress();
-    if(document.getElementById("msg-ctx-menu"))return; // déjà ouvert, ne pas ré-ouvrir
-    // Filet de sécurité : effacer toute sélection de texte native que le long-press
-    // aurait pu déclencher avant que la règle CSS user-select:none ne s'applique.
+    if(!m.id)return;
     if(window.getSelection){
       const sel=window.getSelection();
       if(sel&&sel.removeAllRanges)sel.removeAllRanges();
     }
     if(navigator.vibrate)navigator.vibrate(40);
-    showMsgMenu(m,self,bub);
+    if(S.selMode){
+      toggleMsgSelection(m.id);
+    } else {
+      enterSelMode(m.id);
+    }
+  };
+  const onTap=()=>{
+    if(S.selMode){
+      if(!m.id)return;
+      toggleMsgSelection(m.id);
+    }
   };
   bub.addEventListener("touchstart",e=>{
     const tch=e.touches&&e.touches[0];
@@ -2013,8 +2048,125 @@ function makeBubble(m){
   bub.addEventListener("mouseup",clearPress);
   bub.addEventListener("mouseleave",clearPress);
   bub.addEventListener("contextmenu",e=>e.preventDefault());
+  bub.addEventListener("click",onTap);
+  checkEl.addEventListener("click",e=>{e.stopPropagation();onTap();});
 
   row.appendChild(bub);return row;
+}
+
+// ---- SÉLECTION MULTIPLE DE MESSAGES (façon WhatsApp) ----
+function enterSelMode(firstId){
+  S.selMode=true;
+  S.selectedIds=new Set();
+  if(firstId) S.selectedIds.add(firstId);
+  const bar=$("sel-bar"); if(bar) bar.classList.add("active");
+  refreshAllSelStates();
+  updateSelBar();
+}
+function exitSelMode(){
+  S.selMode=false;
+  S.selectedIds=new Set();
+  const bar=$("sel-bar"); if(bar) bar.classList.remove("active");
+  refreshAllSelStates();
+}
+function toggleMsgSelection(msgId){
+  if(!S.selectedIds) S.selectedIds=new Set();
+  if(S.selectedIds.has(msgId)) S.selectedIds.delete(msgId);
+  else S.selectedIds.add(msgId);
+  if(S.selectedIds.size===0){ exitSelMode(); return; }
+  refreshAllSelStates();
+  updateSelBar();
+}
+function refreshAllSelStates(){
+  if(!S.bubbleRefreshers)return;
+  Object.values(S.bubbleRefreshers).forEach(fn=>{try{fn();}catch(e){}});
+}
+function updateSelBar(){
+  const n=S.selectedIds?S.selectedIds.size:0;
+  const cnt=$("sel-count"); if(cnt) cnt.textContent=String(n);
+  // "Copier" seulement activable si tous les messages sélectionnés sont du texte non supprimé
+  const cached=CACHE.load("msgs_"+chatKey(S.myUid,S.activeId))||[];
+  const byId={}; cached.forEach(x=>{if(x&&x.id)byId[x.id]=x;});
+  let allText=n>0;
+  S.selectedIds && S.selectedIds.forEach(id=>{
+    const mm=byId[id];
+    if(!mm || mm.del || mm.type!=="text") allText=false;
+  });
+  const copyBtn=$("sel-copy-btn"); if(copyBtn) copyBtn.disabled=!allText;
+}
+window.selCopy=function(){
+  if(!S.selectedIds||!S.selectedIds.size)return;
+  const key=chatKey(S.myUid,S.activeId);
+  const cached=CACHE.load("msgs_"+key)||[];
+  const byId={}; cached.forEach(x=>{if(x&&x.id)byId[x.id]=x;});
+  // Conserver l'ordre chronologique des messages sélectionnés
+  const ordered=cached.filter(x=>x&&x.id&&S.selectedIds.has(x.id)).sort((a,b)=>(a.ts||0)-(b.ts||0));
+  const combined=ordered.map(x=>x.text||"").filter(Boolean).join("\n");
+  copyMsg(combined);
+  exitSelMode();
+};
+window.selForward=function(){
+  if(!S.selectedIds||!S.selectedIds.size)return;
+  toast("Transfert : fonctionnalité à venir");
+};
+window.selDelete=function(){
+  if(!S.selectedIds||!S.selectedIds.size)return;
+  const ids=Array.from(S.selectedIds);
+  const key=chatKey(S.myUid,S.activeId);
+  const anyMine=ids.some(id=>{
+    const el=document.getElementById("bub-"+id);
+    return el && el.classList.contains("out");
+  });
+  showBulkDeleteConfirm(ids,anyMine);
+};
+
+// Confirmation avant suppression groupée
+function showBulkDeleteConfirm(ids,showForEveryoneOption){
+  const confirmBox=document.createElement("div");
+  confirmBox.id="msg-del-confirm";
+  confirmBox.style.cssText="position:fixed;inset:0;z-index:501;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:24px";
+
+  const card=document.createElement("div");
+  card.style.cssText="width:100%;max-width:320px;background:var(--surface);border-radius:18px;padding:22px 20px;box-shadow:0 8px 32px rgba(0,0,0,.3)";
+
+  const labelEl=document.createElement("div");
+  labelEl.style.cssText="font-size:16px;font-weight:700;color:var(--text);margin-bottom:20px;text-align:center";
+  labelEl.textContent=ids.length+" message(s) sélectionné(s). Supprimer ?";
+  card.appendChild(labelEl);
+
+  const col=document.createElement("div");
+  col.style.cssText="display:flex;flex-direction:column;gap:10px";
+
+  function delAll(forEveryone){
+    ids.forEach(id=>delMsg(id,forEveryone));
+    confirmBox.remove();
+    exitSelMode();
+  }
+
+  if(showForEveryoneOption){
+    const delAllBtn=document.createElement("button");
+    delAllBtn.textContent="Supprimer pour tous";
+    delAllBtn.style.cssText="padding:13px;border:none;border-radius:12px;background:#ff3b30;color:#fff;font-size:15px;font-weight:700;font-family:inherit;cursor:pointer";
+    delAllBtn.addEventListener("click",()=>delAll(true));
+    col.appendChild(delAllBtn);
+  }
+
+  const delMeBtn=document.createElement("button");
+  delMeBtn.textContent="Supprimer pour moi";
+  delMeBtn.style.cssText="padding:13px;border:none;border-radius:12px;background:var(--bg);color:var(--text);font-size:15px;font-weight:700;font-family:inherit;cursor:pointer";
+  delMeBtn.addEventListener("click",()=>delAll(false));
+  col.appendChild(delMeBtn);
+
+  const cancelBtn=document.createElement("button");
+  cancelBtn.textContent="Annuler";
+  cancelBtn.style.cssText="padding:13px;border:none;border-radius:12px;background:var(--bg);color:var(--sub);font-size:15px;font-weight:700;font-family:inherit;cursor:pointer";
+  cancelBtn.addEventListener("click",()=>confirmBox.remove());
+  col.appendChild(cancelBtn);
+
+  card.appendChild(col);
+  confirmBox.appendChild(card);
+  confirmBox.onclick=e=>{if(e.target===confirmBox)confirmBox.remove();};
+  document.body.appendChild(confirmBox);
 }
 
 function delMsg(msgId, forEveryone){
@@ -2023,15 +2175,12 @@ function delMsg(msgId, forEveryone){
     // Supprimer pour tous : mettre à jour dans Firebase, visible pour les deux participants
     db.ref("chats/"+key+"/messages/"+msgId).update({del:true,text:"",src:""}).catch(()=>{
       toast("Impossible de supprimer le message","err");
+    }).then(()=>{
+      // Recalculer le vrai dernier message non supprimé à partir de tous les messages de la
+      // conversation (source de vérité), pour rafraîchir lastMsg côté serveur — visible pour
+      // les DEUX participants, quel que soit l'état antérieur du nœud lastMsg.
+      refreshLastMsgFromServer(key);
     });
-    // Si le message supprimé était le dernier de la conversation, mettre aussi à jour
-    // le nœud partagé lastMsg pour que l'aperçu dans la liste se rafraîchisse pour les DEUX participants.
-    db.ref("chats/"+key+"/lastMsg").once("value").then(snap=>{
-      const lm=snap.val();
-      if(lm && lm.msgId===msgId){
-        db.ref("chats/"+key+"/lastMsg").update({del:true,text:"",src:""}).catch(()=>{});
-      }
-    }).catch(()=>{});
   } else {
     // Supprimer pour moi : masquage local uniquement, aucune écriture Firebase,
     // l'autre participant continue de voir le message normalement.
@@ -2046,12 +2195,14 @@ function delMsg(msgId, forEveryone){
       CACHE.save("msgs_"+key,remaining);
     }catch(e){}
     // Recalculer l'aperçu local (lastMsg_/lastTs_) à partir du message restant le plus récent,
-    // pour que la liste des discussions ne continue pas d'afficher le message supprimé, sur cet appareil.
+    // NON supprimé (del!==true), pour que la liste ne continue pas d'afficher un message supprimé.
     try{
       const ck=key;
-      const newest=remaining.length?remaining.reduce((a,b)=>((b.ts||0)>(a.ts||0)?b:a)):null;
+      const hiddenIds=getHiddenMsgs(key);
+      const visible=remaining.filter(x=>x && !x.del && !hiddenIds.includes(x.id));
+      const newest=visible.length?visible.reduce((a,b)=>((b.ts||0)>(a.ts||0)?b:a)):null;
       if(newest){
-        CACHE.save("lastMsg_"+ck,{text:newest.text||"",t:newest.t||"",type:newest.type||"text",del:!!newest.del});
+        CACHE.save("lastMsg_"+ck,{text:newest.text||"",t:newest.t||"",type:newest.type||"text",del:false});
         CACHE.save("lastTs_"+ck,newest.ts||0);
       } else {
         CACHE.save("lastMsg_"+ck,{text:"",t:"",type:"text",del:false});
@@ -2059,10 +2210,31 @@ function delMsg(msgId, forEveryone){
       }
       const ll=document.getElementById("ll-"+ck);
       const lt=document.getElementById("lt-"+ck);
-      if(ll)ll.textContent=newest?(newest.del?"🚫 Message supprimé":newest.type==="voice"?"🎵 Vocal":newest.type==="photo"?"📷 Photo":newest.type==="video"?"🎥 Vidéo":(newest.text||"")):"";
+      if(ll)ll.textContent=newest?(newest.type==="voice"?"🎵 Vocal":newest.type==="photo"?"📷 Photo":newest.type==="video"?"🎥 Vidéo":(newest.text||"")):"";
       if(lt)lt.textContent=newest?(newest.t||""):"";
     }catch(e){}
   }
+}
+
+// Relit tous les messages de la conversation depuis Firebase et republie le vrai dernier
+// message non supprimé dans chats/{key}/lastMsg. Source de vérité unique, ne dépend d'aucun
+// état antérieur de lastMsg (corrige aussi les conversations dont lastMsg était déjà désynchronisé).
+function refreshLastMsgFromServer(key){
+  db.ref("chats/"+key+"/messages").once("value").then(snap=>{
+    const val=snap.val()||{};
+    let newest=null;
+    Object.keys(val).forEach(id=>{
+      const m=val[id];
+      if(!m || m.del)return;
+      if(!newest || (m.ts||0)>(newest.ts||0)) newest={...m,msgId:id};
+    });
+    const lastRef=db.ref("chats/"+key+"/lastMsg");
+    if(newest){
+      lastRef.set({text:newest.text||"",t:newest.t||"",type:newest.type||"text",del:false,ts:newest.ts||0,msgId:newest.msgId}).catch(()=>{});
+    } else {
+      lastRef.set({text:"",t:"",type:"text",del:false,ts:0,msgId:null}).catch(()=>{});
+    }
+  }).catch(()=>{});
 }
 
 function pushMsg(m){
@@ -2508,6 +2680,19 @@ input,textarea{font-family:inherit;border:none;outline:none}
 /* CHAT */
 #s-chat{display:flex;flex-direction:column}
 .chat-bar{display:flex;align-items:center;gap:12px;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+.sel-bar{display:none;align-items:center;gap:14px;padding:calc(10px + env(safe-area-inset-top)) 14px 10px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
+.sel-bar.active{display:flex}
+.sel-bar .sel-close{font-size:22px;color:var(--text);background:none;border:none;cursor:pointer;padding:4px;flex-shrink:0}
+.sel-bar .sel-count{flex:1;font-weight:800;font-size:16px;color:var(--text)}
+.sel-bar .sel-action{font-size:20px;background:none;border:none;color:var(--text);cursor:pointer;padding:6px;flex-shrink:0}
+.sel-bar .sel-action:disabled{opacity:.35;pointer-events:none}
+.bubble-row{transition:background-color .15s}
+.bubble-row.sel-mode{cursor:pointer}
+.bubble-row.sel-checked{background:rgba(37,168,110,.12)}
+.bubble-check{width:22px;height:22px;border-radius:50%;border:2px solid var(--border);flex-shrink:0;display:none;align-items:center;justify-content:center;font-size:13px;color:#fff;background:var(--surface);margin:0 8px;align-self:center}
+.bubble-row.sel-mode .bubble-check{display:flex}
+.bubble-row.sel-checked .bubble-check{background:var(--green);border-color:var(--green)}
+.bubble-row.out.sel-mode{flex-direction:row-reverse}
 .back-btn{font-size:22px;color:var(--accent);padding:4px 6px 4px 0;cursor:pointer}
 .chat-av{width:40px;height:40px;border-radius:50%;background:var(--card);border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:20px;overflow:hidden;flex-shrink:0}
 .chat-info{flex:1;min-width:0}
@@ -2810,7 +2995,14 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 
 <!-- CHAT -->
 <div class="screen off" id="s-chat">
-  <div class="chat-bar">
+  <div class="sel-bar" id="sel-bar">
+    <button class="sel-close" onclick="exitSelMode()">✕</button>
+    <span class="sel-count" id="sel-count">0</span>
+    <button class="sel-action" id="sel-copy-btn" onclick="selCopy()" title="Copier">📋</button>
+    <button class="sel-action" id="sel-forward-btn" onclick="selForward()" title="Transférer">↪</button>
+    <button class="sel-action" id="sel-del-btn" onclick="selDelete()" title="Supprimer">🗑️</button>
+  </div>
+  <div class="chat-bar" id="chat-bar">
     <button class="back-btn" onclick="event.stopPropagation();S.activeId=null;if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}showScreen('s-list')">‹</button>
     <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;cursor:pointer;overflow:hidden" onclick="openContactInfo()">
       <div style="position:relative;flex-shrink:0"><div class="chat-av" id="c-av"></div><div class="dot" id="c-dot"></div></div>
