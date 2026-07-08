@@ -1423,6 +1423,57 @@ window.archOrUnarchConv=function(uid,ck){
 
 window.deleteConversation=function(uid,ck){
   const menu=document.getElementById("conv-del-menu");if(menu)menu.remove();
+  const c=(S.contacts||[]).find(x=>x.uid===uid);
+  const nick=CACHE.load("nick_"+uid)||"";
+  const name=nick||(c&&(c.name||c.phone))||"cette discussion";
+  showDeleteConvConfirm(uid,ck,name);
+};
+
+// Confirmation avant suppression définitive d'une discussion entière
+function showDeleteConvConfirm(uid,ck,name){
+  const old=document.getElementById("conv-del-confirm");if(old)old.remove();
+  const confirmBox=document.createElement("div");
+  confirmBox.id="conv-del-confirm";
+  confirmBox.style.cssText="position:fixed;inset:0;z-index:501;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:24px";
+
+  const card=document.createElement("div");
+  card.style.cssText="width:100%;max-width:320px;background:var(--surface);border-radius:18px;padding:22px 20px;box-shadow:0 8px 32px rgba(0,0,0,.3)";
+
+  const labelEl=document.createElement("div");
+  labelEl.style.cssText="font-size:16px;font-weight:700;color:var(--text);margin-bottom:8px;text-align:center";
+  labelEl.textContent="Supprimer la discussion";
+  card.appendChild(labelEl);
+
+  const subEl=document.createElement("div");
+  subEl.style.cssText="font-size:13px;color:var(--sub);margin-bottom:20px;text-align:center";
+  subEl.textContent="Toute la conversation avec "+name+" sera supprimée définitivement. Cette action est irréversible.";
+  card.appendChild(subEl);
+
+  const col=document.createElement("div");
+  col.style.cssText="display:flex;flex-direction:column;gap:10px";
+
+  const delBtn=document.createElement("button");
+  delBtn.textContent="Supprimer";
+  delBtn.style.cssText="padding:13px;border:none;border-radius:12px;background:#ff3b30;color:#fff;font-size:15px;font-weight:700;font-family:inherit;cursor:pointer";
+  delBtn.addEventListener("click",()=>{
+    confirmBox.remove();
+    reallyDeleteConversation(uid,ck);
+  });
+  col.appendChild(delBtn);
+
+  const cancelBtn=document.createElement("button");
+  cancelBtn.textContent="Annuler";
+  cancelBtn.style.cssText="padding:13px;border:none;border-radius:12px;background:var(--bg);color:var(--sub);font-size:15px;font-weight:700;font-family:inherit;cursor:pointer";
+  cancelBtn.addEventListener("click",()=>confirmBox.remove());
+  col.appendChild(cancelBtn);
+
+  card.appendChild(col);
+  confirmBox.appendChild(card);
+  confirmBox.onclick=e=>{if(e.target===confirmBox)confirmBox.remove();};
+  document.body.appendChild(confirmBox);
+}
+
+function reallyDeleteConversation(uid,ck){
   // Supprimer les messages de la discussion dans Firebase
   db.ref("chats/"+ck).remove().catch(()=>{});
   // Retirer le contact de userContacts (les deux sens)
@@ -1439,7 +1490,7 @@ window.deleteConversation=function(uid,ck){
   }
   toast("Discussion supprimée");
   renderList();
-};
+}
 
 
 function refreshChatHeader(c){
@@ -2487,6 +2538,27 @@ function closeStatusViewer(){
 
 // ---- PARTAGE ----
 const APP_MSG="💬 Rejoins-moi sur EniBusiness Pro !\nL'app de messagerie gratuite 🚀\n✅ Messages, photos, vidéos, vocaux\n📞 Appels audio & vidéo\n🔵 Statuts 24h\n\n👉 Clique ici : "+APP_URL;
+
+// Ouvre la feuille de partage native de l'appareil (WhatsApp, SMS, Mail, Bluetooth...).
+// Priorité : plugin natif median.co (app packagée) > Web Share API (navigateur/mobile) > copie du lien.
+async function shareAppNative(){
+  try{
+    if(window.median&&window.median.share&&typeof window.median.share.share==="function"){
+      await window.median.share.share({title:"EniBusiness Pro",text:APP_MSG,url:APP_URL});
+      return;
+    }
+  }catch(e){}
+  try{
+    if(navigator.share){
+      await navigator.share({title:"EniBusiness Pro",text:APP_MSG,url:APP_URL});
+      return;
+    }
+  }catch(e){
+    // L'utilisateur a annulé le partage natif : ne rien faire de plus.
+    if(e&&e.name==="AbortError")return;
+  }
+  copyText(APP_URL).then(()=>toast("Lien copié ✓"));
+}
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
 const CURRENT_BUILD = "v2026-06-28-callfix-final";
@@ -3230,7 +3302,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
         <button class="share-net-btn" onclick="copyText(APP_MSG).then(()=>{toast('Message copié — colle dans Instagram !');setTimeout(()=>window.open('https://www.instagram.com','_blank'),800)})"><span style="font-size:22px">📸</span><span>Instagram</span></button>
         <button class="share-net-btn" onclick="window.open('sms:?body='+encodeURIComponent(APP_MSG),'_blank')"><span style="font-size:22px">📱</span><span>SMS</span></button>
       </div>
-      <button onclick="navigator.share?navigator.share({title:'EniBusiness Pro',text:APP_MSG,url:APP_URL}).catch(()=>{}):copyText(APP_URL).then(()=>toast('Lien copié ✓'))" style="width:100%;padding:14px;border-radius:14px;background:var(--accent);border:none;color:#000;font-size:15px;font-weight:800;font-family:inherit;cursor:pointer">📤 Partager via...</button>
+      <button onclick="shareAppNative()" style="width:100%;padding:14px;border-radius:14px;background:var(--accent);border:none;color:#000;font-size:15px;font-weight:800;font-family:inherit;cursor:pointer">📤 Partager via...</button>
     </div>
   </div>
 </div>
