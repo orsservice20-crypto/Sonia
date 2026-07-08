@@ -2103,8 +2103,108 @@ window.selCopy=function(){
 };
 window.selForward=function(){
   if(!S.selectedIds||!S.selectedIds.size)return;
-  toast("Transfert : fonctionnalité à venir");
+  showForwardPicker(Array.from(S.selectedIds));
 };
+
+// Envoie un message déjà construit (m) vers la conversation avec destUid,
+// sans toucher à S.activeId ni à la conversation actuellement ouverte.
+function pushMsgTo(destUid,m){
+  const key=chatKey(S.myUid,destUid);
+  if(!m.ts) m.ts=Date.now();
+
+  db.ref("inbox/"+destUid+"/"+S.myUid).set({
+    from:S.myUid,
+    fromPhone:S.myPhone||"",
+    fromName:S.profile.name||S.myPhone||"",
+    ts:m.ts
+  }).catch(()=>{});
+
+  const msgRef=db.ref("chats/"+key+"/messages");
+  const lastRef=db.ref("chats/"+key+"/lastMsg");
+
+  CACHE.save("lastMsg_"+key,{text:m.text||"",t:m.t||"",type:m.type||"text",del:false});
+  CACHE.save("lastTs_"+key,m.ts);
+
+  const newMsgRef=msgRef.push();
+  return newMsgRef.set(m).then(()=>{
+    lastRef.set({text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts,msgId:newMsgRef.key}).catch(()=>{});
+  });
+}
+
+// Affiche la liste des contacts pour choisir à qui transférer les messages sélectionnés.
+function showForwardPicker(ids){
+  const old=document.getElementById("forward-picker");if(old)old.remove();
+  const key=chatKey(S.myUid,S.activeId);
+  const cached=CACHE.load("msgs_"+key)||[];
+  const byId={}; cached.forEach(x=>{if(x&&x.id)byId[x.id]=x;});
+  // Conserver l'ordre chronologique, ignorer les messages supprimés ou introuvables
+  const ordered=cached.filter(x=>x&&x.id&&ids.includes(x.id)&&!x.del).sort((a,b)=>(a.ts||0)-(b.ts||0));
+  if(!ordered.length){
+    toast("Aucun message transférable dans la sélection","err");
+    exitSelMode();
+    return;
+  }
+
+  const overlay=document.createElement("div");
+  overlay.id="forward-picker";
+  overlay.className="overlay";
+  overlay.style.cssText="display:flex;position:fixed;inset:0;z-index:520;background:rgba(0,0,0,.5);align-items:flex-end";
+
+  const modal=document.createElement("div");
+  modal.className="modal";
+  modal.style.cssText="width:100%;max-height:75vh;background:var(--surface);border-radius:20px 20px 0 0;padding:0;display:flex;flex-direction:column";
+
+  modal.innerHTML=
+    '<div class="modal-drag"></div>'+
+    '<div class="modal-head"><span class="modal-title">↪ Transférer à</span><button class="modal-close" id="fwd-close">✕</button></div>'+
+    '<div style="padding:0 20px 12px;color:var(--sub);font-size:13px">'+ordered.length+' message(s) sélectionné(s)</div>'+
+    '<div id="fwd-list" style="overflow-y:auto;padding-bottom:16px"></div>';
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  overlay.onclick=e=>{if(e.target===overlay)overlay.remove();};
+  document.getElementById("fwd-close").onclick=()=>overlay.remove();
+
+  const list=document.getElementById("fwd-list");
+  const contacts=(S.contacts||[]).slice().filter(c=>c.uid!==S.activeId).sort((a,b)=>{
+    const na=(CACHE.load("nick_"+a.uid)||a.name||a.phone||"").toLowerCase();
+    const nb=(CACHE.load("nick_"+b.uid)||b.name||b.phone||"").toLowerCase();
+    return na.localeCompare(nb);
+  });
+
+  if(!contacts.length){
+    list.innerHTML='<div class="empty-note">Aucun contact disponible</div>';
+    return;
+  }
+
+  contacts.forEach(c=>{
+    const nick=CACHE.load("nick_"+c.uid)||"";
+    const displayName=nick||c.name||c.phone||"Inconnu";
+    const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
+    const row=document.createElement("div");
+    row.className="contact-row";
+    row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span></div></div>';
+    row.onclick=()=>{
+      row.style.opacity=".5";
+      row.style.pointerEvents="none";
+      Promise.all(ordered.map(m=>{
+        const fwd={from:S.myUid,type:m.type||"text",text:m.text||"",t:nowT(),del:false};
+        if(m.src)fwd.src=m.src;
+        if(m.duration)fwd.duration=m.duration;
+        if(m.mime)fwd.mime=m.mime;
+        return pushMsgTo(c.uid,fwd);
+      })).then(()=>{
+        toast("Transféré à "+displayName+" ✓");
+      }).catch(()=>{
+        toast("Échec du transfert","err");
+      });
+      overlay.remove();
+      exitSelMode();
+    };
+    list.appendChild(row);
+  });
+}
 window.selDelete=function(){
   if(!S.selectedIds||!S.selectedIds.size)return;
   const ids=Array.from(S.selectedIds);
