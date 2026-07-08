@@ -78,6 +78,14 @@ window.addEventListener("offline",()=>{isOnline=false;});
 const $=id=>document.getElementById(id);
 const fmt=s=>String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
 const nowT=()=>new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"});
+// Heure d'affichage d'un message : utilise m.t si présent, sinon la calcule depuis m.ts
+// (le timestamp est toujours fiable, contrairement à t qui peut manquer sur d'anciens
+// messages ou des messages transférés/importés).
+function msgTime(m){
+  if(m && m.t) return m.t;
+  if(m && m.ts) return new Date(m.ts).toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"});
+  return "";
+}
 const nowDate=()=>{
   const d=new Date();const today=new Date();
   const isToday=d.toDateString()===today.toDateString();
@@ -1906,6 +1914,7 @@ function makeBubble(m){
   const row=document.createElement("div");
   row.className="bubble-row "+(self?"out":"in");
   if(m.id) row.id="bub-"+m.id;
+  row._msgData=m;
   const bub=document.createElement("div");
   if(m.del){bub.className="bubble del";bub.textContent=t("msgSupprime");row.appendChild(bub);return row;}
   bub.className="bubble "+(self?"out":"in");
@@ -1926,7 +1935,7 @@ function makeBubble(m){
           '<button class="vspeed" id="vs-'+m.id+'">1×</button>'+
         '</div>'+
       '</div>'+
-      '<div class="b-meta"><span class="b-time">'+(m.dateStr?m.dateStr+' · ':'')+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+      '<div class="b-meta"><span class="b-time">'+(m.dateStr?m.dateStr+' · ':'')+msgTime(m)+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
     setTimeout(()=>{
       const pb=document.getElementById("vp-"+m.id);
       const wp=document.getElementById("vwp-"+m.id);
@@ -1968,20 +1977,20 @@ function makeBubble(m){
     },0);
   } else if(m.type==="photo"){
     if(!m.src && m.mediaCached===false){
-      bub.innerHTML='<div class="photo-bub" style="width:200px;height:140px;background:var(--bg);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;color:var(--sub);font-size:12px"><span style="font-size:28px">📷</span>Photo (connexion requise)</div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+      bub.innerHTML='<div class="photo-bub" style="width:200px;height:140px;background:var(--bg);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;color:var(--sub);font-size:12px"><span style="font-size:28px">📷</span>Photo (connexion requise)</div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
     } else {
-      bub.innerHTML='<div class="photo-bub"><img src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;cursor:pointer"/></div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+      bub.innerHTML='<div class="photo-bub"><img src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;cursor:pointer"/></div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
       setTimeout(()=>{const img=bub.querySelector(".photo-bub img");if(img)img.onclick=e=>{e.stopPropagation();openViewer(m.src);};},0);
     }
   } else if(m.type==="video"){
     if(!m.src && m.mediaCached===false){
-      bub.innerHTML='<div class="video-bub" style="width:200px;height:140px;background:var(--bg);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;color:var(--sub);font-size:12px"><span style="font-size:28px">🎥</span>Vidéo (connexion requise)</div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+      bub.innerHTML='<div class="video-bub" style="width:200px;height:140px;background:var(--bg);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;color:var(--sub);font-size:12px"><span style="font-size:28px">🎥</span>Vidéo (connexion requise)</div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
     } else {
-      bub.innerHTML='<div class="video-bub"><video src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;display:block" preload="metadata" playsinline></video><div class="vid-play-overlay">▶</div></div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+      bub.innerHTML='<div class="video-bub"><video src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;display:block" preload="metadata" playsinline></video><div class="vid-play-overlay">▶</div></div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
       setTimeout(()=>{const vid=bub.querySelector("video");const ov=bub.querySelector(".vid-play-overlay");const open=e=>{e.stopPropagation();openVideoViewer(m.src);};if(vid)vid.onclick=open;if(ov)ov.onclick=open;},0);
     }
   } else {
-    bub.innerHTML='<div class="b-text">'+esc(m.text||"")+'</div><div class="b-meta"><span class="b-time">'+m.t+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+    bub.innerHTML='<div class="b-text">'+esc(m.text||"")+'</div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
   }
 
   // Checkbox de sélection (visible seulement en mode sélection, via CSS).
@@ -2137,8 +2146,18 @@ function showForwardPicker(ids){
   const key=chatKey(S.myUid,S.activeId);
   const cached=CACHE.load("msgs_"+key)||[];
   const byId={}; cached.forEach(x=>{if(x&&x.id)byId[x.id]=x;});
-  // Conserver l'ordre chronologique, ignorer les messages supprimés ou introuvables
-  const ordered=cached.filter(x=>x&&x.id&&ids.includes(x.id)&&!x.del).sort((a,b)=>(a.ts||0)-(b.ts||0));
+  // Source la plus fiable : les données réellement rendues à l'écran (attachées au DOM),
+  // avec repli sur le cache local si la bulle n'est plus dans le DOM (hors écran/défilée).
+  const resolved=ids.map(id=>{
+    const el=document.getElementById("bub-"+id);
+    if(el && el._msgData) return el._msgData;
+    return byId[id]||null;
+  });
+  // Conserver l'ordre chronologique, ignorer les messages supprimés ou introuvables/vides
+  const ordered=resolved
+    .filter(x=>x&&x.id&&!x.del)
+    .filter(x=>(x.type&&x.type!=="text")?true:!!(x.text&&x.text.trim()))
+    .sort((a,b)=>(a.ts||0)-(b.ts||0));
   if(!ordered.length){
     toast("Aucun message transférable dans la sélection","err");
     exitSelMode();
