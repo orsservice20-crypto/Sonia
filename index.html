@@ -102,11 +102,28 @@ function showScreen(id){
 }
 
 // ---- BOUTON RETOUR ANDROID ----
-// Stratégie : une seule entrée d'historique supplémentaire par-dessus la page de base.
-// Tant qu'il y a quelque chose à fermer (chat ouvert, overlay, viewer, menu...), le retour
-// ferme cet élément et repousse une entrée pour intercepter le prochain retour.
-// Sur l'écran principal sans rien d'ouvert, on ne repousse RIEN : le popstate suit son
-// cours naturel et Android quitte l'app dès le premier appui.
+// On repousse TOUJOURS une entrée d'historique après chaque popstate, sans exception.
+// Ainsi l'historique du WebView ne s'épuise jamais et Android ne peut plus jamais fermer
+// l'app tout seul de façon incontrôlée (ce qui causait la sortie après seulement 2 appuis,
+// peu importe l'écran affiché). La sortie de l'app est désormais gérée entièrement par
+// notre propre code : sur l'écran principal sans rien d'ouvert, un premier retour affiche
+// "Appuyez encore pour quitter" et arme une fenêtre de 2s ; seul un second retour dans ce
+// délai ferme réellement l'app (via Median si disponible, sinon on laisse le navigateur agir).
+let exitArmed=false;
+let exitArmTimer=null;
+
+function requestExitApp(){
+  if(window.median&&window.median.app&&typeof window.median.app.exit==="function"){
+    window.median.app.exit();
+    return;
+  }
+  if(window.median){
+    try{ window.location.href="median://app/exit"; return; }catch(e){}
+  }
+  // Fallback navigateur classique (hors app native) : on laisse l'historique s'épuiser réellement.
+  history.back();history.back();
+}
+
 history.pushState({sonia:"app"},"","");
 
 window.addEventListener("popstate",function(e){
@@ -193,8 +210,24 @@ window.addEventListener("popstate",function(e){
     return;
   }
 
-  // 7. Sur la liste principale (écran d'accueil), rien d'ouvert → laisser Android
-  // quitter l'app dès ce premier appui. Ne rien repousser dans l'historique.
+  // 7. Sur la liste principale (écran d'accueil), rien d'ouvert → double appui pour quitter.
+  if(S.currentScreen==="s-list"){
+    if(exitArmed){
+      clearTimeout(exitArmTimer);
+      exitArmed=false;
+      requestExitApp();
+      return; // on ne repousse pas d'entrée : on laisse vraiment sortir
+    }
+    exitArmed=true;
+    toast("Appuyez encore sur retour pour quitter");
+    exitArmTimer=setTimeout(()=>{exitArmed=false;},2000);
+    history.pushState({sonia:"app"},"","");
+    return;
+  }
+
+  // 8. Tout autre écran non prévu explicitement (auth, splash...) → ne rien repousser,
+  // par sécurité, pour ne jamais bloquer une sortie légitime hors de la liste principale.
+  history.pushState({sonia:"app"},"","");
 });
 
 function toast(msg,type){const t=document.createElement("div");t.className="toast"+(type==="err"?" toast-err":"");t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.classList.add("show"),10);setTimeout(()=>{t.classList.remove("show");setTimeout(()=>t.remove(),400);},3000);}
