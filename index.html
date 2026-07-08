@@ -2712,9 +2712,9 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;padding:0}
 input,textarea{font-family:inherit;border:none;outline:none}
 ::-webkit-scrollbar{width:0}
 /* THÈME BLANC (défaut) */
-:root{--bg:#f0f2f5;--surface:#ffffff;--card:#ffffff;--accent:#00a882;--accent2:#007a63;--glow:rgba(0,168,130,.10);--bubble-in:#e8f4fd;--bubble-out:#d9fdd3;--text:#111827;--sub:#6b7280;--dim:#d1d5db;--danger:#ff4757;--warn:#f59e0b;--green:#16a34a;--border:rgba(0,0,0,.08);--shadow:0 1px 3px rgba(0,0,0,.10);--chat-bg:#e5ddd5;}
+:root{--bg:#f0f2f5;--surface:#ffffff;--card:#ffffff;--accent:#00a882;--accent2:#007a63;--glow:rgba(0,168,130,.10);--bubble-in:#e8f4fd;--bubble-out:#d9fdd3;--bubble-time:rgba(17,24,39,.45);--text:#111827;--sub:#6b7280;--dim:#d1d5db;--danger:#ff4757;--warn:#f59e0b;--green:#16a34a;--border:rgba(0,0,0,.08);--shadow:0 1px 3px rgba(0,0,0,.10);--chat-bg:#e5ddd5;}
 /* THÈME SOMBRE (optionnel) */
-[data-theme="dark"]{--bg:#0b1120;--surface:#111827;--card:#19253a;--accent:#00d4aa;--accent2:#00a882;--glow:rgba(0,212,170,.13);--bubble-in:#1e3a5f;--bubble-out:#004d3e;--text:#e8f0fe;--sub:#7a8ea8;--dim:#3d5068;--danger:#ff4757;--warn:#ffa502;--green:#2ed573;--border:rgba(255,255,255,.07);--shadow:0 1px 3px rgba(0,0,0,.4);--chat-bg:#0b1120;}
+[data-theme="dark"]{--bg:#0b1120;--surface:#111827;--card:#19253a;--accent:#00d4aa;--accent2:#00a882;--glow:rgba(0,212,170,.13);--bubble-in:#1e3a5f;--bubble-out:#004d3e;--bubble-time:rgba(255,255,255,.55);--text:#e8f0fe;--sub:#7a8ea8;--dim:#3d5068;--danger:#ff4757;--warn:#ffa502;--green:#2ed573;--border:rgba(255,255,255,.07);--shadow:0 1px 3px rgba(0,0,0,.4);--chat-bg:#0b1120;}
 [data-theme="dark"] html,[data-theme="dark"] body{background:#0b1120;color:#e8f0fe}
 .screen{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--bg)}
 .screen.off{transform:translateX(100%);opacity:0;pointer-events:none}
@@ -2843,7 +2843,7 @@ input,textarea{font-family:inherit;border:none;outline:none}
 .bubble.in{background:var(--bubble-in);border-radius:18px 18px 18px 4px;color:var(--text)}
 .bubble.del{background:rgba(255,255,255,.04)!important;border:1px dashed var(--border)!important;border-radius:14px!important;color:var(--dim)!important;font-style:italic}
 .b-text{margin-bottom:4px}.b-meta{display:flex;justify-content:flex-end;align-items:center;gap:4px}
-.b-time{color:rgba(255,255,255,.35);font-size:11px}.b-check{color:var(--accent);font-size:11px}
+.b-time{color:var(--bubble-time);font-size:11px}.b-check{color:var(--accent);font-size:11px}
 .vbubble{display:flex;align-items:center;gap:8px;margin-bottom:4px;min-width:200px}
 .vplay{font-size:16px;flex-shrink:0;width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,.12);display:flex;align-items:center;justify-content:center;cursor:pointer;border:none;color:inherit}
 .vwave{position:relative;flex:1;height:28px;display:flex;align-items:center;gap:2px;overflow:hidden}
