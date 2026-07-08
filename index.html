@@ -1595,14 +1595,12 @@ function renderList(){
     const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
     // Afficher immédiatement le dernier message depuis le cache local
     const cachedLm=CACHE.load("lastMsg_"+ck);
-    const subStatus=c.online?"● En ligne":"";
     const initialText=cachedLm?
       (cachedLm.del?"🚫 Message supprimé":
        cachedLm.type==="voice"?"🎵 Vocal":
        cachedLm.type==="photo"?"📷 Photo":
        cachedLm.type==="video"?"🎥 Vidéo":
-       (cachedLm.text||subStatus||""))
-      :(subStatus||"");
+       (cachedLm.text||"")):"";
     const initialTime=cachedLm?(cachedLm.t||""):"";
 
     row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span><span class="row-time" id="lt-'+ck+'">'+initialTime+'</span></div><div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+esc(initialText)+'</span><span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span><button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button></div></div>';
