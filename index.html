@@ -1324,61 +1324,6 @@ async function ensureMutualContact(otherUid){
   await db.ref("userContacts/"+otherUid+"/"+S.myUid).set(true);
 }
 
-// ---- MENU CONTEXTUEL DES MESSAGES (copier, supprimer) ----
-function showMsgMenu(m,self,bub){
-  const old=document.getElementById("msg-ctx-menu");if(old)old.remove();
-  const menu=document.createElement("div");
-  menu.id="msg-ctx-menu";
-  menu.style.cssText="position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.45);display:flex;align-items:flex-end";
-
-  const canCopy=m.type==="text"&&m.text&&!m.del;
-  const canDelAll=self&&!m.del&&m.id;
-  const canDelMe=m.id&&!m.del;
-
-  const sheet=document.createElement("div");
-  sheet.style.cssText="width:100%;background:var(--surface);border-radius:20px 20px 0 0;padding:6px 0 max(24px,env(safe-area-inset-bottom));box-shadow:0 -4px 32px rgba(0,0,0,.25)";
-
-  const handle=document.createElement("div");
-  handle.style.cssText="width:36px;height:4px;border-radius:2px;background:var(--border);margin:8px auto 12px";
-  sheet.appendChild(handle);
-
-  const btnStyle="display:flex;align-items:center;gap:16px;width:100%;padding:17px 20px;background:none;border:none;font-size:16px;font-weight:600;font-family:inherit;cursor:pointer;text-align:left";
-
-  // Construit un bouton via l'API DOM (pas d'attribut onclick sérialisé) pour que le
-  // texte du message (guillemets, apostrophes, retours à la ligne...) ne puisse jamais
-  // casser le HTML généré — c'est ce qui empêchait "Copier" de fonctionner.
-  function makeBtn(icon,label,color,withBorder,handler){
-    const b=document.createElement("button");
-    b.style.cssText=btnStyle+";color:"+color+(withBorder?";border-bottom:1px solid var(--border)":"");
-    const iconSpan=document.createElement("span");
-    iconSpan.style.fontSize="22px";
-    iconSpan.textContent=icon;
-    b.appendChild(iconSpan);
-    b.appendChild(document.createTextNode(label));
-    b.addEventListener("click",handler);
-    return b;
-  }
-
-  if(canCopy) sheet.appendChild(makeBtn("📋","Copier le message","var(--text)",true,()=>copyMsg(m.text||"")));
-  if(canDelAll) sheet.appendChild(makeBtn("🗑️","Supprimer pour tous","#ff3b30",true,()=>confirmDelMsg(m.id,true)));
-  if(canDelMe) sheet.appendChild(makeBtn("🗑️","Supprimer pour moi","#ff3b30",false,()=>confirmDelMsg(m.id,false)));
-
-  const cancelBtn=document.createElement("button");
-  cancelBtn.textContent="Annuler";
-  cancelBtn.style.cssText="display:flex;align-items:center;justify-content:center;width:calc(100% - 32px);margin:10px 16px 0;padding:15px;border:none;background:var(--bg);border-radius:14px;color:var(--sub);font-size:16px;font-family:inherit;cursor:pointer;font-weight:700";
-  cancelBtn.addEventListener("click",()=>menu.remove());
-  sheet.appendChild(cancelBtn);
-
-  menu.appendChild(sheet);
-  sheet.addEventListener("click",e=>e.stopPropagation());
-  menu.onclick=e=>{if(e.target===menu)menu.remove();};
-  // Ignorer les clics pendant les ~350ms suivant l'ouverture : sur mobile, le relâchement
-  // du doigt après l'appui long qui a ouvert ce menu génère un "click" fantôme qui peut
-  // sinon atterrir sur un bouton du menu (souvent "Copier") et le déclencher/fermer à tort.
-  menu.style.pointerEvents="none";
-  setTimeout(()=>{menu.style.pointerEvents="auto";},350);
-  document.body.appendChild(menu);
-}
 
 // Confirmation avant suppression, pour éviter les suppressions accidentelles
 window.confirmDelMsg=function(msgId,forEveryone){
