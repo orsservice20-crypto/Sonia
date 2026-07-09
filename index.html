@@ -126,18 +126,23 @@ function showScreen(id){
   const delConfirm=document.getElementById("msg-del-confirm");if(delConfirm)delConfirm.remove();
   const convDelMenu=document.getElementById("conv-del-menu");if(convDelMenu)convDelMenu.remove();
   const viewersList=$("viewers-list-overlay");if(viewersList)viewersList.style.display="none";
+  // Réapprovisionne la garde d'historique à CHAQUE changement d'écran programmatique
+  // (ex: ouverture d'un chat depuis la liste), pas seulement en réaction à un popstate.
+  // Sans cela, des allers-retours répétés entre écrans sans jamais déclencher popstate
+  // pouvaient finir par épuiser les entrées d'historique posées au démarrage, laissant
+  // le WebView natif de Median détecter canGoBack()=false et fermer l'app directement
+  // au prochain appui, sans jamais laisser notre code JS le traiter.
+  if(typeof pushBackGuard==="function") pushBackGuard();
 }
 
-// ---- BOUTON RETOUR ANDROID ----
-// On repousse TOUJOURS une entrée d'historique après chaque popstate, sans exception.
-// Ainsi l'historique du WebView ne s'épuise jamais et Android ne peut plus jamais fermer
-// l'app tout seul de façon incontrôlée (ce qui causait la sortie après seulement 2 appuis,
-// peu importe l'écran affiché). La sortie de l'app est désormais gérée entièrement par
-// notre propre code : sur l'écran principal sans rien d'ouvert, un premier retour affiche
-// "Appuyez encore pour quitter" et arme une fenêtre de 2s ; seul un second retour dans ce
-// délai ferme réellement l'app (via Median si disponible, sinon on laisse le navigateur agir).
-let exitArmed=false;
-let exitArmTimer=null;
+// ---- BOUTON RETOUR ANDROID (comportement WhatsApp) ----
+// On repousse TOUJOURS une entrée d'historique après chaque popstate, sans exception,
+// sauf au tout dernier niveau (écran racine) où l'on quitte réellement l'app. Ainsi
+// l'historique du WebView ne s'épuise jamais et Android ne peut plus jamais fermer l'app
+// tout seul de façon incontrôlée. Chaque appui sur retour remonte d'un seul niveau dans la
+// hiérarchie (ferme un menu, puis un overlay, puis revient à la liste des discussions,
+// etc.), exactement comme WhatsApp : pas de confirmation, pas de double-appui requis.
+// Seul un retour depuis l'écran racine (liste des discussions, rien d'ouvert) quitte l'app.
 
 function requestExitApp(){
   if(window.median&&window.median.app&&typeof window.median.app.exit==="function"){
@@ -274,7 +279,8 @@ window.addEventListener("popstate",function(e){
     return;
   }
 
-  // 4. Overlay visible (modales)
+  // 4. Overlay visible (modales, y compris le menu "Rule") → un seul retour le ferme
+  // et s'arrête là, sans jamais enchaîner sur la fermeture du chat en dessous.
   const overlays=document.querySelectorAll(".overlay");
   for(const ov of overlays){
     if(ov.style.display==="flex"||ov.style.display==="block"){
@@ -301,19 +307,11 @@ window.addEventListener("popstate",function(e){
     return;
   }
 
-  // 7. Sur la liste principale (écran d'accueil), rien d'ouvert → double appui pour quitter.
+  // 7. Sur la liste principale (écran d'accueil), rien d'ouvert → un seul retour quitte
+  // l'app directement, sans confirmation ni double-appui (comportement WhatsApp).
   if(S.currentScreen==="s-list"){
-    if(exitArmed){
-      clearTimeout(exitArmTimer);
-      exitArmed=false;
-      requestExitApp();
-      return; // on ne repousse pas d'entrée : on laisse vraiment sortir
-    }
-    exitArmed=true;
-    toast("Appuyez encore sur retour pour quitter");
-    exitArmTimer=setTimeout(()=>{exitArmed=false;},2000);
-    pushBackGuard();
-    return;
+    requestExitApp();
+    return; // on ne repousse pas d'entrée : on laisse vraiment sortir
   }
 
   // 8. Tout autre écran non prévu explicitement (auth, splash...) → ne rien repousser,
