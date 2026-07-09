@@ -79,6 +79,14 @@ window.addEventListener("offline",()=>{isOnline=false;});
 const $=id=>document.getElementById(id);
 const fmt=s=>String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
 const nowT=()=>new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"});
+// Rendu des coches d'un message que j'ai envoyé : ✓✓ normalement, un seul ✓ grisé
+// si j'ai bloqué ce contact (il ne peut alors jamais "recevoir" mes messages, comme WhatsApp).
+function checkMarkFor(){
+  if(S.blockedCache && S.activeId && S.blockedCache[S.activeId]){
+    return '<span class="b-check" style="color:var(--sub)">✓</span>';
+  }
+  return '<span class="b-check">✓✓</span>';
+}
 // Heure d'affichage d'un message : utilise m.t si présent, sinon la calcule depuis m.ts
 // (le timestamp est toujours fiable, contrairement à t qui peut manquer sur d'anciens
 // messages ou des messages transférés/importés).
@@ -1751,7 +1759,7 @@ window.confirmToggleBlockContact=async function(){
   box.style.cssText="position:fixed;inset:0;z-index:600;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:24px";
   box.innerHTML='<div style="width:100%;max-width:320px;background:var(--surface);border-radius:18px;padding:22px 20px;box-shadow:0 8px 32px rgba(0,0,0,.3)">'+
     '<div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:8px;text-align:center">'+(alreadyBlocked?"Débloquer "+esc(name)+" ?":"Bloquer "+esc(name)+" ?")+'</div>'+
-    '<div style="font-size:13px;color:var(--sub);margin-bottom:20px;text-align:center">'+(alreadyBlocked?"Vous pourrez de nouveau échanger des messages et appels.":"Cette personne ne pourra plus vous envoyer de messages ni vous appeler.")+'</div>'+
+    '<div style="font-size:13px;color:var(--sub);margin-bottom:20px;text-align:center">'+(alreadyBlocked?"Vous pourrez de nouveau lui envoyer des messages et l'appeler.":"Vous ne pourrez plus lui envoyer de messages ni l'appeler tant qu'il/elle sera bloqué(e).")+'</div>'+
     '<div style="display:flex;flex-direction:column;gap:10px">'+
     '<button id="bl-confirm" style="padding:13px;border:none;border-radius:12px;background:'+(alreadyBlocked?"var(--accent)":"#ff3b30")+';color:'+(alreadyBlocked?"#000":"#fff")+';font-size:15px;font-weight:700;font-family:inherit;cursor:pointer">'+(alreadyBlocked?"Débloquer":"Bloquer")+'</button>'+
     '<button id="bl-cancel" style="padding:13px;border:none;border-radius:12px;background:var(--bg);color:var(--sub);font-size:15px;font-weight:700;font-family:inherit;cursor:pointer">Annuler</button>'+
@@ -1764,6 +1772,13 @@ window.confirmToggleBlockContact=async function(){
     toast(alreadyBlocked?"Contact débloqué":"Contact bloqué ✓");
     box.remove();
     refreshBlockButtonState(uid);
+    // Mise à jour immédiate du cache local + ré-affichage des coches et du bandeau, sans attendre le listener Firebase
+    S.blockedCache=S.blockedCache||{};
+    S.blockedCache[uid]=!alreadyBlocked;
+    if(S.activeId===uid){
+      refreshBlockedBanner(uid);
+      listenMsgs();
+    }
   };
 };
 
@@ -2077,6 +2092,26 @@ function openChat(uid){
   if(S.ephemeralInterval) clearInterval(S.ephemeralInterval);
   purgeEphemeralMessages(ck);
   S.ephemeralInterval=setInterval(()=>purgeEphemeralMessages(ck),60000);
+
+  // Bandeau "Vous avez bloqué ce contact" : suit l'état en direct depuis Firebase
+  refreshBlockedBanner(uid);
+}
+
+// Affiche/masque le bandeau de blocage et la barre de saisie normale selon l'état actuel.
+// S'abonne en direct pour refléter immédiatement un blocage/déblocage fait depuis un autre écran.
+function refreshBlockedBanner(uid){
+  if(S.unsubBlockedBanner){S.unsubBlockedBanner();S.unsubBlockedBanner=null;}
+  const ref=db.ref("blockedUsers/"+S.myUid+"/"+uid);
+  const handler=snap=>{
+    if(S.activeId!==uid)return; // le chat a changé entre-temps, ignorer
+    const blocked=snap.exists()&&snap.val();
+    const banner=$("blocked-banner");
+    const normalRow=$("normal-row");
+    if(banner) banner.style.display=blocked?"flex":"none";
+    if(normalRow) normalRow.style.display=blocked?"none":"flex";
+  };
+  ref.on("value",handler);
+  S.unsubBlockedBanner=()=>ref.off("value",handler);
 }
 
 function listenMsgs(){
@@ -2267,7 +2302,7 @@ function makeBubble(m){
           '<button class="vspeed" id="vs-'+m.id+'">1×</button>'+
         '</div>'+
       '</div>'+
-      '<div class="b-meta"><span class="b-time">'+(m.dateStr?m.dateStr+' · ':'')+msgTime(m)+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+      '<div class="b-meta"><span class="b-time">'+(m.dateStr?m.dateStr+' · ':'')+msgTime(m)+'</span>'+(self?checkMarkFor():"")+'</div>';
     setTimeout(()=>{
       const pb=document.getElementById("vp-"+m.id);
       const wp=document.getElementById("vwp-"+m.id);
@@ -2309,20 +2344,20 @@ function makeBubble(m){
     },0);
   } else if(m.type==="photo"){
     if(!m.src && m.mediaCached===false){
-      bub.innerHTML='<div class="photo-bub" style="width:200px;height:140px;background:var(--bg);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;color:var(--sub);font-size:12px"><span style="font-size:28px">📷</span>Photo (connexion requise)</div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+      bub.innerHTML='<div class="photo-bub" style="width:200px;height:140px;background:var(--bg);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;color:var(--sub);font-size:12px"><span style="font-size:28px">📷</span>Photo (connexion requise)</div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?checkMarkFor():"")+'</div>';
     } else {
-      bub.innerHTML='<div class="photo-bub"><img src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;cursor:pointer"/></div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+      bub.innerHTML='<div class="photo-bub"><img src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;cursor:pointer"/></div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?checkMarkFor():"")+'</div>';
       setTimeout(()=>{const img=bub.querySelector(".photo-bub img");if(img)img.onclick=e=>{e.stopPropagation();openViewer(m.src);};},0);
     }
   } else if(m.type==="video"){
     if(!m.src && m.mediaCached===false){
-      bub.innerHTML='<div class="video-bub" style="width:200px;height:140px;background:var(--bg);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;color:var(--sub);font-size:12px"><span style="font-size:28px">🎥</span>Vidéo (connexion requise)</div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+      bub.innerHTML='<div class="video-bub" style="width:200px;height:140px;background:var(--bg);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;color:var(--sub);font-size:12px"><span style="font-size:28px">🎥</span>Vidéo (connexion requise)</div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?checkMarkFor():"")+'</div>';
     } else {
-      bub.innerHTML='<div class="video-bub"><video src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;display:block" preload="metadata" playsinline></video><div class="vid-play-overlay">▶</div></div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+      bub.innerHTML='<div class="video-bub"><video src="'+m.src+'" style="max-width:220px;max-height:220px;border-radius:12px;display:block" preload="metadata" playsinline></video><div class="vid-play-overlay">▶</div></div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?checkMarkFor():"")+'</div>';
       setTimeout(()=>{const vid=bub.querySelector("video");const ov=bub.querySelector(".vid-play-overlay");const open=e=>{e.stopPropagation();openVideoViewer(m.src);};if(vid)vid.onclick=open;if(ov)ov.onclick=open;},0);
     }
   } else {
-    bub.innerHTML='<div class="b-text">'+esc(m.text||"")+'</div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?'<span class="b-check">✓✓</span>':"")+'</div>';
+    bub.innerHTML='<div class="b-text">'+esc(m.text||"")+'</div><div class="b-meta"><span class="b-time">'+msgTime(m)+'</span>'+(self?checkMarkFor():"")+'</div>';
   }
 
   // Checkbox de sélection (visible seulement en mode sélection, via CSS).
@@ -2453,12 +2488,20 @@ function pushMsgTo(destUid,m){
   const key=chatKey(S.myUid,destUid);
   if(!m.ts) m.ts=Date.now();
 
+  // Empêcher le transfert vers un contact que j'ai bloqué (même règle que l'envoi normal)
+  if(S.blockedCache && S.blockedCache[destUid]){
+    return Promise.reject(new Error("contact bloqué"));
+  }
+
   db.ref("inbox/"+destUid+"/"+S.myUid).set({
     from:S.myUid,
     fromPhone:S.myPhone||"",
     fromName:S.profile.name||S.myPhone||"",
     ts:m.ts
   }).catch(()=>{});
+
+  db.ref("chats/"+key+"/participants/"+S.myUid).set(destUid).catch(()=>{});
+  db.ref("chats/"+key+"/participants/"+destUid).set(S.myUid).catch(()=>{});
 
   const msgRef=db.ref("chats/"+key+"/messages");
   const lastRef=db.ref("chats/"+key+"/lastMsg");
@@ -2706,6 +2749,12 @@ function pushMsg(m){
     fromName:S.profile.name||S.myPhone||"",
     ts:m.ts
   }).catch(()=>{});
+
+  // Déclarer les deux participants de cette conversation, chacun pointant vers l'UID de
+  // l'autre (et non un simple flag), pour que la règle Firebase puisse retrouver directement
+  // l'interlocuteur et vérifier les blocages à l'écriture. Écriture idempotente, sans risque.
+  db.ref("chats/"+key+"/participants/"+S.myUid).set(S.activeId).catch(()=>{});
+  db.ref("chats/"+key+"/participants/"+S.activeId).set(S.myUid).catch(()=>{});
 
   // Envoyer le message et mettre à jour lastMsg en parallèle
   const msgRef=db.ref("chats/"+key+"/messages");
@@ -3518,6 +3567,10 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
   </div>
   <div id="msg-list"></div>
   <div id="input-bar">
+    <!-- Bandeau affiché à la place de la barre de saisie quand ce contact est bloqué -->
+    <div id="blocked-banner" style="display:none;align-items:center;justify-content:center;gap:8px;padding:14px 16px;color:var(--danger);font-size:13.5px;font-weight:700;text-align:center">
+      🚫 Vous avez bloqué ce contact
+    </div>
     <!-- Barre d'enregistrement vocal (cachée par défaut) -->
     <div id="rec-bar" style="display:none">
       <div style="display:flex;align-items:center;gap:12px;padding:8px 4px">
