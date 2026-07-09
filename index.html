@@ -136,14 +136,32 @@ function requestExitApp(){
 history.pushState({sonia:"app"},"","");
 
 window.addEventListener("popstate",function(e){
+  // -1. Toute boîte de confirmation créée dynamiquement (position:fixed, plein écran,
+  // ajoutée directement à <body>) doit se fermer en un seul retour, sans jamais laisser
+  // le retour physique "traverser" jusqu'à l'écran du dessous.
+  const dynBoxes=Array.from(document.body.children).filter(el=>{
+    if(el.tagName!=="DIV")return false;
+    const cs=el.style.position;
+    return cs==="fixed" && el.style.inset==="0px";
+  });
+  if(dynBoxes.length){
+    dynBoxes[dynBoxes.length-1].remove();
+    history.pushState({sonia:"app"},"","");
+    return;
+  }
+
   // 0. Menu contextuel de message (copier/supprimer) ou menu suppression conversation ouvert
   const ctxMenu=document.getElementById("msg-ctx-menu");
   const delConfirm=document.getElementById("msg-del-confirm");
   const convDelMenu=document.getElementById("conv-del-menu");
-  if(ctxMenu||delConfirm||convDelMenu){
+  const topbarMenu=document.getElementById("topbar-menu");
+  const chatMenu=document.getElementById("chat-menu");
+  if(ctxMenu||delConfirm||convDelMenu||(topbarMenu&&topbarMenu.style.display==="block")||(chatMenu&&chatMenu.style.display==="block")){
     if(ctxMenu)ctxMenu.remove();
     if(delConfirm)delConfirm.remove();
     if(convDelMenu)convDelMenu.remove();
+    if(topbarMenu)topbarMenu.style.display="none";
+    if(chatMenu)chatMenu.style.display="none";
     history.pushState({sonia:"app"},"","");
     return;
   }
@@ -188,6 +206,17 @@ window.addEventListener("popstate",function(e){
   const sv=$("status-viewer");
   if(sv&&sv.style.display==="flex"){
     if(typeof closeStatusViewer==="function")closeStatusViewer();
+    history.pushState({sonia:"app"},"","");
+    return;
+  }
+
+  // 3bis. Sous-écran de paramètres ouvert (ex: Compte, Discussions...) → revenir
+  // au menu principal des Paramètres plutôt que de tout fermer d'un coup.
+  const settingsSub=$("settings-sub-overlay");
+  if(settingsSub&&settingsSub.style.display==="flex"){
+    settingsSub.style.display="none";
+    const settingsMain=$("settings-overlay");
+    if(settingsMain) settingsMain.style.display="flex";
     history.pushState({sonia:"app"},"","");
     return;
   }
@@ -1254,6 +1283,15 @@ window.searchUserByPhone=function(){
 // ---- CONTACTS ----
 function listenContacts(){
   if(S.unsubContacts){S.unsubContacts();S.unsubContacts=null;}
+
+  // Maintenir en mémoire la liste des contacts que j'ai bloqués (vérification synchrone à l'envoi)
+  if(S.unsubBlocked){S.unsubBlocked();S.unsubBlocked=null;}
+  S.blockedCache=S.blockedCache||{};
+  const blockedRef=db.ref("blockedUsers/"+S.myUid);
+  const blockedHandler=snap=>{ S.blockedCache=snap.exists()?snap.val():{}; };
+  blockedRef.on("value",blockedHandler);
+  S.unsubBlocked=()=>blockedRef.off("value",blockedHandler);
+
   S.unsubContacts=db.ref("userContacts/"+S.myUid).on("value",async snap=>{
     const uids=[];
     snap.forEach(child=>{ if(child.key!==S.myUid) uids.push(child.key); });
@@ -1528,24 +1566,310 @@ window.openContactInfo=function(){
   // Pré-remplir le surnom avec le nom actuel stocké localement
   const saved=CACHE.load("nick_"+c.uid);
   $("ci-nickname-input").value=saved||c.name||"";
+
+  const ck=chatKey(S.myUid,c.uid);
+
+  // Compteur médias + taille stockage (calcul à partir du cache local des messages)
+  refreshContactMediaStats(ck);
+
+  // Sourdine (mute) : réglage local par conversation
+  const muteBox=$("ci-mute-switch");
+  muteBox.checked=!!getSetting("mute_"+ck,false);
+  muteBox.onchange=()=>{ setSetting("mute_"+ck,muteBox.checked); toast(muteBox.checked?"Discussion mise en sourdine":"Sourdine désactivée"); };
+
+  // Verrouillage de discussion : masque la conversation de la liste principale (réglage local)
+  const lockBox=$("ci-lock-switch");
+  lockBox.checked=!!getSetting("locked_"+ck,false);
+  lockBox.onchange=()=>{ setSetting("locked_"+ck,lockBox.checked); toast(lockBox.checked?"Discussion verrouillée":"Discussion déverrouillée"); renderList(); };
+
+  // Messages éphémères : lit le réglage stocké côté serveur (partagé entre les deux interlocuteurs)
+  refreshEphemeralButtons(ck);
+
+  // État blocage
+  refreshBlockButtonState(c.uid);
+
   $("contact-info-overlay").style.display="flex";
 };
 
-window.saveContactNickname=function(){
+// Recalcule dynamiquement le nombre de médias et la taille occupée pour ce contact
+function refreshContactMediaStats(ck){
+  const cached=CACHE.load("msgs_"+ck)||[];
+  const mediaMsgs=cached.filter(m=>m&&(m.type==="photo"||m.type==="video"||m.type==="voice")&&!m.del);
+  const countEl=$("ci-media-count"); if(countEl) countEl.textContent=mediaMsgs.length+" élément(s)";
+  let bytes=0;
+  mediaMsgs.forEach(m=>{ if(m.src) bytes+=m.src.length; });
+  const mb=(bytes/1024/1024).toFixed(1);
+  const sizeEl=$("ci-storage-size"); if(sizeEl) sizeEl.textContent=mb+" Mo";
+}
+
+window.openContactMedia=function(){
   if(!S.activeId)return;
-  const c=S.contacts.find(x=>x.uid===S.activeId);
-  if(!c)return;
-  const nick=$("ci-nickname-input").value.trim();
-  if(!nick){toast("Entrez un nom","err");return;}
-  // Sauvegarder localement (le vrai nom de l'utilisateur dans Firebase ne change pas)
-  CACHE.save("nick_"+c.uid, nick);
-  c.localName=nick;
-  $("ci-name").textContent=nick;
-  // Mettre à jour l'affichage dans la liste et le chat
-  renderList();
-  if(S.activeId===c.uid) refreshChatHeader({...c,name:nick});
-  toast("Nom enregistré ✓");
+  const ck=chatKey(S.myUid,S.activeId);
+  const cached=CACHE.load("msgs_"+ck)||[];
+  const mediaMsgs=cached.filter(m=>m&&(m.type==="photo"||m.type==="video")&&!m.del).sort((a,b)=>(b.ts||0)-(a.ts||0));
+  const grid=$("contact-media-grid");
+  grid.innerHTML="";
+  if(!mediaMsgs.length){
+    grid.style.display="block";
+    grid.innerHTML='<div class="empty-note">Aucun média partagé dans cette discussion</div>';
+  }else{
+    grid.style.display="grid";
+    mediaMsgs.forEach(m=>{
+      const cell=document.createElement("div");
+      cell.style.cssText="aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--bg)";
+      if(m.type==="photo"){
+        cell.innerHTML='<img src="'+m.src+'" style="width:100%;height:100%;object-fit:cover"/>';
+      }else{
+        cell.innerHTML='<video src="'+m.src+'" style="width:100%;height:100%;object-fit:cover" muted></video>';
+      }
+      grid.appendChild(cell);
+    });
+  }
   $("contact-info-overlay").style.display="none";
+  $("contact-media-overlay").style.display="flex";
+};
+
+window.openContactStorage=function(){
+  if(!S.activeId)return;
+  const ck=chatKey(S.myUid,S.activeId);
+  const cached=CACHE.load("msgs_"+ck)||[];
+  const photos=cached.filter(m=>m&&m.type==="photo"&&!m.del);
+  const videos=cached.filter(m=>m&&m.type==="video"&&!m.del);
+  const voices=cached.filter(m=>m&&m.type==="voice"&&!m.del);
+  const sizeOf=arr=>{ let b=0; arr.forEach(m=>{if(m.src)b+=m.src.length;}); return (b/1024/1024).toFixed(1); };
+  const body=$("contact-storage-body");
+  body.innerHTML=
+    '<div style="padding:14px 0;border-bottom:1px solid var(--border)"><div class="settings-toggle-txt">📷 Photos</div><div class="settings-toggle-sub" style="margin-top:2px">'+photos.length+' élément(s) — '+sizeOf(photos)+' Mo</div></div>'+
+    '<div style="padding:14px 0;border-bottom:1px solid var(--border)"><div class="settings-toggle-txt">🎥 Vidéos</div><div class="settings-toggle-sub" style="margin-top:2px">'+videos.length+' élément(s) — '+sizeOf(videos)+' Mo</div></div>'+
+    '<div style="padding:14px 0;border-bottom:1px solid var(--border)"><div class="settings-toggle-txt">🎙️ Messages vocaux</div><div class="settings-toggle-sub" style="margin-top:2px">'+voices.length+' élément(s) — '+sizeOf(voices)+' Mo</div></div>'+
+    '<button class="big-btn" style="margin-top:20px;background:var(--surface);color:var(--danger);border:1px solid var(--border)" onclick="confirmClearContactMedia()">🧹 Supprimer tous les médias de cette discussion</button>';
+  $("contact-info-overlay").style.display="none";
+  $("contact-storage-overlay").style.display="flex";
+};
+
+window.confirmClearContactMedia=function(){
+  if(!S.activeId)return;
+  const uid=S.activeId;
+  const box=document.createElement("div");
+  box.style.cssText="position:fixed;inset:0;z-index:600;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:24px";
+  box.innerHTML='<div style="width:100%;max-width:320px;background:var(--surface);border-radius:18px;padding:22px 20px;box-shadow:0 8px 32px rgba(0,0,0,.3)">'+
+    '<div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:8px;text-align:center">Supprimer tous les médias ?</div>'+
+    '<div style="font-size:13px;color:var(--sub);margin-bottom:20px;text-align:center">Les photos, vidéos et messages vocaux de cette discussion seront supprimés définitivement.</div>'+
+    '<div style="display:flex;flex-direction:column;gap:10px">'+
+    '<button id="cm-confirm" style="padding:13px;border:none;border-radius:12px;background:#ff3b30;color:#fff;font-size:15px;font-weight:700;font-family:inherit;cursor:pointer">Supprimer</button>'+
+    '<button id="cm-cancel" style="padding:13px;border:none;border-radius:12px;background:var(--bg);color:var(--sub);font-size:15px;font-weight:700;font-family:inherit;cursor:pointer">Annuler</button>'+
+    '</div></div>';
+  box.onclick=e=>{if(e.target===box)box.remove();};
+  document.body.appendChild(box);
+  document.getElementById("cm-cancel").onclick=()=>box.remove();
+  document.getElementById("cm-confirm").onclick=async()=>{
+    const ck=chatKey(S.myUid,uid);
+    const snap=await db.ref("chats/"+ck+"/messages").get().catch(()=>null);
+    if(snap&&snap.exists()){
+      const updates={};
+      snap.forEach(child=>{
+        const v=child.val();
+        if(v&&(v.type==="photo"||v.type==="video"||v.type==="voice")){
+          updates[child.key+"/del"]=true;
+          updates[child.key+"/src"]=null;
+        }
+      });
+      if(Object.keys(updates).length) await db.ref("chats/"+ck+"/messages").update(updates).catch(()=>{});
+    }
+    toast("Médias supprimés ✓");
+    box.remove();
+    $("contact-storage-overlay").style.display="none";
+  };
+};
+
+// ==================== MESSAGES ÉPHÉMÈRES (par conversation) ====================
+function refreshEphemeralButtons(ck){
+  db.ref("chats/"+ck+"/settings/ephemeral").get().then(snap=>{
+    const val=snap.exists()?snap.val():0;
+    applyEphemeralButtonsUI(val);
+  }).catch(()=>applyEphemeralButtonsUI(0));
+}
+
+function applyEphemeralButtonsUI(val){
+  const labels={0:"Désactivés",86400000:"Activés · 24 heures",604800000:"Activés · 7 jours",7776000000:"Activés · 90 jours"};
+  const sub=$("ci-ephemeral-sub"); if(sub) sub.textContent=labels[val]||"Désactivés";
+  document.querySelectorAll(".ephem-btn").forEach(b=>{
+    const active=parseInt(b.dataset.val,10)===val;
+    b.style.background=active?"var(--accent)":"var(--surface)";
+    b.style.color=active?"#000":"var(--text)";
+    b.style.borderColor=active?"var(--accent)":"var(--border)";
+    b.onclick=()=>setEphemeralDuration(parseInt(b.dataset.val,10));
+  });
+}
+
+window.setEphemeralDuration=function(ms){
+  if(!S.activeId)return;
+  const ck=chatKey(S.myUid,S.activeId);
+  db.ref("chats/"+ck+"/settings/ephemeral").set(ms).catch(()=>{});
+  applyEphemeralButtonsUI(ms);
+  toast(ms===0?"Messages éphémères désactivés":"Messages éphémères activés ✓");
+};
+
+// Supprime silencieusement, côté serveur, les messages plus vieux que la durée éphémère
+// réglée pour cette conversation. Appelée périodiquement pendant que le chat est ouvert.
+function purgeEphemeralMessages(ck){
+  db.ref("chats/"+ck+"/settings/ephemeral").get().then(snap=>{
+    const ms=snap.exists()?snap.val():0;
+    if(!ms)return;
+    const cutoff=Date.now()-ms;
+    db.ref("chats/"+ck+"/messages").orderByChild("ts").endAt(cutoff).get().then(msnap=>{
+      if(!msnap.exists())return;
+      const updates={};
+      msnap.forEach(child=>{
+        const v=child.val();
+        if(v&&!v.del){ updates[child.key+"/del"]=true; updates[child.key+"/src"]=null; updates[child.key+"/text"]=""; }
+      });
+      if(Object.keys(updates).length) db.ref("chats/"+ck+"/messages").update(updates).catch(()=>{});
+    }).catch(()=>{});
+  }).catch(()=>{});
+}
+
+// ==================== BLOCAGE DE CONTACT ====================
+function refreshBlockButtonState(uid){
+  db.ref("blockedUsers/"+S.myUid+"/"+uid).get().then(snap=>{
+    const blocked=snap.exists()&&snap.val();
+    const icon=$("ci-block-icon"), label=$("ci-block-label");
+    if(icon) icon.textContent=blocked?"✅":"🚫";
+    if(label) label.textContent=blocked?"Débloquer ce contact":"Bloquer ce contact";
+  }).catch(()=>{});
+}
+
+window.confirmToggleBlockContact=async function(){
+  if(!S.activeId)return;
+  const uid=S.activeId;
+  const c=S.contacts.find(x=>x.uid===uid);
+  const name=(CACHE.load("nick_"+uid))||(c&&(c.name||c.phone))||"ce contact";
+  const snap=await db.ref("blockedUsers/"+S.myUid+"/"+uid).get().catch(()=>null);
+  const alreadyBlocked=snap&&snap.exists()&&snap.val();
+
+  const box=document.createElement("div");
+  box.style.cssText="position:fixed;inset:0;z-index:600;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:24px";
+  box.innerHTML='<div style="width:100%;max-width:320px;background:var(--surface);border-radius:18px;padding:22px 20px;box-shadow:0 8px 32px rgba(0,0,0,.3)">'+
+    '<div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:8px;text-align:center">'+(alreadyBlocked?"Débloquer "+esc(name)+" ?":"Bloquer "+esc(name)+" ?")+'</div>'+
+    '<div style="font-size:13px;color:var(--sub);margin-bottom:20px;text-align:center">'+(alreadyBlocked?"Vous pourrez de nouveau échanger des messages et appels.":"Cette personne ne pourra plus vous envoyer de messages ni vous appeler.")+'</div>'+
+    '<div style="display:flex;flex-direction:column;gap:10px">'+
+    '<button id="bl-confirm" style="padding:13px;border:none;border-radius:12px;background:'+(alreadyBlocked?"var(--accent)":"#ff3b30")+';color:'+(alreadyBlocked?"#000":"#fff")+';font-size:15px;font-weight:700;font-family:inherit;cursor:pointer">'+(alreadyBlocked?"Débloquer":"Bloquer")+'</button>'+
+    '<button id="bl-cancel" style="padding:13px;border:none;border-radius:12px;background:var(--bg);color:var(--sub);font-size:15px;font-weight:700;font-family:inherit;cursor:pointer">Annuler</button>'+
+    '</div></div>';
+  box.onclick=e=>{if(e.target===box)box.remove();};
+  document.body.appendChild(box);
+  document.getElementById("bl-cancel").onclick=()=>box.remove();
+  document.getElementById("bl-confirm").onclick=async()=>{
+    await db.ref("blockedUsers/"+S.myUid+"/"+uid).set(!alreadyBlocked).catch(()=>{});
+    toast(alreadyBlocked?"Contact débloqué":"Contact bloqué ✓");
+    box.remove();
+    refreshBlockButtonState(uid);
+  };
+};
+
+// Petit alias pour réutiliser la confirmation de suppression de discussion existante depuis la fiche contact
+window.triggerDeleteConversationFromInfo=function(){
+  if(!S.activeId)return;
+  const uid=S.activeId;
+  const ck=chatKey(S.myUid,uid);
+  deleteConversation(uid,ck);
+};
+
+// ==================== ACCÈS DIRECT DEPUIS LE MENU ⋮ DU CHAT ====================
+// Reprennent les mêmes écrans que la fiche contact, sans passer par le modal "Infos contact".
+window.openContactMediaDirect=function(){
+  if(!S.activeId)return;
+  const ck=chatKey(S.myUid,S.activeId);
+  const cached=CACHE.load("msgs_"+ck)||[];
+  const mediaMsgs=cached.filter(m=>m&&(m.type==="photo"||m.type==="video")&&!m.del).sort((a,b)=>(b.ts||0)-(a.ts||0));
+  const grid=$("contact-media-grid");
+  grid.innerHTML="";
+  if(!mediaMsgs.length){
+    grid.style.display="block";
+    grid.innerHTML='<div class="empty-note">Aucun média partagé dans cette discussion</div>';
+  }else{
+    grid.style.display="grid";
+    mediaMsgs.forEach(m=>{
+      const cell=document.createElement("div");
+      cell.style.cssText="aspect-ratio:1;border-radius:8px;overflow:hidden;background:var(--bg)";
+      cell.innerHTML=(m.type==="photo")
+        ? '<img src="'+m.src+'" style="width:100%;height:100%;object-fit:cover"/>'
+        : '<video src="'+m.src+'" style="width:100%;height:100%;object-fit:cover" muted></video>';
+      grid.appendChild(cell);
+    });
+  }
+  $("contact-media-overlay").style.display="flex";
+};
+
+window.toggleMuteFromMenu=function(){
+  if(!S.activeId)return;
+  const ck=chatKey(S.myUid,S.activeId);
+  const cur=!!getSetting("mute_"+ck,false);
+  setSetting("mute_"+ck,!cur);
+  toast(!cur?"Discussion mise en sourdine":"Sourdine désactivée");
+};
+
+window.toggleLockFromMenu=function(){
+  if(!S.activeId)return;
+  const ck=chatKey(S.myUid,S.activeId);
+  const cur=!!getSetting("locked_"+ck,false);
+  setSetting("locked_"+ck,!cur);
+  toast(!cur?"Discussion verrouillée":"Discussion déverrouillée");
+  renderList();
+};
+
+// Ouvre le menu groupé "Rule" avec les états actuels (sourdine, verrouillage, blocage) reflétés
+window.openRuleModal=function(){
+  if(!S.activeId)return;
+  const ck=chatKey(S.myUid,S.activeId);
+  const muted=!!getSetting("mute_"+ck,false);
+  const locked=!!getSetting("locked_"+ck,false);
+  const muteTitle=$("rule-mute-toggle").querySelector(".settings-row-title");
+  const muteIcon=$("rule-mute-toggle").querySelector(".settings-row-icon");
+  muteTitle.textContent=muted?"Réactiver le son":"Discussion en sourdine";
+  muteIcon.textContent=muted?"🔔":"🔕";
+  const lockTitle=$("rule-lock-toggle").querySelector(".settings-row-title");
+  const lockIcon=$("rule-lock-toggle").querySelector(".settings-row-icon");
+  lockTitle.textContent=locked?"Déverrouiller la discussion":"Verrouiller la discussion";
+  lockIcon.textContent=locked?"🔓":"🔒";
+  db.ref("blockedUsers/"+S.myUid+"/"+S.activeId).get().then(snap=>{
+    const blocked=snap.exists()&&snap.val();
+    const blockTitle=$("rule-block-toggle").querySelector(".settings-row-title");
+    const blockIcon=$("rule-block-toggle").querySelector(".settings-row-icon");
+    blockTitle.textContent=blocked?"Débloquer ce contact":"Bloquer ce contact";
+    blockTitle.style.color=blocked?"var(--accent)":"var(--danger)";
+    blockIcon.textContent=blocked?"✅":"🚫";
+  }).catch(()=>{});
+  $("rule-overlay").style.display="flex";
+};
+
+window.openEphemeralPickerMenu=function(){
+  if(!S.activeId)return;
+  const ck=chatKey(S.myUid,S.activeId);
+  const box=document.createElement("div");
+  box.style.cssText="position:fixed;inset:0;z-index:600;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:24px";
+  box.innerHTML='<div style="width:100%;max-width:320px;background:var(--surface);border-radius:18px;padding:22px 20px;box-shadow:0 8px 32px rgba(0,0,0,.3)">'+
+    '<div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:14px;text-align:center">⏱️ Messages éphémères</div>'+
+    '<div style="display:flex;flex-direction:column;gap:10px">'+
+    '<button class="ephem-menu-btn" data-val="0" style="padding:13px;border:1.5px solid var(--border);border-radius:12px;background:var(--surface);color:var(--text);font-size:14px;font-weight:700;font-family:inherit;cursor:pointer">Désactivé</button>'+
+    '<button class="ephem-menu-btn" data-val="86400000" style="padding:13px;border:1.5px solid var(--border);border-radius:12px;background:var(--surface);color:var(--text);font-size:14px;font-weight:700;font-family:inherit;cursor:pointer">24 heures</button>'+
+    '<button class="ephem-menu-btn" data-val="604800000" style="padding:13px;border:1.5px solid var(--border);border-radius:12px;background:var(--surface);color:var(--text);font-size:14px;font-weight:700;font-family:inherit;cursor:pointer">7 jours</button>'+
+    '<button class="ephem-menu-btn" data-val="7776000000" style="padding:13px;border:1.5px solid var(--border);border-radius:12px;background:var(--surface);color:var(--text);font-size:14px;font-weight:700;font-family:inherit;cursor:pointer">90 jours</button>'+
+    '<button id="ephem-menu-cancel" style="padding:13px;border:none;border-radius:12px;background:var(--bg);color:var(--sub);font-size:14px;font-weight:700;font-family:inherit;cursor:pointer;margin-top:6px">Annuler</button>'+
+    '</div></div>';
+  box.onclick=e=>{if(e.target===box)box.remove();};
+  document.body.appendChild(box);
+  document.getElementById("ephem-menu-cancel").onclick=()=>box.remove();
+  db.ref("chats/"+ck+"/settings/ephemeral").get().then(snap=>{
+    const cur=snap.exists()?snap.val():0;
+    document.querySelectorAll(".ephem-menu-btn").forEach(b=>{
+      if(parseInt(b.dataset.val,10)===cur){b.style.background="var(--accent)";b.style.color="#000";b.style.borderColor="var(--accent)";}
+      b.onclick=()=>{
+        setEphemeralDuration(parseInt(b.dataset.val,10));
+        box.remove();
+      };
+    });
+  });
 };
 
 window.downloadContactVcf=function(){
@@ -1573,6 +1897,8 @@ function renderList(){
     const displayName=(nick||c.name||c.phone||"").toLowerCase();
     const match=displayName.includes(term)||(c.phone||"").includes(term);
     const arch=S.arch.has(c.uid);
+    const locked=window.getSetting&&window.getSetting("locked_"+chatKey(S.myUid,c.uid),false);
+    if(locked&&S.tab!=="locked")return false;
     return match&&(S.tab==="archived"?arch:!arch);
   });
   if(!vis.length){
@@ -1724,7 +2050,7 @@ function repositionRow(uid,ck,box){
 }
 
 function toggleArch(uid){S.arch.has(uid)?S.arch.delete(uid):S.arch.add(uid);renderList();if(S.activeId===uid)updateArchBtn();}
-function updateArchBtn(){const b=$("arch-btn");if(b)b.textContent=S.arch.has(S.activeId)?"📤":"🗄";}
+function updateArchBtn(){const b=$("chat-arch-toggle");if(b)b.textContent=S.arch.has(S.activeId)?"📤 Désarchiver la discussion":"🗄 Archiver la discussion";}
 
 // ---- CHAT ----
 // ---- SUPPRESSION LOCALE ("pour moi") : liste d'IDs cachés, propre à cet appareil ----
@@ -1746,6 +2072,11 @@ function openChat(uid){
   // Marquer comme lu
   const ck=chatKey(S.myUid,uid);
   clearUnread(uid,ck);
+
+  // Messages éphémères : purge immédiate puis vérification toutes les minutes tant que le chat est ouvert
+  if(S.ephemeralInterval) clearInterval(S.ephemeralInterval);
+  purgeEphemeralMessages(ck);
+  S.ephemeralInterval=setInterval(()=>purgeEphemeralMessages(ck),60000);
 }
 
 function listenMsgs(){
@@ -2362,6 +2693,12 @@ function pushMsg(m){
     return Promise.reject(new Error("trop volumineux"));
   }
 
+  // Empêcher l'envoi vers un contact que j'ai bloqué
+  if(S.blockedCache && S.blockedCache[S.activeId]){
+    toast("Vous avez bloqué ce contact — débloquez-le pour lui écrire","err");
+    return Promise.reject(new Error("contact bloqué"));
+  }
+
   // Notifier inbox du destinataire (non-bloquant, en parallèle)
   db.ref("inbox/"+S.activeId+"/"+S.myUid).set({
     from:S.myUid,
@@ -2793,6 +3130,7 @@ html.high-contrast{--border:rgba(0,0,0,.35)}
 html.high-contrast[data-theme="dark"]{--border:rgba(255,255,255,.35)}
 html.high-contrast .bubble{border:1.5px solid var(--border)}
 html.high-contrast .b-time{color:var(--text)!important;opacity:.85}
+.ci-sep{height:1px;background:var(--border);margin:14px 0}
 .contact-row:active,.contact-row.active-row{background:var(--glow)}
 .av-wrap{position:relative;flex-shrink:0}
 .av{width:52px;height:52px;border-radius:50%;background:var(--card);border:1.5px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:27px;overflow:hidden;flex-shrink:0}
@@ -3169,10 +3507,13 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       <div style="position:relative;flex-shrink:0"><div class="chat-av" id="c-av"></div><div class="dot" id="c-dot"></div></div>
       <div class="chat-info" style="min-width:0;overflow:hidden"><div class="chat-name" id="c-name" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div><div class="chat-status" id="c-status"></div></div>
     </div>
-    <div class="call-btns" style="flex-shrink:0">
+    <div class="call-btns" style="flex-shrink:0;position:relative">
       <button class="call-btn-sm" onclick="event.stopPropagation();startCall('audio')">📞</button>
       <button class="call-btn-sm" onclick="event.stopPropagation();startCall('video')">📹</button>
-      <button class="call-btn-sm" id="arch-btn" onclick="event.stopPropagation();if(S.activeId)toggleArch(S.activeId)">🗄</button>
+      <button class="call-btn-sm" id="chat-more-btn" onclick="event.stopPropagation();toggleChatMenu()">⋮</button>
+      <div id="chat-menu" style="display:none;position:absolute;top:44px;right:0;background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.18);min-width:180px;z-index:60;overflow:hidden">
+        <button onclick="$('chat-menu').style.display='none';openRuleModal()" style="display:flex;align-items:center;gap:10px;width:100%;padding:13px 16px;background:none;border:none;color:var(--text);font-size:14px;font-weight:700;font-family:inherit;cursor:pointer;text-align:left">📐 Rule</button>
+      </div>
     </div>
   </div>
   <div id="msg-list"></div>
@@ -3346,20 +3687,143 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 
 <!-- CONTACT INFO MODAL -->
 <div class="overlay" id="contact-info-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
-  <div class="modal">
+  <div class="modal" style="max-height:90vh">
     <div class="modal-drag"></div>
     <div class="modal-head"><span class="modal-title">Infos contact</span><button class="modal-close" onclick="$('contact-info-overlay').style.display='none'">✕</button></div>
-    <div class="modal-body" style="text-align:center;padding:8px 20px 24px">
-      <div class="prof-av-center"><div class="prof-av" id="ci-av" style="margin:0 auto"><span>🧑🏾</span></div></div>
-      <div style="font-size:20px;font-weight:800;color:var(--text);margin-top:14px" id="ci-name"></div>
-      <div style="font-size:14px;color:var(--sub);margin-top:4px" id="ci-phone"></div>
-      <div style="font-size:13px;color:var(--accent);margin-top:6px" id="ci-status-txt"></div>
-      <div style="margin-top:20px;text-align:left">
-        <label class="f-label">Surnom / Nom à afficher</label>
-        <input class="f-input" id="ci-nickname-input" placeholder="Ex: Maman, Jean, Patron..." style="width:100%"/>
-        <button class="big-btn" style="margin-top:8px" onclick="saveContactNickname()">💾 Enregistrer le nom</button>
+    <div class="modal-body" style="overflow-y:auto;padding:8px 20px 28px">
+      <div style="text-align:center">
+        <div class="prof-av-center"><div class="prof-av" id="ci-av" style="margin:0 auto"><span>🧑🏾</span></div></div>
+        <div style="font-size:20px;font-weight:800;color:var(--text);margin-top:14px" id="ci-name"></div>
+        <div style="font-size:14px;color:var(--sub);margin-top:4px" id="ci-phone"></div>
+        <div style="font-size:13px;color:var(--accent);margin-top:6px" id="ci-status-txt"></div>
+        <div style="margin-top:20px;text-align:left">
+          <label class="f-label">Surnom / Nom à afficher</label>
+          <input class="f-input" id="ci-nickname-input" placeholder="Ex: Maman, Jean, Patron..." style="width:100%"/>
+          <button class="big-btn" style="margin-top:8px" onclick="saveContactNickname()">💾 Enregistrer le nom</button>
+        </div>
+        <button class="big-btn" style="margin-top:12px;background:var(--surface);color:var(--text);border:1px solid var(--border)" onclick="downloadContactVcf()">📇 Ajouter à mes contacts téléphone</button>
       </div>
-      <button class="big-btn" style="margin-top:12px;background:var(--surface);color:var(--text);border:1px solid var(--border)" onclick="downloadContactVcf()">📇 Ajouter à mes contacts téléphone</button>
+
+      <div class="ci-sep"></div>
+
+      <!-- MÉDIAS, LIENS ET DOCUMENTS -->
+      <button class="settings-row" style="border-radius:12px;padding:12px 4px" onclick="openContactMedia()">
+        <span class="settings-row-icon">🖼️</span>
+        <span class="settings-row-txt"><span class="settings-row-title">Médias, liens et documents</span><span class="settings-row-sub" id="ci-media-count">0</span></span>
+        <span class="settings-row-arrow">›</span>
+      </button>
+
+      <button class="settings-row" style="border-radius:12px;padding:12px 4px" onclick="openContactStorage()">
+        <span class="settings-row-icon">🗂️</span>
+        <span class="settings-row-txt"><span class="settings-row-title">Gérer le stockage</span><span class="settings-row-sub" id="ci-storage-size">0 Mo</span></span>
+        <span class="settings-row-arrow">›</span>
+      </button>
+
+      <div class="ci-sep"></div>
+
+      <!-- NOTIFICATIONS PAR CONTACT -->
+      <div class="settings-toggle" style="border:none;padding:12px 4px">
+        <div><div class="settings-toggle-txt">🔕 Discussion en sourdine</div><div class="settings-toggle-sub">Ne plus recevoir de notifications sonores</div></div>
+        <label class="switch"><input type="checkbox" id="ci-mute-switch"><span class="switch-slider"></span></label>
+      </div>
+
+      <div class="ci-sep"></div>
+
+      <!-- MESSAGES ÉPHÉMÈRES -->
+      <div style="padding:12px 4px">
+        <div class="settings-toggle-txt" style="margin-bottom:2px">⏱️ Messages éphémères</div>
+        <div class="settings-toggle-sub" style="margin-bottom:10px" id="ci-ephemeral-sub">Désactivés</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="ephem-btn" data-val="0" style="padding:9px 14px;border-radius:20px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">Désactivé</button>
+          <button class="ephem-btn" data-val="86400000" style="padding:9px 14px;border-radius:20px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">24 heures</button>
+          <button class="ephem-btn" data-val="604800000" style="padding:9px 14px;border-radius:20px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">7 jours</button>
+          <button class="ephem-btn" data-val="7776000000" style="padding:9px 14px;border-radius:20px;border:1.5px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">90 jours</button>
+        </div>
+      </div>
+
+      <div class="ci-sep"></div>
+
+      <!-- VERROUILLAGE DE LA DISCUSSION -->
+      <div class="settings-toggle" style="border:none;padding:12px 4px">
+        <div><div class="settings-toggle-txt">🔒 Verrouillage de la discussion</div><div class="settings-toggle-sub">Masquer cette discussion sur cet appareil</div></div>
+        <label class="switch"><input type="checkbox" id="ci-lock-switch"><span class="switch-slider"></span></label>
+      </div>
+
+      <div class="ci-sep"></div>
+
+      <!-- ACTIONS -->
+      <button class="settings-row" style="border-radius:12px;padding:12px 4px" onclick="$('contact-info-overlay').style.display='none';triggerDeleteConversationFromInfo()">
+        <span class="settings-row-icon">🗑️</span>
+        <span class="settings-row-txt"><span class="settings-row-title">Effacer la discussion</span></span>
+      </button>
+      <button class="settings-row" style="border-radius:12px;padding:12px 4px" onclick="confirmToggleBlockContact()">
+        <span class="settings-row-icon" id="ci-block-icon">🚫</span>
+        <span class="settings-row-txt"><span class="settings-row-title" id="ci-block-label" style="color:var(--danger)">Bloquer ce contact</span></span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- CONTACT MEDIA MODAL -->
+<div class="overlay" id="contact-media-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-height:85vh">
+    <div class="modal-drag"></div>
+    <div class="modal-head"><span class="modal-title">🖼️ Médias, liens et documents</span><button class="modal-close" onclick="$('contact-media-overlay').style.display='none'">✕</button></div>
+    <div id="contact-media-grid" style="padding:0 20px 24px;overflow-y:auto;display:grid;grid-template-columns:repeat(3,1fr);gap:6px"></div>
+  </div>
+</div>
+
+<!-- CONTACT STORAGE MODAL -->
+<div class="overlay" id="contact-storage-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-height:85vh">
+    <div class="modal-drag"></div>
+    <div class="modal-head"><span class="modal-title">🗂️ Gérer le stockage</span><button class="modal-close" onclick="$('contact-storage-overlay').style.display='none'">✕</button></div>
+    <div id="contact-storage-body" style="padding:0 20px 28px;overflow-y:auto"></div>
+  </div>
+</div>
+
+<!-- RULE MODAL (regroupe les réglages de la conversation en cours) -->
+<div class="overlay" id="rule-overlay" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal" style="max-height:85vh">
+    <div class="modal-drag"></div>
+    <div class="modal-head"><span class="modal-title">📐 Rule</span><button class="modal-close" onclick="$('rule-overlay').style.display='none'">✕</button></div>
+    <div style="padding:0 8px 24px;overflow-y:auto">
+      <button class="settings-row" onclick="$('rule-overlay').style.display='none';openContactInfo()">
+        <span class="settings-row-icon">👤</span>
+        <span class="settings-row-txt"><span class="settings-row-title">Infos contact</span></span>
+        <span class="settings-row-arrow">›</span>
+      </button>
+      <button class="settings-row" onclick="$('rule-overlay').style.display='none';openContactMediaDirect()">
+        <span class="settings-row-icon">🖼️</span>
+        <span class="settings-row-txt"><span class="settings-row-title">Médias, liens et documents</span></span>
+        <span class="settings-row-arrow">›</span>
+      </button>
+      <button class="settings-row" onclick="$('rule-overlay').style.display='none';openContactStorage()">
+        <span class="settings-row-icon">🗂️</span>
+        <span class="settings-row-txt"><span class="settings-row-title">Gérer le stockage</span></span>
+        <span class="settings-row-arrow">›</span>
+      </button>
+      <button class="settings-row" id="rule-mute-toggle" onclick="$('rule-overlay').style.display='none';toggleMuteFromMenu()">
+        <span class="settings-row-icon">🔕</span>
+        <span class="settings-row-txt"><span class="settings-row-title">Discussion en sourdine</span></span>
+      </button>
+      <button class="settings-row" id="rule-lock-toggle" onclick="$('rule-overlay').style.display='none';toggleLockFromMenu()">
+        <span class="settings-row-icon">🔒</span>
+        <span class="settings-row-txt"><span class="settings-row-title">Verrouiller la discussion</span></span>
+      </button>
+      <button class="settings-row" onclick="$('rule-overlay').style.display='none';if(S.activeId)openEphemeralPickerMenu()">
+        <span class="settings-row-icon">⏱️</span>
+        <span class="settings-row-txt"><span class="settings-row-title">Messages éphémères</span></span>
+        <span class="settings-row-arrow">›</span>
+      </button>
+      <button class="settings-row" onclick="$('rule-overlay').style.display='none';triggerDeleteConversationFromInfo()">
+        <span class="settings-row-icon">🗑️</span>
+        <span class="settings-row-txt"><span class="settings-row-title">Effacer la discussion</span></span>
+      </button>
+      <button class="settings-row" id="rule-block-toggle" onclick="$('rule-overlay').style.display='none';if(S.activeId)confirmToggleBlockContact()">
+        <span class="settings-row-icon">🚫</span>
+        <span class="settings-row-txt"><span class="settings-row-title" style="color:var(--danger)">Bloquer ce contact</span></span>
+      </button>
     </div>
   </div>
 </div>
@@ -3569,6 +4033,20 @@ window.addEventListener("DOMContentLoaded",()=>{
     menu.style.display="none";
   });
 
+  window.toggleChatMenu=function(){
+    const menu=$("chat-menu");
+    if(!menu)return;
+    const isOpen=menu.style.display==="block";
+    menu.style.display=isOpen?"none":"block";
+  };
+  document.addEventListener("click",e=>{
+    const menu=$("chat-menu");
+    const btn=$("chat-more-btn");
+    if(!menu||menu.style.display!=="block")return;
+    if(e.target===btn||e.target===menu||menu.contains(e.target))return;
+    menu.style.display="none";
+  });
+
   window.openSettingsModal=function(){
     const langNames={fr:"Français",en:"English",es:"Español",ar:"العربية",he:"עברית",ru:"Русский",de:"Deutsch",ht:"Kreyòl Ayisyen",zh:"中文",pt:"Português",wo:"Wolof",ha:"Hausa",ja:"日本語",tr:"Türkçe",sw:"Kiswahili"};
     const curLang=(typeof currentLang!=="undefined"&&currentLang)||"fr";
@@ -3579,6 +4057,8 @@ window.addEventListener("DOMContentLoaded",()=>{
   // Réglages persistés localement (notifications, accessibilité)
   function getSetting(key,def){ const v=CACHE.load("setting_"+key); return v===null?def:v; }
   function setSetting(key,val){ CACHE.save("setting_"+key,val); }
+  window.getSetting=getSetting;
+  window.setSetting=setSetting;
 
   function accessibilityCss(){
     const highContrast=getSetting("highContrast",false);
