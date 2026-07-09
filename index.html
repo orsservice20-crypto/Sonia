@@ -3067,29 +3067,50 @@ async function shareAppNative(){
 }
 async function copyText(txt){try{await navigator.clipboard.writeText(txt);}catch(e){const el=document.createElement("textarea");el.value=txt;document.body.appendChild(el);el.select();document.execCommand("copy");el.remove();}}
 
-const CURRENT_BUILD = "v2026-06-28-callfix-final";
-
-if("serviceWorker" in navigator){
-  const lastSeenBuild = localStorage.getItem("sonia_last_build");
-
-  if(lastSeenBuild !== CURRENT_BUILD){
-    // Nouvelle version → nettoyer les anciens caches en arrière-plan (SANS recharger)
-    localStorage.setItem("sonia_last_build", CURRENT_BUILD);
-    sessionStorage.removeItem("sonia_force_reloaded");
-    Promise.all([
-      caches.keys().then(keys=>Promise.all(keys.map(k=>caches.delete(k)))),
-      navigator.serviceWorker.getRegistrations().then(regs=>Promise.all(regs.map(r=>r.unregister())))
-    ]).then(()=>{
-      navigator.serviceWorker.register("sw.js",{updateViaCache:"none"}).catch(()=>{});
-    }).catch(()=>{
-      navigator.serviceWorker.register("sw.js",{updateViaCache:"none"}).catch(()=>{});
-    });
-  } else {
-    navigator.serviceWorker.register("sw.js",{updateViaCache:"none"}).then(reg=>{
-      reg.update().catch(()=>{});
-    }).catch(()=>{});
-  }
+// Version calculée automatiquement à partir du contenu réel du fichier servi : dès qu'il
+// change et est republié, ce hash change tout seul (plus besoin d'éditer une chaîne à la main).
+// On récupère le fichier via fetch (et non document.documentElement.outerHTML) pour être sûr
+// d'avoir 100% du contenu, y compris tout ce qui suit ce script dans le fichier.
+function hashString(src){
+  let h=5381;
+  for(let i=0;i<src.length;i++){ h=((h*33)^src.charCodeAt(i))>>>0; }
+  return "v"+h.toString(36);
 }
+
+(async function(){
+  let CURRENT_BUILD="v0";
+  try{
+    const resp=await fetch(location.href,{cache:"no-cache"});
+    const text=await resp.text();
+    CURRENT_BUILD=hashString(text);
+  }catch(e){
+    // Hors-ligne ou échec réseau : se rabattre sur le dernier build connu pour ne pas
+    // déclencher un nettoyage de cache inutile alors qu'on n'a aucun moyen de vérifier.
+    CURRENT_BUILD=localStorage.getItem("sonia_last_build")||"v0";
+  }
+
+  if("serviceWorker" in navigator){
+    const lastSeenBuild = localStorage.getItem("sonia_last_build");
+
+    if(lastSeenBuild !== CURRENT_BUILD){
+      // Nouvelle version → nettoyer les anciens caches en arrière-plan (SANS recharger)
+      localStorage.setItem("sonia_last_build", CURRENT_BUILD);
+      sessionStorage.removeItem("sonia_force_reloaded");
+      Promise.all([
+        caches.keys().then(keys=>Promise.all(keys.map(k=>caches.delete(k)))),
+        navigator.serviceWorker.getRegistrations().then(regs=>Promise.all(regs.map(r=>r.unregister())))
+      ]).then(()=>{
+        navigator.serviceWorker.register("sw.js",{updateViaCache:"none"}).catch(()=>{});
+      }).catch(()=>{
+        navigator.serviceWorker.register("sw.js",{updateViaCache:"none"}).catch(()=>{});
+      });
+    } else {
+      navigator.serviceWorker.register("sw.js",{updateViaCache:"none"}).then(reg=>{
+        reg.update().catch(()=>{});
+      }).catch(()=>{});
+    }
+  }
+})();
 </script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
@@ -4223,7 +4244,7 @@ window.addEventListener("DOMContentLoaded",()=>{
     else if(section==="updates"){
       title.textContent="📲 Mises à jour";
       body.innerHTML=
-        '<div style="padding:14px 0;border-bottom:1px solid var(--border)"><div class="settings-toggle-txt">Version de l\'application</div><div class="settings-toggle-sub" style="margin-top:4px;font-size:14px">EniBusiness Pro — build '+APP_BUILD+'</div></div>'+
+        '<div style="padding:14px 0;border-bottom:1px solid var(--border)"><div class="settings-toggle-txt">Version de l\'application</div><div class="settings-toggle-sub" style="margin-top:4px;font-size:14px">EniBusiness Pro — build '+(localStorage.getItem("sonia_last_build")||APP_BUILD)+'</div></div>'+
         '<p style="color:var(--sub);font-size:13px;margin-top:16px;text-align:center">L\'application se met à jour automatiquement à chaque ouverture lorsque vous êtes connecté à internet.</p>';
     }
 
