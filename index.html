@@ -196,11 +196,17 @@ function navigateToOverlay(overlayId,openFn){
 window.addEventListener("popstate",function(e){
   // -1. Toute boîte de confirmation créée dynamiquement (position:fixed, plein écran,
   // ajoutée directement à <body>) doit se fermer en un seul retour, sans jamais laisser
-  // le retour physique "traverser" jusqu'à l'écran du dessous.
+  // le retour physique "traverser" jusqu'à l'écran du dessous. On exige que l'élément soit
+  // réellement visible (display flex/block) : certains overlays fixes existent déjà dans le
+  // HTML avec display:none par défaut (ex: viewers-list-overlay) et ont position:fixed +
+  // inset:0 même cachés, ce qui les faisait détecter à tort comme "boîte active" à CHAQUE
+  // appui retour, absorbant systématiquement le premier appui sur n'importe quel écran et
+  // empêchant tout retour normal (chat→liste, etc.) de jamais se déclencher.
   const dynBoxes=Array.from(document.body.children).filter(el=>{
     if(el.tagName!=="DIV")return false;
-    const cs=el.style.position;
-    return cs==="fixed" && el.style.inset==="0px";
+    const cs=getComputedStyle(el);
+    const visible=cs.display!=="none"&&cs.visibility!=="hidden";
+    return visible && el.style.position==="fixed" && el.style.inset==="0px";
   });
   if(dynBoxes.length){
     dynBoxes[dynBoxes.length-1].remove();
@@ -277,6 +283,26 @@ window.addEventListener("popstate",function(e){
     if(settingsMain) settingsMain.style.display="flex";
     pushBackGuard();
     return;
+  }
+
+  // 3ter. Overlays ouverts PAR-DESSUS Paramètres (Profil, Langue, Partager) via
+  // navigateToOverlay('xxx-overlay', ...) après avoir masqué settings-overlay → un retour
+  // doit rouvrir Paramètres, pas sauter directement à la liste des discussions. Sans cela,
+  // un seul appui depuis "Langue" par exemple refermait la modale ET retombait sur l'écran
+  // racine en même temps, deux niveaux à la fois au lieu d'un seul (comportement WhatsApp).
+  const settingsChildIds=["lang-overlay","prof-overlay","share-overlay"];
+  for(const cid of settingsChildIds){
+    const childOv=$(cid);
+    if(childOv&&(childOv.style.display==="flex"||childOv.style.display==="block")){
+      childOv.style.display="none";
+      const settingsMain=$("settings-overlay");
+      if(settingsMain&&settingsMain.dataset.reopenOnBack==="1"){
+        settingsMain.style.display="flex";
+        delete settingsMain.dataset.reopenOnBack;
+      }
+      pushBackGuard();
+      return;
+    }
   }
 
   // 4. Overlay visible (modales, y compris le menu "Rule") → un seul retour le ferme
@@ -4046,7 +4072,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
     <div class="modal-drag"></div>
     <div class="modal-head"><span class="modal-title">⚙️ Paramètres</span><button class="modal-close" onclick="$('settings-overlay').style.display='none'">✕</button></div>
     <div style="padding:0 8px 24px;overflow-y:auto">
-      <button class="settings-row" onclick="$('settings-overlay').style.display='none';navigateToOverlay('prof-overlay',openProfileModal)">
+      <button class="settings-row" onclick="$('settings-overlay').dataset.reopenOnBack='1';$('settings-overlay').style.display='none';navigateToOverlay('prof-overlay',openProfileModal)">
         <span class="settings-row-icon">👤</span>
         <span class="settings-row-txt"><span class="settings-row-title">Mon profil</span><span class="settings-row-sub">Photo, nom, statut</span></span>
         <span class="settings-row-arrow">›</span>
@@ -4076,7 +4102,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
         <span class="settings-row-txt"><span class="settings-row-title">Accessibilité</span><span class="settings-row-sub">Contraste, taille du texte</span></span>
         <span class="settings-row-arrow">›</span>
       </button>
-      <button class="settings-row" onclick="$('settings-overlay').style.display='none';navigateToOverlay('lang-overlay',openLangModal)">
+      <button class="settings-row" onclick="$('settings-overlay').dataset.reopenOnBack='1';$('settings-overlay').style.display='none';navigateToOverlay('lang-overlay',openLangModal)">
         <span class="settings-row-icon">🌍</span>
         <span class="settings-row-txt"><span class="settings-row-title">Langue de l'application</span><span class="settings-row-sub" id="settings-lang-sub">Français</span></span>
         <span class="settings-row-arrow">›</span>
@@ -4086,7 +4112,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
         <span class="settings-row-txt"><span class="settings-row-title">Aide et commentaires</span><span class="settings-row-sub">Nous contacter, confidentialité</span></span>
         <span class="settings-row-arrow">›</span>
       </button>
-      <button class="settings-row" onclick="$('settings-overlay').style.display='none';navigateToOverlay('share-overlay',openShareModal)">
+      <button class="settings-row" onclick="$('settings-overlay').dataset.reopenOnBack='1';$('settings-overlay').style.display='none';navigateToOverlay('share-overlay',openShareModal)">
         <span class="settings-row-icon">👥</span>
         <span class="settings-row-txt"><span class="settings-row-title">Inviter un contact</span><span class="settings-row-sub">Partager l'application</span></span>
         <span class="settings-row-arrow">›</span>
