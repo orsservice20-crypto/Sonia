@@ -1296,7 +1296,16 @@ function listenContacts(){
   if(S.unsubBlocked){S.unsubBlocked();S.unsubBlocked=null;}
   S.blockedCache=S.blockedCache||{};
   const blockedRef=db.ref("blockedUsers/"+S.myUid);
-  const blockedHandler=snap=>{ S.blockedCache=snap.exists()?snap.val():{}; };
+  const blockedHandler=snap=>{
+    S.blockedCache=snap.exists()?snap.val():{};
+    // Rafraîchir immédiatement tout ce qui dépend du blocage, sans attendre un autre événement
+    // (présence, nouveau message...) qui pourrait arriver avant ou après ce listener.
+    renderList();
+    if(S.activeId){
+      const c=S.contacts.find(x=>x.uid===S.activeId);
+      if(c) refreshChatHeader(c);
+    }
+  };
   blockedRef.on("value",blockedHandler);
   S.unsubBlocked=()=>blockedRef.off("value",blockedHandler);
 
@@ -1551,18 +1560,34 @@ function reallyDeleteConversation(uid,ck){
 function refreshChatHeader(c){
   const nick=CACHE.load("nick_"+c.uid);
   const displayName=nick||c.name||c.phone||"Inconnu";
-  const cav=$("c-av");if(cav)cav.innerHTML=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
-  const cd=$("c-dot");if(cd)cd.className="dot "+(c.online?"online":"offline");
+  const cav=$("c-av");
+  const cd=$("c-dot");
   const cn=$("c-name");if(cn)cn.textContent=displayName;
   const cs=$("c-status");
   // WhatsApp masque le statut en ligne / dernière connexion dès qu'on a bloqué ce contact
-  const isBlocked=S.blockedCache && S.blockedCache[c.uid];
-  if(cs){
-    if(isBlocked){cs.textContent="";}
-    else if(c.online){cs.textContent="● En ligne";cs.style.color="var(--green)";}
-    else{cs.textContent=c.lastSeen?"⚫ Vu à "+c.lastSeen:"⚫ Hors ligne";cs.style.color="var(--sub)";}
+  const iBlockedThem=S.blockedCache && S.blockedCache[c.uid];
+
+  function renderHeader(theyBlockedMe){
+    const hidden=iBlockedThem||theyBlockedMe;
+    if(cav) cav.innerHTML=(!hidden && c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
+    if(cs){
+      if(hidden){cs.textContent="";}
+      else if(c.online){cs.textContent="● En ligne";cs.style.color="var(--green)";}
+      else{cs.textContent=c.lastSeen?"⚫ Vu à "+c.lastSeen:"⚫ Hors ligne";cs.style.color="var(--sub)";}
+    }
+    if(cd) cd.style.display=hidden?"none":"";
   }
-  if(cd) cd.style.display=isBlocked?"none":"";
+
+  if(iBlockedThem){
+    renderHeader(false); // pas besoin d'interroger le serveur, mon propre blocage suffit à tout masquer
+    return;
+  }
+  // Vérifie si CE contact m'a bloqué (lecture autorisée uniquement pour cette clé précise,
+  // voir la règle Firebase dédiée) : si oui, sa photo et son statut restent masqués chez moi aussi.
+  db.ref("blockedUsers/"+c.uid+"/"+S.myUid).get().then(snap=>{
+    if(S.activeId!==c.uid)return; // le chat a changé entre-temps
+    renderHeader(snap.exists()&&snap.val()===true);
+  }).catch(()=>renderHeader(false));
 }
 
 // ---- INFOS CONTACT / ENREGISTRER DANS LE TÉLÉPHONE ----
@@ -1944,6 +1969,7 @@ function renderList(){
     row.setAttribute("data-uid",c.uid);
     row.className="contact-row"+(S.activeId===c.uid?" active-row":"");
     const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
+    const iBlockedThem=S.blockedCache && S.blockedCache[c.uid];
     // Afficher immédiatement le dernier message depuis le cache local
     const cachedLm=CACHE.load("lastMsg_"+ck);
     const initialText=cachedLm?
@@ -1954,7 +1980,7 @@ function renderList(){
        (cachedLm.text||"")):"";
     const initialTime=cachedLm?(cachedLm.t||""):"";
 
-    row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span><span class="row-time" id="lt-'+ck+'">'+initialTime+'</span></div><div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+esc(initialText)+'</span><span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span><button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button></div></div>';
+    row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(!iBlockedThem&&c.online?"online":"offline")+'" style="'+(iBlockedThem?"display:none":"")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span><span class="row-time" id="lt-'+ck+'">'+initialTime+'</span></div><div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+esc(initialText)+'</span><span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span><button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button></div></div>';
     row.querySelector(".arch-btn").onclick=ev=>{ev.stopPropagation();toggleArch(c.uid);};
     row.onclick=()=>openChat(c.uid);
 
