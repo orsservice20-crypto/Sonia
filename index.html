@@ -1554,10 +1554,15 @@ function refreshChatHeader(c){
   const cav=$("c-av");if(cav)cav.innerHTML=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
   const cd=$("c-dot");if(cd)cd.className="dot "+(c.online?"online":"offline");
   const cn=$("c-name");if(cn)cn.textContent=displayName;
-  const cs=$("c-status");if(cs){
-    if(c.online){cs.textContent="● En ligne";cs.style.color="var(--green)";}
+  const cs=$("c-status");
+  // WhatsApp masque le statut en ligne / dernière connexion dès qu'on a bloqué ce contact
+  const isBlocked=S.blockedCache && S.blockedCache[c.uid];
+  if(cs){
+    if(isBlocked){cs.textContent="";}
+    else if(c.online){cs.textContent="● En ligne";cs.style.color="var(--green)";}
     else{cs.textContent=c.lastSeen?"⚫ Vu à "+c.lastSeen:"⚫ Hors ligne";cs.style.color="var(--sub)";}
   }
+  if(cd) cd.style.display=isBlocked?"none":"";
 }
 
 // ---- INFOS CONTACT / ENREGISTRER DANS LE TÉLÉPHONE ----
@@ -1570,7 +1575,7 @@ window.openContactInfo=function(){
   else{av.innerHTML="<span>"+(c.emoji||"🧑🏾")+"</span>";}
   $("ci-name").textContent=c.name||c.phone||"Inconnu";
   $("ci-phone").textContent=c.phone||"";
-  $("ci-status-txt").textContent=c.online?"● En ligne":(c.lastSeen?"⚫ Vu à "+c.lastSeen:"⚫ Hors ligne");
+  $("ci-status-txt").textContent=(S.blockedCache&&S.blockedCache[c.uid])?"":(c.online?"● En ligne":(c.lastSeen?"⚫ Vu à "+c.lastSeen:"⚫ Hors ligne"));
   // Pré-remplir le surnom avec le nom actuel stocké localement
   const saved=CACHE.load("nick_"+c.uid);
   $("ci-nickname-input").value=saved||c.name||"";
@@ -2105,10 +2110,15 @@ function refreshBlockedBanner(uid){
   const handler=snap=>{
     if(S.activeId!==uid)return; // le chat a changé entre-temps, ignorer
     const blocked=snap.exists()&&snap.val();
+    S.blockedCache=S.blockedCache||{};
+    S.blockedCache[uid]=blocked;
     const banner=$("blocked-banner");
     const normalRow=$("normal-row");
     if(banner) banner.style.display=blocked?"flex":"none";
     if(normalRow) normalRow.style.display=blocked?"none":"flex";
+    // Le statut en ligne / dernière connexion doit se masquer/réapparaître avec le blocage
+    const c=S.contacts.find(x=>x.uid===uid);
+    if(c) refreshChatHeader(c);
   };
   ref.on("value",handler);
   S.unsubBlockedBanner=()=>ref.off("value",handler);
@@ -2204,6 +2214,22 @@ function listenMsgs(){
       }
       return;
     }
+
+    // Réconciliation avec une bulle optimiste locale (affichée avant confirmation serveur,
+    // voir doSend/sendPhoto/etc.) : si on retrouve la nôtre, on la remplace au lieu d'en
+    // ajouter une deuxième, pour éviter tout doublon visuel.
+    if(m.from===S.myUid){
+      const tempRow=findMatchingOptimisticBubble(box,m);
+      if(tempRow){
+        rendered.add(snap.key);
+        try{
+          const newRow=makeBubble(m);
+          tempRow.replaceWith(newRow);
+        }catch(e){console.error("bubble reconcile erreur:",e.message);}
+        return;
+      }
+    }
+
     rendered.add(snap.key);
     try{
       if(!anyShown){ box.innerHTML=""; anyShown=true; } // Effacer le message "chargement"/"vide"
@@ -2274,6 +2300,22 @@ function saveMsgsCache(key,allMsgsMap){
       CACHE.save("msgs_"+key,lightList);
     }catch(e){console.error("saveMsgsCache:",e);}
   },300);
+}
+
+// Retrouve, parmi les bulles temporaires (affichage optimiste avant confirmation serveur),
+// celle qui correspond au message confirmé par Firebase : même type, même texte, et horodatage
+// suffisamment proche. Évite d'avoir à faire correspondre des IDs qui ne peuvent pas matcher.
+function findMatchingOptimisticBubble(box,confirmedMsg){
+  const candidates=box.querySelectorAll('[id^="bub-local-"]');
+  for(const el of candidates){
+    const d=el._msgData;
+    if(!d)continue;
+    if(d.type!==confirmedMsg.type)continue;
+    if((d.text||"")!==(confirmedMsg.text||""))continue;
+    if(Math.abs((d.ts||0)-(confirmedMsg.ts||0))>15000)continue; // tolérance de 15s
+    return el;
+  }
+  return null;
 }
 
 function makeBubble(m){
@@ -2768,6 +2810,14 @@ function pushMsg(m){
   return newMsgRef.set(m).then(()=>{
     lastRef.set({text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts,msgId:newMsgRef.key}).catch(()=>{});
   }).catch(e=>{
+    // Si le serveur refuse l'écriture parce que le destinataire nous a bloqués, ne jamais
+    // le révéler explicitement (comme WhatsApp) : le message reste visible localement,
+    // avec un seul ✓, sans jamais partir réellement. Toute autre erreur reste affichée.
+    const isPermissionIssue = e && (e.code==="PERMISSION_DENIED" || /permission[_ ]denied/i.test(e.message||""));
+    if(isPermissionIssue){
+      console.warn("Message non délivré (probable blocage) :", e.message);
+      return; // pas de toast, pas de throw : l'UI locale garde la bulle telle quelle
+    }
     toast("Échec de l'envoi : "+e.message,"err");
     throw e;
   });
@@ -2781,7 +2831,26 @@ function doSend(){
   ti.style.height="auto";
   // Remettre le bouton mic immédiatement
   if(window.updateSendMicBtn) window.updateSendMicBtn();
-  pushMsg({from:S.myUid,text:v,t:nowT(),type:"text",del:false}).catch(()=>{ti.value=v;});
+
+  const m={from:S.myUid,text:v,t:nowT(),type:"text",del:false,ts:Date.now()};
+
+  // Affichage optimiste immédiat : la bulle apparaît tout de suite dans la conversation,
+  // que l'envoi serveur réussisse ou non (comme WhatsApp). Si le destinataire nous a
+  // bloqués, l'écriture Firebase sera silencieusement refusée mais la bulle reste visible
+  // ici avec un seul ✓ — sans jamais révéler le blocage à l'expéditeur.
+  const box=$("msg-list");
+  if(box){
+    const tempId="local-"+m.ts+"-"+Math.random().toString(36).slice(2);
+    const row=makeBubble({...m,id:tempId});
+    box.appendChild(row);
+    requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
+  }
+
+  pushMsg(m).catch(()=>{
+    // Seules les vraies erreurs (réseau, etc.) arrivent ici : le blocage est déjà avalé
+    // silencieusement dans pushMsg. On restaure le texte pour que l'utilisateur puisse réessayer.
+    ti.value=v;
+  });
 }
 
 // ---- VOCAL ----
