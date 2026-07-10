@@ -145,15 +145,39 @@ function showScreen(id){
 // Seul un retour depuis l'écran racine (liste des discussions, rien d'ouvert) quitte l'app.
 
 function requestExitApp(){
-  if(window.median&&window.median.app&&typeof window.median.app.exit==="function"){
-    window.median.app.exit();
-    return;
-  }
+  // On tente toutes les API de sortie natives connues, dans l'ordre, et on s'arrête
+  // à la première qui existe réellement. On ne retombe JAMAIS sur history.back() en
+  // environnement natif (Median/Cordova-like) : cela ne ferait que redéclencher un
+  // nouveau popstate qui retomberait dans ce même cas "écran racine", obligeant
+  // l'utilisateur à appuyer plusieurs fois sans jamais sortir (c'est ce bug précis
+  // qu'on corrige ici).
+  try{
+    if(window.median&&window.median.app&&typeof window.median.app.exit==="function"){
+      window.median.app.exit();
+      return;
+    }
+  }catch(e){}
+  try{
+    if(window.median&&window.median.app&&typeof window.median.app.exitApp==="function"){
+      window.median.app.exitApp();
+      return;
+    }
+  }catch(e){}
+  // API Cordova-style, exposée par certaines versions de Median.co / plugins compatibles.
+  try{
+    if(navigator.app&&typeof navigator.app.exitApp==="function"){
+      navigator.app.exitApp();
+      return;
+    }
+  }catch(e){}
+  // Protocole Median direct (median://), fonctionne même sans la librairie JS injectée.
   if(window.median){
     try{ window.location.href="median://app/exit"; return; }catch(e){}
   }
-  // Fallback navigateur classique (hors app native) : on laisse l'historique s'épuiser réellement.
-  history.back();history.back();
+  // Fallback navigateur classique (hors app native, ex: test en onglet Chrome) : on
+  // laisse l'historique s'épuiser réellement, sans repousser d'entrée derrière.
+  try{ window.close(); }catch(e){}
+  history.go(-(history.length+1));
 }
 
 // Repousse 2 entrées d'historique au lieu d'une seule à chaque absorption de retour, pour que
@@ -300,6 +324,21 @@ window.addEventListener("popstate",function(e){
         settingsMain.style.display="flex";
         delete settingsMain.dataset.reopenOnBack;
       }
+      pushBackGuard();
+      return;
+    }
+  }
+
+  // 3quater. Overlays ouverts PAR-DESSUS Infos contact (Médias/liens/documents,
+  // Gérer le stockage) → un retour doit rouvrir Infos contact, pas sauter à la liste
+  // des discussions ni pire, quitter l'app. Même bug et même correctif que ci-dessus,
+  // appliqué à la fiche contact au lieu des Paramètres.
+  const contactInfoChildIds=["contact-media-overlay","contact-storage-overlay"];
+  for(const cid of contactInfoChildIds){
+    const childOv=$(cid);
+    if(childOv&&(childOv.style.display==="flex"||childOv.style.display==="block")){
+      childOv.style.display="none";
+      $("contact-info-overlay").style.display="flex";
       pushBackGuard();
       return;
     }
@@ -3649,7 +3688,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 <!-- AUTH -->
 <div class="screen off" id="s-auth">
   <div style="display:flex;justify-content:flex-end;padding:calc(14px + env(safe-area-inset-top)) 16px 0;position:absolute;top:0;right:0;z-index:10">
-    <button onclick="openLangModal()" style="display:flex;align-items:center;gap:6px;background:var(--card);border:1.5px solid var(--border);border-radius:20px;padding:7px 14px;color:var(--text);font-size:13px;font-weight:700;font-family:inherit;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)">
+    <button onclick="navigateToOverlay('lang-overlay',openLangModal)" style="display:flex;align-items:center;gap:6px;background:var(--card);border:1.5px solid var(--border);border-radius:20px;padding:7px 14px;color:var(--text);font-size:13px;font-weight:700;font-family:inherit;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.06)">
       <span id="auth-lang-flag">🇫🇷</span><span id="auth-lang-name">Français</span><span style="font-size:10px;opacity:.6">▼</span>
     </button>
   </div>
@@ -3698,10 +3737,10 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 <!-- LISTE -->
 <div class="screen off" id="s-list">
   <div class="topbar">
-    <button onclick="openProfileModal()"><div class="my-av" id="my-av-el"><span>🧑🏾</span></div></button>
+    <button onclick="navigateToOverlay('prof-overlay',openProfileModal)"><div class="my-av" id="my-av-el"><span>🧑🏾</span></div></button>
     <div class="topbar-title"><span id="my-name-el">EniBusiness Pro</span><span id="my-status-el">● En ligne</span></div>
-    <button class="icon-circle" onclick="openShareModal()" title="Partager">🔗</button>
-    <button class="icon-circle" id="lang-btn" onclick="openLangModal()" title="Langue">🇫🇷</button>
+    <button class="icon-circle" onclick="navigateToOverlay('share-overlay',openShareModal)" title="Partager">🔗</button>
+    <button class="icon-circle" id="lang-btn" onclick="navigateToOverlay('lang-overlay',openLangModal)" title="Langue">🇫🇷</button>
     <div style="position:relative">
       <button class="icon-circle" id="topbar-more-btn" onclick="toggleTopbarMenu()" title="Menu">⋮</button>
       <div id="topbar-menu" style="display:none;position:absolute;top:44px;right:0;background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:0 6px 24px rgba(0,0,0,.18);min-width:180px;z-index:60;overflow:hidden">
@@ -3718,7 +3757,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
     <input id="search-input" placeholder="Rechercher..." oninput="S.search=this.value;renderList()"/>
   </div></div>
   <div class="list-body" id="contact-list"></div>
-  <button id="fab-new-chat" onclick="openNewChatModal()" title="Nouvelle discussion" aria-label="Nouvelle discussion">➕</button>
+  <button id="fab-new-chat" onclick="navigateToOverlay('newchat-overlay',openNewChatModal)" title="Nouvelle discussion" aria-label="Nouvelle discussion">➕</button>
   <div class="bottom-nav">
     <button class="nav-btn active" id="nav-chats" onclick="showScreen('s-list');setNav('nav-chats')">💬<span id="nav-chats-lbl">Discussions</span></button>
     <button class="nav-btn" id="nav-status" onclick="showScreen('s-status');setNav('nav-status');loadStatuses()">🔵<span id="nav-status-lbl">Statuts</span></button>
@@ -3737,7 +3776,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
   </div>
   <div class="chat-bar" id="chat-bar">
     <button class="back-btn" onclick="event.stopPropagation();S.activeId=null;if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}showScreen('s-list')">‹</button>
-    <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;cursor:pointer;overflow:hidden" onclick="openContactInfo()">
+    <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;cursor:pointer;overflow:hidden" onclick="navigateToOverlay('contact-info-overlay',openContactInfo)">
       <div style="position:relative;flex-shrink:0"><div class="chat-av" id="c-av"></div><div class="dot" id="c-dot"></div></div>
       <div class="chat-info" style="min-width:0;overflow:hidden"><div class="chat-name" id="c-name" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div><div class="chat-status" id="c-status"></div></div>
     </div>
@@ -3832,7 +3871,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       </div>
       <div class="my-statuses-strip" id="my-statuses-strip" style="display:none"></div>
       <div class="status-add-btns">
-        <button class="status-add-btn" onclick="openStatusCreate('text')">✏️ Texte</button>
+        <button class="status-add-btn" onclick="navigateToOverlay('status-create-modal',()=>openStatusCreate('text'))">✏️ Texte</button>
         <button class="status-add-btn" onclick="$('status-photo-in').click()">📷 Photo</button>
         <button class="status-add-btn" onclick="$('status-video-in').click()">🎥 Vidéo</button>
       </div>
@@ -3860,7 +3899,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
   <div class="sv-progress-bars" id="sv-bars"></div>
   <div class="sv-header"><div class="sv-av" id="sv-av-el"></div><span class="sv-name" id="sv-name-el"></span><span class="sv-time" id="sv-time-el"></span><button class="sv-close" onclick="closeStatusViewer()">✕</button></div>
   <div class="sv-content"><img id="sv-img" src="" alt=""/><video id="sv-vid" playsinline controls></video><div id="sv-text-el"></div></div>
-  <div class="sv-footer"><div class="sv-viewers" id="sv-viewers-el" onclick="openViewersList()" style="cursor:pointer"><span>👁</span><span id="sv-viewers-count">0 vue</span><span style="color:rgba(255,255,255,.5);font-size:12px;margin-left:6px">Voir tout ›</span></div></div>
+  <div class="sv-footer"><div class="sv-viewers" id="sv-viewers-el" onclick="navigateToOverlay('viewers-list-overlay',openViewersList)" style="cursor:pointer"><span>👁</span><span id="sv-viewers-count">0 vue</span><span style="color:rgba(255,255,255,.5);font-size:12px;margin-left:6px">Voir tout ›</span></div></div>
 </div>
 
 <!-- LISTE COMPLÈTE DES VUES DE STATUT -->
@@ -3876,7 +3915,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 </div>
 
 <!-- STATUS CREATE -->
-<div id="status-create-modal">
+<div class="overlay" id="status-create-modal">
   <div class="sc-header">
     <button class="sv-close" onclick="$('status-create-modal').style.display='none'">✕</button>
     <span class="sc-title">Nouveau statut</span>
@@ -3888,7 +3927,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
     <div class="sc-options" id="sc-options">
       <button class="sc-opt-btn" onclick="$('sc-photo-in').click()"><span class="sc-icon">📷</span><span>Photo</span></button>
       <button class="sc-opt-btn" onclick="$('sc-video-in').click()"><span class="sc-icon">🎥</span><span>Vidéo</span></button>
-      <button class="sc-opt-btn" onclick="openStatusCreate('text')"><span class="sc-icon">✏️</span><span>Texte</span></button>
+      <button class="sc-opt-btn" onclick="navigateToOverlay('status-create-modal',()=>openStatusCreate('text'))"><span class="sc-icon">✏️</span><span>Texte</span></button>
     </div>
     <input type="file" id="sc-photo-in" accept="image/*" style="display:none" onchange="handleScFile(this,'photo')"/>
     <input type="file" id="sc-video-in" accept="video/*" style="display:none" onchange="handleScFile(this,'video')"/>
@@ -3945,13 +3984,13 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       <div class="ci-sep"></div>
 
       <!-- MÉDIAS, LIENS ET DOCUMENTS -->
-      <button class="settings-row" style="border-radius:12px;padding:12px 4px" onclick="openContactMedia()">
+      <button class="settings-row" style="border-radius:12px;padding:12px 4px" onclick="navigateToOverlay('contact-media-overlay',openContactMedia)">
         <span class="settings-row-icon">🖼️</span>
         <span class="settings-row-txt"><span class="settings-row-title">Médias, liens et documents</span><span class="settings-row-sub" id="ci-media-count">0</span></span>
         <span class="settings-row-arrow">›</span>
       </button>
 
-      <button class="settings-row" style="border-radius:12px;padding:12px 4px" onclick="openContactStorage()">
+      <button class="settings-row" style="border-radius:12px;padding:12px 4px" onclick="navigateToOverlay('contact-storage-overlay',openContactStorage)">
         <span class="settings-row-icon">🗂️</span>
         <span class="settings-row-txt"><span class="settings-row-title">Gérer le stockage</span><span class="settings-row-sub" id="ci-storage-size">0 Mo</span></span>
         <span class="settings-row-arrow">›</span>
@@ -5153,6 +5192,7 @@ window.addEventListener("DOMContentLoaded",()=>{
   window.handleStatusFile=function(input,type){
     const f=input.files[0];if(!f)return;
     openStatusCreate("");
+    pushBackGuard();
     const r=new FileReader();r.onload=ev=>{scSrc=ev.target.result;scType=type;showScPreview(type,ev.target.result);};r.readAsDataURL(f);input.value="";
   };
   window.handleScFile=function(input,type){
