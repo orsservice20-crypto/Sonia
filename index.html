@@ -117,6 +117,21 @@ const nowDate=()=>{
 const esc=t=>String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 const chatKey=(a,b)=>[a,b].sort().join("_");
 
+// Correctif clavier virtuel Android (WebView) : avec position:fixed;inset:0, la mise en
+// page peut se désynchroniser du vrai espace visible quand le clavier apparaît, créant un
+// grand vide entre les messages et la barre de saisie (le curseur tapé devient invisible).
+// On force la hauteur réelle des écrans à suivre window.visualViewport, qui reflète l'espace
+// effectivement visible au-dessus du clavier. On n'écoute QUE "resize" (ouverture/fermeture
+// du clavier) : écouter aussi "scroll" perturbait le défilement manuel des messages, car cet
+// événement se déclenche aussi pendant qu'on fait défiler la conversation avec le doigt.
+if(window.visualViewport){
+  const syncViewportHeight=()=>{
+    document.documentElement.style.setProperty("--app-vh",window.visualViewport.height+"px");
+  };
+  window.visualViewport.addEventListener("resize",syncViewportHeight);
+  syncViewportHeight();
+}
+
 function showScreen(id){
   document.querySelectorAll(".screen").forEach(s=>s.classList.add("off"));
   $(id).classList.remove("off");
@@ -3363,7 +3378,7 @@ input,textarea{font-family:inherit;border:none;outline:none}
 /* THÈME SOMBRE (optionnel) */
 [data-theme="dark"]{--bg:#0b1120;--surface:#111827;--card:#19253a;--accent:#00d4aa;--accent2:#00a882;--glow:rgba(0,212,170,.13);--bubble-in:#1e3a5f;--bubble-out:#004d3e;--bubble-time:rgba(255,255,255,.55);--text:#e8f0fe;--sub:#7a8ea8;--dim:#3d5068;--danger:#ff4757;--warn:#ffa502;--green:#2ed573;--border:rgba(255,255,255,.07);--shadow:0 1px 3px rgba(0,0,0,.4);--chat-bg:#0b1120;}
 [data-theme="dark"] html,[data-theme="dark"] body{background:#0b1120;color:#e8f0fe}
-.screen{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--bg)}
+.screen{position:fixed;inset:0;height:var(--app-vh,100%);display:flex;flex-direction:column;background:var(--bg)}
 .screen.off{transform:translateX(100%);opacity:0;pointer-events:none}
 .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--card);color:var(--text);padding:10px 20px;border-radius:20px;font-size:13px;font-weight:600;border:1px solid var(--border);opacity:0;transition:all .3s;z-index:9999;white-space:nowrap}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -3536,7 +3551,7 @@ html.high-contrast .b-time{color:var(--text)!important;opacity:.85}
 .emoji-cell{width:40px;height:40px;border-radius:8px;font-size:24px;display:flex;align-items:center;justify-content:center;cursor:pointer;border:none;background:none}
 .emoji-cell:active{background:var(--bg)}
 /* INPUT */
-#input-bar{padding:6px 6px max(8px,env(safe-area-inset-bottom)) 6px;border-top:1px solid var(--border);background:var(--surface);flex-shrink:0;position:relative}
+#input-bar{padding:6px 6px min(20px,max(8px,env(safe-area-inset-bottom))) 6px;border-top:1px solid var(--border);background:var(--surface);flex-shrink:0;position:relative}
 .input-row{display:flex;gap:6px;align-items:flex-end}
 .in-icon{width:36px;height:36px;border-radius:11px;background:var(--card);border:1px solid var(--border);font-size:17px;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer}
 .txt-input{flex:1;min-width:0;padding:9px 10px;background:var(--bg);border:1.5px solid var(--border);border-radius:14px;color:var(--text);font-size:14px;resize:none;overflow:hidden;max-height:120px;line-height:1.4}
@@ -3860,8 +3875,10 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       <div style="flex:1;display:flex;align-items:flex-end;background:var(--surface);border-radius:24px;border:1px solid var(--border);padding:5px 8px;gap:4px;min-height:44px;overflow:hidden">
         <button class="in-icon" onclick="toggleEmojiPanel()" style="flex-shrink:0;align-self:flex-end;margin-bottom:1px;font-size:20px" id="emoji-btn">😊</button>
         <textarea class="txt-input" id="txt-in" placeholder="Message..." rows="1"
-          oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px';updateSendMicBtn()"
-          style="flex:1;background:transparent;resize:none;border:none;outline:none;max-height:120px;line-height:1.5;font-size:15px;color:var(--text);padding:3px 0;align-self:flex-end;min-width:0"></textarea>
+          oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px';this.scrollTop=this.scrollHeight;updateSendMicBtn()"
+          onkeyup="this.scrollTop=this.scrollHeight"
+          onclick="this.scrollTop=this.scrollHeight"
+          style="flex:1;background:transparent;resize:none;border:none;outline:none;max-height:120px;overflow-y:auto;line-height:1.5;font-size:15px;color:var(--text);padding:3px 0;align-self:flex-end;min-width:0"></textarea>
         <button class="in-icon" onclick="openMediaPicker()" style="flex-shrink:0;align-self:flex-end;margin-bottom:1px;font-size:20px">📎</button>
         <button class="in-icon" onclick="document.getElementById('photo-file-in').click()" style="flex-shrink:0;align-self:flex-end;margin-bottom:1px;font-size:20px">📷</button>
         <input type="file" id="photo-file-in" accept="image/*" style="display:none" onchange="handlePhotoFile(this)"/>
