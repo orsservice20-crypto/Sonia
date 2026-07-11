@@ -1305,9 +1305,45 @@ window.clearCallLog=function(){
 // ==================== FIN APPELS WEBRTC ====================
 
 // ---- NOUVELLE DISCUSSION / RECHERCHE PAR NUMÉRO ----
+// Affiche, comme WhatsApp, la liste des contacts avec qui on discute déjà, triée par
+// discussion la plus récente en premier. C'est l'écran par défaut du sélecteur, avant
+// même de taper quoi que ce soit dans la barre de recherche.
+function renderNcSuggestions(){
+  const result=$("nc-result");if(!result)return;
+  if(!S.contacts.length){
+    result.innerHTML='<p style="color:var(--sub);font-size:13px;text-align:center;padding:8px 0">Entrez un numéro ou un nom pour trouver un ami</p>';
+    return;
+  }
+  const sorted=S.contacts.slice().sort((a,b)=>{
+    const ta=CACHE.load("lastTs_"+chatKey(S.myUid,a.uid))||0;
+    const tb=CACHE.load("lastTs_"+chatKey(S.myUid,b.uid))||0;
+    return tb-ta;
+  });
+  const rowsHtml=sorted.map(c=>{
+    const nick=CACHE.load("nick_"+c.uid)||"";
+    const displayName=nick||c.name||c.phone||"Inconnu";
+    const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
+    return '<div class="contact-row" style="border-radius:14px" data-uid="'+c.uid+'">'+
+      '<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div>'+
+      '<div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span></div>'+
+      '<div class="row-bot"><span class="row-last">'+esc(c.phone||"")+'</span></div></div>'+
+    '</div>';
+  }).join("");
+  result.innerHTML=
+    '<p style="color:var(--sub);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;padding:4px 4px 8px">Discussions récentes</p>'+
+    rowsHtml;
+  sorted.forEach(c=>{
+    const row=result.querySelector('[data-uid="'+c.uid+'"]');
+    if(row) row.onclick=()=>{
+      $("newchat-overlay").style.display="none";
+      openChat(c.uid);
+    };
+  });
+}
+
 window.openNewChatModal=function(){
   $("nc-phone-input").value="";
-  $("nc-result").innerHTML='<p style="color:var(--sub);font-size:13px;text-align:center;padding:8px 0">Entrez le numéro de votre ami pour le retrouver</p>';
+  renderNcSuggestions();
   $("pick-contact-btn").style.display=("contacts" in navigator && "ContactsManager" in window)?"flex":"none";
   $("newchat-overlay").style.display="flex";
   setTimeout(()=>$("nc-phone-input").focus(),200);
@@ -3824,7 +3860,6 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       <div style="flex:1;display:flex;align-items:flex-end;background:var(--surface);border-radius:24px;border:1px solid var(--border);padding:5px 8px;gap:4px;min-height:44px;overflow:hidden">
         <button class="in-icon" onclick="toggleEmojiPanel()" style="flex-shrink:0;align-self:flex-end;margin-bottom:1px;font-size:20px" id="emoji-btn">😊</button>
         <textarea class="txt-input" id="txt-in" placeholder="Message..." rows="1"
-          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();doSend();}"
           oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px';updateSendMicBtn()"
           style="flex:1;background:transparent;resize:none;border:none;outline:none;max-height:120px;line-height:1.5;font-size:15px;color:var(--text);padding:3px 0;align-self:flex-end;min-width:0"></textarea>
         <button class="in-icon" onclick="openMediaPicker()" style="flex-shrink:0;align-self:flex-end;margin-bottom:1px;font-size:20px">📎</button>
@@ -4953,47 +4988,66 @@ window.addEventListener("DOMContentLoaded",()=>{
     const raw = document.getElementById("nc-phone-input").value.trim();
     const result = document.getElementById("nc-result");
     if(raw.length < 2){
-      result.innerHTML='<p style="color:var(--sub);font-size:13px;text-align:center;padding:8px 0">Entrez un numéro ou un nom</p>';
+      renderNcSuggestions();
       return;
     }
     result.innerHTML='<p style="color:var(--sub);font-size:13px;text-align:center;padding:8px 0">Recherche...</p>';
     const lower = raw.toLowerCase();
     const digits = raw.replace(/\D/g,"");
 
-    let found = null;
-    // Chercher par nom dans les contacts locaux
-    if(!digits || raw.length < 6){
-      found = S.contacts.find(c=> (c.name||"").toLowerCase().includes(lower));
-    }
-    // Chercher par numéro dans les contacts locaux
-    if(!found && digits.length >= 6){
-      found = S.contacts.find(c=>(c.phone||"").replace(/\D/g,"").includes(digits));
-    }
-    // Chercher dans Firebase si pas trouvé localement (par numéro seulement)
-    if(!found && isOnline && digits.length >= 6){
+    // Comme WhatsApp : on filtre TOUS les contacts déjà connus qui correspondent, par
+    // nom (surnom compris) ou par numéro, plutôt que de ne montrer qu'un seul résultat.
+    let matches = S.contacts.filter(c=>{
+      const nick = CACHE.load("nick_"+c.uid)||"";
+      const nameMatch = (nick||c.name||"").toLowerCase().includes(lower);
+      const phoneMatch = digits.length>=2 && (c.phone||"").replace(/\D/g,"").includes(digits);
+      return nameMatch||phoneMatch;
+    });
+
+    // Si rien localement et que ça ressemble à un numéro, chercher sur Firebase (compte
+    // pas encore ajouté à mes contacts, comme la recherche d'un nouveau numéro sur WhatsApp).
+    let remoteFound = null;
+    if(!matches.length && isOnline && digits.length >= 6){
       try{
         let phone = raw.replace(/\s/g,"");
         if(!phone.startsWith("+")) phone = "+" + phone.replace(/\D/g,"");
         const snap = await db.ref("users").orderByChild("phone").equalTo(phone).get();
-        if(snap.exists()) snap.forEach(c=>{ const u=c.val(); if(u.uid!==S.myUid) found=u; });
-        if(!found){
+        if(snap.exists()) snap.forEach(c=>{ const u=c.val(); if(u.uid!==S.myUid) remoteFound=u; });
+        if(!remoteFound){
           const all = await db.ref("users").get();
-          all.forEach(c=>{ const u=c.val(); if(u.uid!==S.myUid && (u.phone||"").replace(/\D/g,"").includes(digits)) found=u; });
+          all.forEach(c=>{ const u=c.val(); if(u.uid!==S.myUid && (u.phone||"").replace(/\D/g,"").includes(digits)) remoteFound=u; });
         }
       }catch(e){}
     }
-    if(!found){
+
+    if(!matches.length && !remoteFound){
       result.innerHTML='<div style="text-align:center;padding:24px 12px"><div style="font-size:40px;margin-bottom:10px">🔍</div><p style="color:var(--text);font-weight:700;font-size:15px;margin-bottom:6px">Aucun résultat</p><p style="color:var(--sub);font-size:13px">Pas de compte EniBusiness Pro trouvé pour <strong>'+esc(raw)+'</strong></p><button class="big-btn" style="margin-top:16px" onclick="openShareModal();document.getElementById(&quot;newchat-overlay&quot;).style.display=&quot;none&quot;">📤 Inviter sur EniBusiness Pro</button></div>';
       return;
     }
-    const avH = (found.avType==="img"&&found.img)?'<img src="'+found.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>': (found.emoji||"🧑🏾");
-    result.innerHTML='<div class="contact-row" style="border-bottom:none;border-radius:14px;background:var(--surface);border:1px solid var(--border)" id="nc-found-row"><div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(found.online?"online":"offline")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(found.name||found.phone||"Inconnu")+'</span></div><div class="row-bot"><span class="row-last">'+esc(found.phone||"")+'</span></div></div><span style="color:var(--accent);font-size:22px;padding:0 4px">›</span></div>';
-    document.getElementById("nc-found-row").onclick = async ()=>{
-      document.getElementById("newchat-overlay").style.display="none";
-      if(!S.contacts.find(c=>c.uid===found.uid)) S.contacts.push(found);
-      openChat(found.uid);
-      try{ await ensureMutualContact(found.uid); }catch(e){ console.error("ensureMutualContact:",e); }
+
+    const renderRow=(c,idx)=>{
+      const nick = CACHE.load("nick_"+c.uid)||"";
+      const displayName = nick||c.name||c.phone||"Inconnu";
+      const avH = (c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
+      return '<div class="contact-row" style="border-radius:14px" data-idx="'+idx+'">'+
+        '<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div>'+
+        '<div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span></div>'+
+        '<div class="row-bot"><span class="row-last">'+esc(c.phone||"")+'</span></div></div>'+
+      '</div>';
     };
+
+    const allResults = matches.length ? matches : [remoteFound];
+    result.innerHTML = allResults.map(renderRow).join("");
+    allResults.forEach((found,idx)=>{
+      const row=result.querySelector('[data-idx="'+idx+'"]');
+      if(!row)return;
+      row.onclick = async ()=>{
+        document.getElementById("newchat-overlay").style.display="none";
+        if(!S.contacts.find(c=>c.uid===found.uid)) S.contacts.push(found);
+        openChat(found.uid);
+        try{ await ensureMutualContact(found.uid); }catch(e){ console.error("ensureMutualContact:",e); }
+      };
+    });
   };
 
   // Mettre à jour le placeholder et le gestionnaire de l'input de recherche
