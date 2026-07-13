@@ -1749,7 +1749,30 @@ function refreshChatHeader(c){
   }).catch(()=>renderHeader(false));
 }
 
-// ---- INFOS CONTACT / ENREGISTRER DANS LE TÉLÉPHONE ----
+// Enregistre le surnom personnalisé donné à un contact (visible uniquement chez soi,
+// jamais envoyé à l'autre personne), et rafraîchit immédiatement partout où son nom
+// apparaît : en-tête du chat ouvert, fiche "Infos contact", liste des discussions.
+window.saveContactNickname=function(){
+  if(!S.activeId)return;
+  const input=$("ci-nickname-input");
+  if(!input)return;
+  const nick=input.value.trim();
+  const c=S.contacts.find(x=>x.uid===S.activeId);
+  if(!c)return;
+
+  if(nick){
+    CACHE.save("nick_"+c.uid,nick);
+  }else{
+    // Champ vidé : on retire le surnom personnalisé pour revenir au nom d'origine.
+    try{localStorage.removeItem("sonia_nick_"+c.uid);}catch(e){}
+  }
+
+  $("ci-name").textContent=nick||c.name||c.phone||"Inconnu";
+  refreshChatHeader(c);
+  renderList();
+  toast("✅ Nom enregistré");
+};
+
 window.openContactInfo=function(){
   if(!S.activeId)return;
   const c=S.contacts.find(x=>x.uid===S.activeId);
@@ -3121,9 +3144,10 @@ window.downloadMedia=async function(src,kind){
       const publicUrl=await tmpRef.getDownloadURL();
 
       try{
-        if(isVideo){
-          // Pas d'équivalent "downloadImage" pour la vidéo côté Median : on utilise
-          // downloadFile, qui déclenche l'enregistrement natif / partage vers Fichiers-Photos.
+        if(isVideo || typeof window.median.share.downloadImage!=="function"){
+          // Pas d'équivalent "downloadImage" pour la vidéo côté Median (ou plugin
+          // downloadImage indisponible sur cette build) : on utilise downloadFile, qui
+          // déclenche l'enregistrement natif / partage vers Fichiers-Photos.
           await window.median.share.downloadFile({url:publicUrl,open:false});
         }else{
           await window.median.share.downloadImage({url:publicUrl});
@@ -3149,7 +3173,7 @@ window.downloadMedia=async function(src,kind){
     toast(isVideo?"📹 Vidéo enregistrée":"🖼️ Photo enregistrée");
   }catch(e){
     console.warn("downloadMedia:",e.message);
-    toast("Impossible d'enregistrer le média","err");
+    toast("Impossible d'enregistrer le média : "+(e.message||"erreur inconnue"),"err");
   }
 };
 
