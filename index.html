@@ -91,15 +91,13 @@ const fmt=s=>String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(
 const nowT=()=>new Date().toLocaleTimeString("fr",{hour:"2-digit",minute:"2-digit"});
 // Rendu des coches d'un message que j'ai envoyé, comme WhatsApp :
 // - un seul ✓ gris si j'ai bloqué ce contact (il ne "reçoit" jamais rien dans ce cas)
-// - ✓✓ gris tant que le destinataire n'a pas ouvert la conversation après l'envoi
-// - ✓✓ bleu dès que le destinataire a lu ce message (S.otherReadTs >= m.ts)
+// - ✓✓ gris tant que le destinataire n'a pas ouvert la conversation depuis l'envoi
+// - ✓✓ bleu dès que le destinataire a lu ce message précis (m.read===true)
 function checkMarkFor(m){
   if(S.blockedCache && S.activeId && S.blockedCache[S.activeId]){
     return '<span class="b-check" style="color:var(--sub)">✓</span>';
   }
-  const otherReadTs=S.otherReadTs||0;
-  const msgTs=(m&&m.ts)||0;
-  const isRead=msgTs>0 && otherReadTs>=msgTs;
+  const isRead=!!(m&&m.read);
   return '<span class="b-check'+(isRead?" read":"")+'">✓✓</span>';
 }
 // Heure d'affichage d'un message : utilise m.t si présent, sinon la calcule depuis m.ts
@@ -2269,16 +2267,22 @@ function clearUnread(uid,ck){
   CACHE.save("unread_"+ck,0);
   db.ref("unreadCount/"+S.myUid+"/"+uid).remove().catch(()=>{});
   updateUnreadBadge(ck);
-  // Accusé de lecture partagé : signale à l'autre personne qu'on a lu jusqu'à maintenant,
-  // pour que ses coches ✓✓ passent au bleu (comme WhatsApp). Stocké sous MON uid pour que
-  // l'AUTRE puisse le lire (les règles Firebase autorisent la lecture, pas l'écriture, des
-  // données d'autrui).
-  // Accusé de lecture partagé : signale à l'autre personne qu'on a lu jusqu'à maintenant,
-  // pour que ses coches ✓✓ passent au bleu (comme WhatsApp). Stocké sous
-  // chats/{conversation}/lastRead/{monUid} : ce sous-chemin de "chats" est déjà accessible
-  // en lecture/écriture aux deux participants (comme settings/ephemeral), contrairement à
-  // un chemin racine à part qui nécessiterait une nouvelle règle de sécurité Firebase.
-  db.ref("chats/"+ck+"/lastRead/"+S.myUid).set(Date.now()).catch(e=>console.warn("lastRead write failed:",e.code,e.message));
+  // Accusé de lecture : on marque individuellement chaque message REÇU (donc pas les
+  // miens) comme lu, directement sur chats/{ck}/messages/{id}/read = true. On réutilise
+  // ainsi le même mécanisme "update()" déjà utilisé et confirmé fonctionnel pour la
+  // suppression d'un message (les deux participants peuvent modifier des champs sur les
+  // messages de leur conversation), plutôt qu'un nouveau chemin séparé dont l'autorisation
+  // par les règles de sécurité Firebase n'est pas garantie.
+  db.ref("chats/"+ck+"/messages").orderByChild("from").equalTo(uid).once("value").then(snap=>{
+    const updates={};
+    snap.forEach(child=>{
+      const v=child.val();
+      if(v && !v.read) updates[child.key+"/read"]=true;
+    });
+    if(Object.keys(updates).length){
+      db.ref("chats/"+ck+"/messages").update(updates).catch(e=>console.warn("mark read failed:",e.code,e.message));
+    }
+  }).catch(e=>console.warn("mark read query failed:",e.code,e.message));
 }
 
 function updateUnreadBadge(ck){
@@ -2380,45 +2384,10 @@ function listenMsgs(){
   S.selectedIds=new Set();
   const selBarEl=$("sel-bar"); if(selBarEl) selBarEl.classList.remove("active");
 
-  // Accusé de lecture : on écoute EN DIRECT le "lastRead" de l'AUTRE personne pour cette
-  // conversation, sous chats/{key}/lastRead/{otherUid} (même sous-arbre que les messages,
-  // donc déjà accessible par les règles Firebase existantes). Dès qu'il change (elle
-  // ouvre/rouvre le chat), on met à jour les coches ✓✓ déjà affichées, sans tout re-rendre.
-  if(S.unsubReadReceipt){S.unsubReadReceipt();S.unsubReadReceipt=null;}
-  S.otherReadTs=0;
-  const otherUid=S.activeId;
-  const readRef=db.ref("chats/"+key+"/lastRead/"+otherUid);
-  // Factorisée : appelée à la fois quand l'accusé de lecture change ET juste après le
-  // rendu initial des bulles, pour éviter une course où les bulles (cache/Firebase) et
-  // l'accusé de lecture arrivent dans un ordre imprévisible et se manquent l'un l'autre.
-  const refreshAllCheckmarks=()=>{
-    box.querySelectorAll(".bubble-row.out").forEach(row=>{
-      const m=row._msgData;
-      if(!m)return;
-      const checkEl=row.querySelector(".b-check");
-      if(!checkEl||!checkEl.classList.contains("read")){
-        const meta=row.querySelector(".b-meta");
-        if(meta && checkEl){
-          checkEl.outerHTML=checkMarkFor(m);
-        }
-      }
-    });
-  };
-  const onReadChange=snap=>{
-    if(S.activeId!==otherUid)return; // le chat a changé entre-temps, ignorer
-    S.otherReadTs=snap.val()||0;
-    refreshAllCheckmarks();
-  };
-  readRef.on("value",onReadChange,err=>console.warn("readReceipts listen failed:",err.code,err.message));
-  S.unsubReadReceipt=()=>readRef.off("value",onReadChange);
-  // Lecture ponctuelle immédiate en plus de l'abonnement "value" ci-dessus : garantit que
-  // même si l'accusé de lecture existait déjà AVANT l'ouverture de ce chat (donc "value" ne
-  // se redéclenche pas forcément tout de suite selon le cache SDK), on l'applique quand même.
-  readRef.get().then(snap=>{
-    if(S.activeId!==otherUid)return;
-    S.otherReadTs=snap.val()||0;
-    refreshAllCheckmarks();
-  }).catch(()=>{});
+  // Accusé de lecture : chaque message reçu est marqué read:true directement dans Firebase
+  // par clearUnread() quand on ouvre ce chat (voir plus haut). Le listener "child_changed"
+  // ci-dessous (déjà utilisé pour les autres mises à jour de message) détecte ce changement
+  // et rafraîchit automatiquement la bulle correspondante — pas besoin d'un mécanisme séparé.
 
   const rendered=new Set();
   let anyShown=false;
@@ -2439,7 +2408,6 @@ function listenMsgs(){
       }catch(e){ renderErrorCount++; console.error("bubble cache erreur:",e.message,m); }
     });
     requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
-    refreshAllCheckmarks();
   }
 
   // N'afficher "Erreur d'affichage" que si des bulles ont réellement échoué au rendu.
