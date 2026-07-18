@@ -140,6 +140,17 @@ function formatLastSeen(ts){
 const esc=t=>String(t).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 const chatKey=(a,b)=>[a,b].sort().join("_");
 
+// Badge bleu de vérification (façon WhatsApp Business), affiché devant chaque numéro de
+// contact dans la liste des discussions, l'en-tête du chat et la fiche "Infos contact".
+// SVG inline pour rester net à toutes les tailles, avec une taille par défaut ajustable.
+function verifiedBadge(size){
+  const s=size||14;
+  return '<svg class="verified-badge" width="'+s+'" height="'+s+'" viewBox="0 0 22 22" fill="none" style="flex-shrink:0;vertical-align:middle;margin-left:3px">'+
+    '<path d="M11 0l2.2 1.6 2.7-.4 1.1 2.5 2.5 1.1-.4 2.7L21 9l-1.6 2.2.4 2.7-2.5 1.1-1.1 2.5-2.7-.4L11 19l-2.2-1.6-2.7.4-1.1-2.5-2.5-1.1.4-2.7L1 9l1.6-2.2-.4-2.7 2.5-1.1L5.8 1.6l2.7.4L11 0z" fill="#3B9EFF"/>'+
+    '<path d="M6.5 11.2l2.8 2.8 6.2-6.2" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>'+
+  '</svg>';
+}
+
 // Correctif clavier virtuel Android (WebView) : avec position:fixed;inset:0, la mise en
 // page peut se désynchroniser du vrai espace visible quand le clavier apparaît, créant un
 // grand vide entre les messages et la barre de saisie (le curseur tapé devient invisible).
@@ -1365,7 +1376,7 @@ function renderNcSuggestions(){
     const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
     return '<div class="contact-row" style="border-radius:14px" data-uid="'+c.uid+'">'+
       '<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div>'+
-      '<div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span></div>'+
+      '<div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+verifiedBadge(13)+'</span></div>'+
       '<div class="row-bot"><span class="row-last">'+esc(c.phone||"")+'</span></div></div>'+
     '</div>';
   }).join("");
@@ -1450,7 +1461,7 @@ window.searchUserByPhone=function(){
       result.innerHTML=
         '<div class="contact-row" style="border-bottom:none;border-radius:14px;background:var(--surface);border:1px solid var(--border)" id="nc-found-row">'+
           '<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(found.online?"online":"offline")+'"></div></div>'+
-          '<div class="row-info"><div class="row-top"><span class="row-name">'+esc(found.name||found.phone||"Inconnu")+'</span></div>'+
+          '<div class="row-info"><div class="row-top"><span class="row-name">'+esc(found.name||found.phone||"Inconnu")+verifiedBadge(13)+'</span></div>'+
           '<div class="row-bot"><span class="row-last">'+esc(found.phone||"")+'</span></div></div>'+
           '<span style="color:var(--accent);font-size:22px;padding:0 4px">›</span>'+
         '</div>';
@@ -1746,7 +1757,7 @@ function refreshChatHeader(c){
   const displayName=nick||c.name||c.phone||"Inconnu";
   const cav=$("c-av");
   const cd=$("c-dot");
-  const cn=$("c-name");if(cn)cn.textContent=displayName;
+  const cn=$("c-name");if(cn)cn.innerHTML=esc(displayName)+verifiedBadge(14);
   const cs=$("c-status");
   // WhatsApp masque le statut en ligne / dernière connexion dès qu'on a bloqué ce contact
   const iBlockedThem=S.blockedCache && S.blockedCache[c.uid];
@@ -1792,7 +1803,7 @@ window.saveContactNickname=function(){
     try{localStorage.removeItem("sonia_nick_"+c.uid);}catch(e){}
   }
 
-  $("ci-name").textContent=nick||c.name||c.phone||"Inconnu";
+  $("ci-name").innerHTML=esc(nick||c.name||c.phone||"Inconnu")+verifiedBadge(16);
   refreshChatHeader(c);
   renderList();
   toast("✅ Nom enregistré");
@@ -1805,7 +1816,7 @@ window.openContactInfo=function(){
   const av=$("ci-av");av.innerHTML="";
   if(c.avType==="img"&&c.img){const img=document.createElement("img");img.src=c.img;img.style.cssText="width:100%;height:100%;object-fit:cover;border-radius:50%";av.appendChild(img);}
   else{av.innerHTML="<span>"+(c.emoji||"🧑🏾")+"</span>";}
-  $("ci-name").textContent=c.name||c.phone||"Inconnu";
+  $("ci-name").innerHTML=esc(c.name||c.phone||"Inconnu")+verifiedBadge(16);
   $("ci-phone").textContent=c.phone||"";
   $("ci-status-txt").textContent=(S.blockedCache&&S.blockedCache[c.uid])?"":(c.online?"● En ligne":(c.lastSeen?"⚫ Vu "+formatLastSeen(c.lastSeen):"⚫ Hors ligne"));
   // Pré-remplir le surnom avec le nom actuel stocké localement
@@ -2187,7 +2198,7 @@ function renderList(){
        (cachedLm.text||"")):"";
     const initialTime=cachedLm?(cachedLm.t||""):"";
 
-    row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(!iBlockedThem&&c.online?"online":"offline")+'" style="'+(iBlockedThem?"display:none":"")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span><span class="row-time" id="lt-'+ck+'">'+initialTime+'</span></div><div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+esc(initialText)+'</span><span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span><button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button></div></div>';
+    row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(!iBlockedThem&&c.online?"online":"offline")+'" style="'+(iBlockedThem?"display:none":"")+'"></div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+verifiedBadge(13)+'</span><span class="row-time" id="lt-'+ck+'">'+initialTime+'</span></div><div class="row-bot"><span class="row-last" id="ll-'+ck+'">'+esc(initialText)+'</span><span class="unread-badge" id="ub-'+ck+'" style="display:none">0</span><button class="arch-btn" data-uid="'+c.uid+'">'+(S.arch.has(c.uid)?"📤":"🗄")+'</button></div></div>';
     row.querySelector(".arch-btn").onclick=ev=>{ev.stopPropagation();toggleArch(c.uid);};
     row.onclick=()=>openChat(c.uid);
 
@@ -2908,7 +2919,7 @@ function showForwardPicker(ids){
     const avH=(c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
     const row=document.createElement("div");
     row.className="contact-row";
-    row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span></div></div>';
+    row.innerHTML='<div class="av-wrap"><div class="av">'+avH+'</div></div><div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+verifiedBadge(13)+'</span></div></div>';
     row.onclick=()=>{
       row.style.opacity=".5";
       row.style.pointerEvents="none";
@@ -5167,7 +5178,7 @@ window.addEventListener("DOMContentLoaded",()=>{
       const avH = (c.avType==="img"&&c.img)?'<img src="'+c.img+'" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>':(c.emoji||"🧑🏾");
       return '<div class="contact-row" style="border-radius:14px" data-idx="'+idx+'">'+
         '<div class="av-wrap"><div class="av">'+avH+'</div><div class="dot '+(c.online?"online":"offline")+'"></div></div>'+
-        '<div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+'</span></div>'+
+        '<div class="row-info"><div class="row-top"><span class="row-name">'+esc(displayName)+verifiedBadge(13)+'</span></div>'+
         '<div class="row-bot"><span class="row-last">'+esc(c.phone||"")+'</span></div></div>'+
       '</div>';
     };
@@ -5615,4 +5626,4 @@ window.addEventListener("DOMContentLoaded",()=>{
 </div>
 
 </body>
-</html>
+</html
