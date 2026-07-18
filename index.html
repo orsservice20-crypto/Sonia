@@ -2273,7 +2273,12 @@ function clearUnread(uid,ck){
   // pour que ses coches ✓✓ passent au bleu (comme WhatsApp). Stocké sous MON uid pour que
   // l'AUTRE puisse le lire (les règles Firebase autorisent la lecture, pas l'écriture, des
   // données d'autrui).
-  db.ref("readReceipts/"+S.myUid+"/"+ck).set(Date.now()).catch(()=>{});
+  // Accusé de lecture partagé : signale à l'autre personne qu'on a lu jusqu'à maintenant,
+  // pour que ses coches ✓✓ passent au bleu (comme WhatsApp). Stocké sous
+  // chats/{conversation}/lastRead/{monUid} : ce sous-chemin de "chats" est déjà accessible
+  // en lecture/écriture aux deux participants (comme settings/ephemeral), contrairement à
+  // un chemin racine à part qui nécessiterait une nouvelle règle de sécurité Firebase.
+  db.ref("chats/"+ck+"/lastRead/"+S.myUid).set(Date.now()).catch(e=>console.warn("lastRead write failed:",e.code,e.message));
 }
 
 function updateUnreadBadge(ck){
@@ -2375,16 +2380,18 @@ function listenMsgs(){
   S.selectedIds=new Set();
   const selBarEl=$("sel-bar"); if(selBarEl) selBarEl.classList.remove("active");
 
-  // Accusé de lecture : on écoute EN DIRECT le "readReceipts" de l'AUTRE personne pour
-  // cette conversation. Dès qu'il change (elle ouvre/rouvre le chat), on met à jour les
-  // coches ✓✓ déjà affichées à l'écran, sans re-rendre toute la liste.
+  // Accusé de lecture : on écoute EN DIRECT le "lastRead" de l'AUTRE personne pour cette
+  // conversation, sous chats/{key}/lastRead/{otherUid} (même sous-arbre que les messages,
+  // donc déjà accessible par les règles Firebase existantes). Dès qu'il change (elle
+  // ouvre/rouvre le chat), on met à jour les coches ✓✓ déjà affichées, sans tout re-rendre.
   if(S.unsubReadReceipt){S.unsubReadReceipt();S.unsubReadReceipt=null;}
   S.otherReadTs=0;
   const otherUid=S.activeId;
-  const readRef=db.ref("readReceipts/"+otherUid+"/"+key);
-  const onReadChange=snap=>{
-    if(S.activeId!==otherUid)return; // le chat a changé entre-temps, ignorer
-    S.otherReadTs=snap.val()||0;
+  const readRef=db.ref("chats/"+key+"/lastRead/"+otherUid);
+  // Factorisée : appelée à la fois quand l'accusé de lecture change ET juste après le
+  // rendu initial des bulles, pour éviter une course où les bulles (cache/Firebase) et
+  // l'accusé de lecture arrivent dans un ordre imprévisible et se manquent l'un l'autre.
+  const refreshAllCheckmarks=()=>{
     box.querySelectorAll(".bubble-row.out").forEach(row=>{
       const m=row._msgData;
       if(!m)return;
@@ -2397,8 +2404,21 @@ function listenMsgs(){
       }
     });
   };
-  readRef.on("value",onReadChange);
+  const onReadChange=snap=>{
+    if(S.activeId!==otherUid)return; // le chat a changé entre-temps, ignorer
+    S.otherReadTs=snap.val()||0;
+    refreshAllCheckmarks();
+  };
+  readRef.on("value",onReadChange,err=>console.warn("readReceipts listen failed:",err.code,err.message));
   S.unsubReadReceipt=()=>readRef.off("value",onReadChange);
+  // Lecture ponctuelle immédiate en plus de l'abonnement "value" ci-dessus : garantit que
+  // même si l'accusé de lecture existait déjà AVANT l'ouverture de ce chat (donc "value" ne
+  // se redéclenche pas forcément tout de suite selon le cache SDK), on l'applique quand même.
+  readRef.get().then(snap=>{
+    if(S.activeId!==otherUid)return;
+    S.otherReadTs=snap.val()||0;
+    refreshAllCheckmarks();
+  }).catch(()=>{});
 
   const rendered=new Set();
   let anyShown=false;
@@ -2419,6 +2439,7 @@ function listenMsgs(){
       }catch(e){ renderErrorCount++; console.error("bubble cache erreur:",e.message,m); }
     });
     requestAnimationFrame(()=>{box.scrollTop=box.scrollHeight;});
+    refreshAllCheckmarks();
   }
 
   // N'afficher "Erreur d'affichage" que si des bulles ont réellement échoué au rendu.
