@@ -4406,7 +4406,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
       <label class="f-label">Ou entrez un numéro de téléphone</label>
       <div class="phone-row" style="margin-bottom:6px">
         <div class="flag-box">🌍 +</div>
-        <input class="ph-input" id="nc-phone-input" type="tel" placeholder="224 600 000 000" oninput="searchUserByPhone()"/>
+        <input class="ph-input" id="nc-phone-input" type="text" inputmode="text" autocomplete="off" placeholder="224 600 000 000 ou nom" oninput="searchUserByPhoneOrName()"/>
       </div>
       <div id="nc-result" style="margin-top:14px"></div>
     </div>
@@ -5626,4 +5626,4 @@ window.addEventListener("DOMContentLoaded",()=>{
 </div>
 
 </body>
-</html
+</html>
