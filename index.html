@@ -1050,6 +1050,56 @@ window.startCall=async function(type){
 };
 
 // ---- SONNERIE ENTRANTE ----
+// ---- RÉCEPTION AUTOMATIQUE DES MESSAGES ----
+// Cette fonction écoute l'inbox de l'utilisateur connecté.
+// Quand un nouveau message arrive d'un contact, elle :
+// 1. Met à jour la liste des discussions (badge non-lus, dernier message)
+// 2. Si le chat de cet expéditeur est ouvert, recharge les messages
+function listenIncomingMessages(){
+  if(!isValidRefPath(S.myUid))return;
+  const inboxRef=safeDbRef("inbox/"+S.myUid);
+  if(!inboxRef)return;
+  // Éviter les doublons si appelée plusieurs fois
+  if(S._inboxListener){try{S._inboxListener.off();}catch(e){} }
+  S._inboxListener=inboxRef;
+  inboxRef.on("child_added",snap=>{
+    const fromUid=snap.key;
+    const data=snap.val()||{};
+    if(!fromUid||fromUid===S.myUid)return;
+    // Si la conversation avec cet expéditeur est déjà ouverte, pas besoin de notifier
+    if(S.activeId===fromUid){
+      // Le listener listenMsgs() gère déjà l'affichage en temps réel
+      return;
+    }
+    // Incrémenter le badge non-lu dans la liste
+    const key=chatKey(S.myUid,fromUid);
+    const ub=document.getElementById("ub-"+key);
+    if(ub){
+      const cur=parseInt(ub.textContent)||0;
+      ub.textContent=cur+1;
+      ub.style.display="inline-flex";
+    }
+    // Mettre à jour le dernier message affiché dans la liste
+    const ll=document.getElementById("ll-"+key);
+    if(ll && data.fromName) ll.textContent=data.fromName+": ...";
+    // Recharger la liste des contacts pour refléter l'ordre et les infos
+    if(window.renderList) window.renderList();
+  });
+  inboxRef.on("child_changed",snap=>{
+    const fromUid=snap.key;
+    if(!fromUid||fromUid===S.myUid)return;
+    if(S.activeId===fromUid)return;
+    const key=chatKey(S.myUid,fromUid);
+    const ub=document.getElementById("ub-"+key);
+    if(ub){
+      const cur=parseInt(ub.textContent)||0;
+      ub.textContent=cur+1;
+      ub.style.display="inline-flex";
+    }
+    if(window.renderList) window.renderList();
+  });
+}
+
 function listenIncomingCalls(){
   if(!isValidRefPath(S.myUid))return;
   const incomingRef=safeDbRef("callSignals/"+S.myUid);
@@ -5228,7 +5278,34 @@ window.addEventListener("DOMContentLoaded",()=>{
   window.saveProfile=function(){
     S.profile.name=document.getElementById("f-name").value||S.myPhone||"Moi";
     S.profile.status=document.getElementById("f-status").value||"En ligne";
-    if(S.myUid)db.ref("users/"+S.myUid).update({name:S.profile.name,status:S.profile.status,emoji:S.profile.emoji,avType:S.profile.avType,img:S.profile.img||null});
+    // Sauvegarder en local AVANT Firebase pour que le profil survive à la fermeture
+    CACHE.save("profile", S.profile);
+    CACHE.save("myUid", S.myUid);
+    if(S.myUid){
+      // Les images base64 peuvent dépasser la limite Firebase (10MB).
+      // On envoie l'image séparément dans Firebase Storage si disponible,
+      // sinon on la tronque à 800Ko pour rester sous la limite.
+      let imgToSave = S.profile.img || null;
+      if(imgToSave && imgToSave.length > 800*1024){
+        // Recompresser à 400px max pour rester sous la limite
+        const tmpImg=new Image();
+        tmpImg.onload=()=>{
+          const maxD=400;
+          let w=tmpImg.width,h=tmpImg.height;
+          if(w>maxD||h>maxD){if(w>h){h=Math.round(h*maxD/w);w=maxD;}else{w=Math.round(w*maxD/h);h=maxD;}}
+          const c=document.createElement("canvas");c.width=w;c.height=h;
+          c.getContext("2d").drawImage(tmpImg,0,0,w,h);
+          const compressed=c.toDataURL("image/jpeg",0.7);
+          S.profile.img=compressed;
+          CACHE.save("profile",S.profile);
+          db.ref("users/"+S.myUid).update({name:S.profile.name,status:S.profile.status,emoji:S.profile.emoji,avType:S.profile.avType,img:compressed}).catch(e=>console.warn("saveProfile Firebase:",e));
+          updateMyAv();
+        };
+        tmpImg.src=imgToSave;
+      } else {
+        db.ref("users/"+S.myUid).update({name:S.profile.name,status:S.profile.status,emoji:S.profile.emoji,avType:S.profile.avType,img:imgToSave}).catch(e=>console.warn("saveProfile Firebase:",e));
+      }
+    }
     updateMyAv();document.getElementById("prof-overlay").style.display="none";toast("Profil sauvegardé ✓");
   };
 
