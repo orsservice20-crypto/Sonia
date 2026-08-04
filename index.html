@@ -3106,14 +3106,24 @@ function refreshLastMsgFromServer(key){
   }).catch(()=>{});
 }
 
+// Upload un dataURL (base64) sur Firebase Storage et retourne l'URL publique de téléchargement.
+// Utilisé pour les photos, vidéos et vocaux avant l'écriture dans Realtime DB.
+async function uploadMediaToStorage(dataUrl, folder, mimeType){
+  // Convertir base64 → Blob
+  const byteStr=atob(dataUrl.split(",")[1]);
+  const arr=new Uint8Array(byteStr.length);
+  for(let i=0;i<byteStr.length;i++) arr[i]=byteStr.charCodeAt(i);
+  const blob=new Blob([arr],{type:mimeType});
+  const ext=mimeType.includes("webm")?"webm":mimeType.includes("mp4")?"mp4":mimeType.includes("ogg")?"ogg":mimeType.includes("jpeg")?"jpg":mimeType.includes("png")?"png":"bin";
+  const filename=folder+"/"+(S.myUid||"anon")+"/"+Date.now()+"."+ext;
+  const ref=storage.ref(filename);
+  await ref.put(blob,{contentType:mimeType});
+  return await ref.getDownloadURL();
+}
+
 function pushMsg(m){
   const key=chatKey(S.myUid,S.activeId);
   if(!m.ts) m.ts=Date.now();
-
-  if(m.src && !m.storageUrl && m.src.startsWith("data:") && m.src.length > 6*1024*1024){
-    toast("Fichier trop volumineux (max ~4 Mo).","err");
-    return Promise.reject(new Error("trop volumineux"));
-  }
 
   // Empêcher l'envoi vers un contact que j'ai bloqué
   if(S.blockedCache && S.blockedCache[S.activeId]){
@@ -3121,43 +3131,80 @@ function pushMsg(m){
     return Promise.reject(new Error("contact bloqué"));
   }
 
-  // Notifier inbox du destinataire (non-bloquant, en parallèle)
-  db.ref("inbox/"+S.activeId+"/"+S.myUid).set({
-    from:S.myUid,
-    fromPhone:S.myPhone||"",
-    fromName:S.profile.name||S.myPhone||"",
-    ts:m.ts
-  }).catch(()=>{});
+  // Si le message contient un média en base64 (photo, video, voice) → uploader sur Storage d'abord
+  // pour éviter la limite de taille de Firebase Realtime DB (~10MB par nœud)
+  const needsUpload = m.src && m.src.startsWith("data:") && !m.storageUrl &&
+    (m.type==="photo"||m.type==="video"||m.type==="voice");
 
-  // Déclarer les deux participants de cette conversation, chacun pointant vers l'UID de
-  // l'autre (et non un simple flag), pour que la règle Firebase puisse retrouver directement
-  // l'interlocuteur et vérifier les blocages à l'écriture. Écriture idempotente, sans risque.
-  db.ref("chats/"+key+"/participants/"+S.myUid).set(S.activeId).catch(()=>{});
-  db.ref("chats/"+key+"/participants/"+S.activeId).set(S.myUid).catch(()=>{});
+  const doWrite=(finalMsg)=>{
+    // Notifier inbox du destinataire
+    db.ref("inbox/"+S.activeId+"/"+S.myUid).set({
+      from:S.myUid,
+      fromPhone:S.myPhone||"",
+      fromName:S.profile.name||S.myPhone||"",
+      fromEmoji:S.profile.emoji||"🧑🏾",
+      fromAvType:S.profile.avType||"emoji",
+      fromImg:S.profile.img||null,
+      ts:finalMsg.ts
+    }).catch(()=>{});
 
-  // Envoyer le message et mettre à jour lastMsg en parallèle
-  const msgRef=db.ref("chats/"+key+"/messages");
-  const lastRef=db.ref("chats/"+key+"/lastMsg");
+    db.ref("chats/"+key+"/participants/"+S.myUid).set(S.activeId).catch(()=>{});
+    db.ref("chats/"+key+"/participants/"+S.activeId).set(S.myUid).catch(()=>{});
 
-  // Sauvegarder en cache local immédiatement (affichage instantané)
-  CACHE.save("lastMsg_"+key,{text:m.text||"",t:m.t||"",type:m.type||"text",del:false});
-  CACHE.save("lastTs_"+key,m.ts);
+    const msgRef=db.ref("chats/"+key+"/messages");
+    const lastRef=db.ref("chats/"+key+"/lastMsg");
 
-  const newMsgRef=msgRef.push();
-  return newMsgRef.set(m).then(()=>{
-    lastRef.set({text:m.text||"",t:m.t,type:m.type,del:false,ts:m.ts,msgId:newMsgRef.key}).catch(()=>{});
-  }).catch(e=>{
-    // Si le serveur refuse l'écriture parce que le destinataire nous a bloqués, ne jamais
-    // le révéler explicitement (comme WhatsApp) : le message reste visible localement,
-    // avec un seul ✓, sans jamais partir réellement. Toute autre erreur reste affichée.
-    const isPermissionIssue = e && (e.code==="PERMISSION_DENIED" || /permission[_ ]denied/i.test(e.message||""));
-    if(isPermissionIssue){
-      console.warn("Message non délivré (probable blocage) :", e.message);
-      return; // pas de toast, pas de throw : l'UI locale garde la bulle telle quelle
-    }
-    toast("Échec de l'envoi : "+e.message,"err");
-    throw e;
-  });
+    CACHE.save("lastMsg_"+key,{text:finalMsg.text||"",t:finalMsg.t||"",type:finalMsg.type||"text",del:false});
+    CACHE.save("lastTs_"+key,finalMsg.ts);
+
+    const newMsgRef=msgRef.push();
+    return newMsgRef.set(finalMsg).then(()=>{
+      lastRef.set({text:finalMsg.text||"",t:finalMsg.t,type:finalMsg.type,del:false,ts:finalMsg.ts,msgId:newMsgRef.key}).catch(()=>{});
+    }).catch(e=>{
+      const isPermissionIssue = e && (e.code==="PERMISSION_DENIED" || /permission[_ ]denied/i.test(e.message||""));
+      if(isPermissionIssue){
+        console.warn("Message non délivré (probable blocage) :", e.message);
+        return;
+      }
+      console.error("pushMsg Firebase error:", e.code, e.message);
+      toast("Échec de l'envoi : "+e.message,"err");
+      throw e;
+    });
+  };
+
+  if(needsUpload){
+    const mimeType=m.mime||(m.type==="voice"?"audio/webm":m.type==="video"?"video/mp4":"image/jpeg");
+    const folder=m.type==="voice"?"voice_messages":m.type==="video"?"video_messages":"photo_messages";
+    // Uploader sur Storage, puis écrire l'URL dans DB (supprimer le base64 du message)
+    return uploadMediaToStorage(m.src, folder, mimeType).then(url=>{
+      const finalMsg={...m, storageUrl:url, src:url};
+      // Mettre à jour la bulle optimiste locale avec l'URL Storage
+      const box=$("msg-list");
+      if(box){
+        const tempBubs=box.querySelectorAll(".bubble-row");
+        tempBubs.forEach(row=>{
+          if(row.id&&row.id.startsWith("bub-local")&&row._msgData&&row._msgData.ts===m.ts){
+            row._msgData.src=url;
+            row._msgData.storageUrl=url;
+            // Mettre à jour la source audio/img/video dans le DOM
+            const audio=row.querySelector("audio");
+            if(audio) audio.src=url;
+            const img=row.querySelector(".photo-bub img");
+            if(img) img.src=url;
+            const vid=row.querySelector("video");
+            if(vid) vid.src=url;
+          }
+        });
+      }
+      return doWrite(finalMsg);
+    }).catch(e=>{
+      console.error("uploadMediaToStorage erreur:", e.message);
+      toast("Échec de l'envoi du média : "+e.message,"err");
+      throw e;
+    });
+  }
+
+  return doWrite(m);
 }
 
 // ---- ENVOI TEXTE ----
