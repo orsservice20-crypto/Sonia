@@ -506,6 +506,41 @@ function sendCode(){
   });
 }
 
+// Logique de connexion partagee entre verifyCode et le fallback sans index
+window._continueLogin = async function(existingUid, phone, firebaseUser){
+  if(existingUid && existingUid !== (firebaseUser&&firebaseUser.uid)){
+    S.myUid = existingUid;
+    S.myPhone = phone;
+    CACHE.save("myUid", existingUid);
+    CACHE.save("myPhone", phone);
+    const profSnap = await db.ref("users/"+existingUid).get();
+    if(profSnap.exists()){ Object.assign(S.profile, profSnap.val()); CACHE.save("profile", S.profile); }
+    db.ref("users/"+existingUid+"/online").set(true).catch(()=>{});
+    db.ref("users/"+existingUid).onDisconnect().update({online:false,lastSeen:Date.now()});
+    const cc = CACHE.load("contacts"); if(cc) S.contacts=cc;
+    updateMyAv(); renderList(); showScreen("s-list");
+    listenContacts(); listenIncomingCalls(); listenIncomingMessages();
+  } else {
+    S.myUid = existingUid || (firebaseUser&&firebaseUser.uid);
+    S.myPhone = phone;
+    CACHE.save("myUid", S.myUid);
+    CACHE.save("myPhone", phone);
+    if(!existingUid){
+      S.profile = {name:phone,status:"En ligne",emoji:"🧑🏾",avType:"emoji",img:null};
+      await db.ref("users/"+S.myUid).set({uid:S.myUid,phone:phone,name:phone,status:"En ligne",emoji:"🧑🏾",avType:"emoji",img:null,online:true});
+      CACHE.save("profile", S.profile);
+    } else {
+      const profSnap = await db.ref("users/"+S.myUid).get();
+      if(profSnap.exists()){ Object.assign(S.profile,profSnap.val()); CACHE.save("profile",S.profile); }
+    }
+    db.ref("users/"+S.myUid+"/online").set(true).catch(()=>{});
+    db.ref("users/"+S.myUid).onDisconnect().update({online:false,lastSeen:Date.now()});
+    const cc = CACHE.load("contacts"); if(cc) S.contacts=cc;
+    updateMyAv(); renderList(); showScreen("s-list");
+    listenContacts(); listenIncomingCalls(); listenIncomingMessages();
+  }
+};
+
 async function verifyCode(){
   const entered=otpBoxes.map(b=>b.value).join("");
   if(entered.length<6){$("auth-err").textContent="Code incomplet";return;}
@@ -553,75 +588,41 @@ async function verifyCode(){
       }
 
       // ÉTAPE 2 : Chercher si ce numéro a déjà un compte existant
-      // (maintenant qu'on est authentifié, Firebase nous laisse lire)
-      const existingSnap = await db.ref("users").orderByChild("phone").equalTo(phone).get();
+      // Scan direct sans orderByChild pour eviter l erreur d index Firebase
       let existingUid = null;
-      existingSnap.forEach(child=>{ existingUid = child.key; });
-
-      if(existingUid && existingUid !== firebaseUser.uid){
-        // NUMÉRO DÉJÀ INSCRIT SUR UN AUTRE APPAREIL
-        // → Utiliser l'UID existant comme identifiant logique permanent
-        S.myUid = existingUid;
-        S.myPhone = phone;
-        CACHE.save("myUid", existingUid);
-        CACHE.save("myPhone", phone);
-
-        // Charger le profil existant
-        const profSnap = await db.ref("users/"+existingUid).get();
-        if(profSnap.exists()){
-          Object.assign(S.profile, profSnap.val());
-          CACHE.save("profile", S.profile);
-        }
-
-        // Marquer en ligne sur ce compte existant
-        db.ref("users/"+existingUid+"/online").set(true).catch(()=>{});
-        db.ref("users/"+existingUid).onDisconnect().update({
-          online:false,
-          lastSeen:Date.now()
-        });
-
-        // Afficher avec l'ancien compte (toutes les discussions intactes)
-        const cc = CACHE.load("contacts"); if(cc) S.contacts=cc;
-        updateMyAv(); renderList(); showScreen("s-list");
-        listenContacts(); listenIncomingCalls(); listenIncomingMessages();
-
-      } else {
-        // NOUVEAU NUMÉRO ou même UID → compte normal
-        S.myUid = existingUid || firebaseUser.uid;
-        S.myPhone = phone;
-        CACHE.save("myUid", S.myUid);
-        CACHE.save("myPhone", phone);
-
-        if(!existingUid){
-          // Vraiment nouveau → créer le profil
-          S.profile = {name:phone,status:"En ligne",emoji:"🧑🏾",avType:"emoji",img:null};
-          await db.ref("users/"+S.myUid).set({
-            uid:S.myUid, phone:phone, name:phone,
-            status:"En ligne", emoji:"🧑🏾", avType:"emoji", img:null, online:true
-          });
-          CACHE.save("profile", S.profile);
-        } else {
-          // Même UID (même appareil) → charger le profil existant
-          const profSnap = await db.ref("users/"+S.myUid).get();
-          if(profSnap.exists()){ Object.assign(S.profile,profSnap.val()); CACHE.save("profile",S.profile); }
-        }
-
-        db.ref("users/"+S.myUid+"/online").set(true).catch(()=>{});
-        db.ref("users/"+S.myUid).onDisconnect().update({
-          online:false,
-          lastSeen:Date.now()
-        });
-        const cc = CACHE.load("contacts"); if(cc) S.contacts=cc;
-        updateMyAv(); renderList(); showScreen("s-list");
-        listenContacts(); listenIncomingCalls(); listenIncomingMessages();
+      try{
+        const existingSnap = await db.ref("users").orderByChild("phone").equalTo(phone).get();
+        existingSnap.forEach(child=>{ existingUid = child.key; });
+      }catch(indexErr){
+        // Index pas encore actif -> scan complet
+        console.warn("Index manquant, scan complet:", indexErr.message);
+        const allSnap = await db.ref("users").get();
+        allSnap.forEach(child=>{ const u=child.val(); if(u&&u.phone===phone) existingUid=child.key; });
       }
 
+      await window._continueLogin(existingUid, phone, firebaseUser);
+      btn.textContent=t("confirmer");btn.disabled=false;
+
     }catch(e){
-      $("auth-err").textContent="Erreur connexion : "+e.message;
+      console.error("verifyCode erreur:", e.message);
+      if(e.message && e.message.includes("Index not defined")){
+        // Index Firebase manquant - retenter sans orderByChild
+        try{
+          const phone2 = S.pendingPhone || CACHE.load("pendingPhone");
+          const allSnap = await db.ref("users").get();
+          let existingUid2 = null;
+          allSnap.forEach(child=>{ const u=child.val(); if(u&&u.phone===phone2) existingUid2=child.key; });
+          await window._continueLogin(existingUid2, phone2, auth.currentUser);
+          btn.textContent=t("confirmer");btn.disabled=false;
+          return;
+        }catch(e2){ console.error("Fallback:",e2.message); }
+      }
+      $("auth-err").textContent="Connexion impossible. Reessayez.";
       btn.textContent=t("confirmer");btn.disabled=false;
     }
   }).catch(e=>{
-    $("auth-err").textContent="Erreur réseau — vérifiez votre connexion";
+    console.error("verifyCode reseau:", e.message);
+    $("auth-err").textContent="Verifiez votre connexion et reessayez.";
     btn.textContent=t("confirmer");btn.disabled=false;
   });
 }
