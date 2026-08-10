@@ -83,8 +83,32 @@ const S={
 };
 
 let isOnline=navigator.onLine;
-window.addEventListener("online",()=>{isOnline=true;if(S.myUid){listenContacts();if(S.activeId)listenMsgs();}});
+window.addEventListener("online",()=>{
+  isOnline=true;
+  // À la reconnexion, s'assurer qu'on est bien authentifié Firebase
+  if(!auth.currentUser){
+    auth.signInAnonymously().catch(()=>{});
+  }
+  if(S.myUid){listenContacts();if(S.activeId)listenMsgs();}
+});
 window.addEventListener("offline",()=>{isOnline=false;});
+
+// Listener permanent sur l'état Firebase Auth
+// Si la session anonyme expire ou est révoquée, on se reconnecte automatiquement
+auth.onAuthStateChanged(user=>{
+  if(!user && S.myUid){
+    // Auth perdue alors qu'on était connecté → reconnecter silencieusement
+    auth.signInAnonymously().then(()=>{
+      // Relancer les listeners Firebase
+      if(S.myUid){
+        listenContacts();
+        listenIncomingCalls();
+        listenIncomingMessages();
+        if(S.activeId) listenMsgs();
+      }
+    }).catch(e=>console.error("Reconnexion auth échouée:",e.message));
+  }
+});
 
 const $=id=>document.getElementById(id);
 const fmt=s=>String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
@@ -3161,13 +3185,24 @@ function pushMsg(m){
     return newMsgRef.set(finalMsg).then(()=>{
       lastRef.set({text:finalMsg.text||"",t:finalMsg.t,type:finalMsg.type,del:false,ts:finalMsg.ts,msgId:newMsgRef.key}).catch(()=>{});
     }).catch(e=>{
-      const isPermissionIssue = e && (e.code==="PERMISSION_DENIED" || /permission[_ ]denied/i.test(e.message||""));
-      if(isPermissionIssue){
-        console.warn("Message non délivré (probable blocage) :", e.message);
+      const code=e&&e.code||"";
+      const msg=e&&e.message||"";
+      console.error("pushMsg Firebase error:", code, msg);
+      // PERMISSION_DENIED peut vouloir dire : contact bloqué OU auth expirée
+      if(code==="PERMISSION_DENIED"||/permission[_ ]denied/i.test(msg)){
+        // Vérifier si c'est un problème d'auth ou de blocage
+        if(!auth.currentUser){
+          // Auth expirée → se reconnecter
+          auth.signInAnonymously().then(()=>{
+            toast("🔄 Session expirée. Renvoyez le message.","err");
+          }).catch(()=>toast("❌ Session expirée - rechargez l'app","err"));
+        } else {
+          // Probablement bloqué — masquer silencieusement
+          console.warn("Message non délivré (probable blocage)");
+        }
         return;
       }
-      console.error("pushMsg Firebase error:", e.code, e.message);
-      toast("Échec de l'envoi : "+e.message,"err");
+      toast("❌ Envoi échoué: "+msg,"err");
       throw e;
     });
   };
@@ -3210,10 +3245,19 @@ function pushMsg(m){
 // ---- ENVOI TEXTE ----
 function doSend(){
   const ti=$("txt-in");if(!ti)return;
-  const v=ti.value.trim();if(!v||!S.activeId)return;
+  const v=ti.value.trim();
+  if(!v) return;
+  if(!S.activeId){toast("❌ Erreur: pas de destinataire","err");return;}
+  if(!S.myUid){toast("❌ Erreur: non connecté - rechargez","err");return;}
+  if(!auth.currentUser){
+    // Firebase Auth a expiré — se reconnecter silencieusement
+    auth.signInAnonymously().then(()=>{
+      toast("🔄 Reconnexion... Renvoyez le message","err");
+    }).catch(()=>toast("❌ Reconnexion échouée - rechargez l'app","err"));
+    return;
+  }
   ti.value="";
   ti.style.height="auto";
-  // Remettre le bouton mic immédiatement
   if(window.updateSendMicBtn) window.updateSendMicBtn();
 
   const m={from:S.myUid,text:v,t:nowT(),type:"text",del:false,ts:Date.now()};
