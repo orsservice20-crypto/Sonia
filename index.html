@@ -484,7 +484,7 @@ function sendCode(){
   CACHE.save("pendingPhone", phone);
   const code=String(Math.floor(100000+Math.random()*900000));
   const key=phone.replace(/\+/g,"00").replace(/\D/g,"");
-  db.ref("otpCodes/"+key).set({code:code,expires:Date.now()+5*60*1000}).catch(()=>{});
+  db.ref("otpCodes/"+key).set({code:code,expires:Date.now()+30*60*1000}).catch(()=>{});
   sendSms(phone,code).then(sent=>{
     $("step-phone").style.display="none";
     $("step-otp").style.display="block";
@@ -532,7 +532,7 @@ async function verifyCode(){
     const snap = await db.ref("otpCodes/"+key).get();
     const data = snap.val();
     if(!data || Date.now()>data.expires){
-      $("auth-err").textContent="Code expiré — demandez un nouveau code";
+      $("auth-err").innerHTML='Code expiré — <span style="text-decoration:underline;cursor:pointer;color:var(--accent)" onclick="goBackPhone();sendCode()">Cliquez ici pour recevoir un nouveau code</span>';
       btn.textContent=t("confirmer");btn.disabled=false;
       return;
     }
@@ -4839,7 +4839,7 @@ window.addEventListener("DOMContentLoaded",()=>{
       const btn=document.getElementById("np-send");btn.textContent="Envoi...";btn.disabled=true;
       const code=String(Math.floor(100000+Math.random()*900000));
       const key=phone.replace(/\+/g,"00").replace(/\D/g,"");
-      db.ref("otpCodes/"+key).set({code:code,expires:Date.now()+5*60*1000}).catch(()=>{});
+      db.ref("otpCodes/"+key).set({code:code,expires:Date.now()+30*60*1000}).catch(()=>{});
       sendSms(phone,code).catch(()=>{}).then(()=>{
         box.remove();
         showChangePhoneOtp(phone,code);
@@ -5641,7 +5641,7 @@ window.addEventListener("DOMContentLoaded",()=>{
           <li>Connexion protégée par un code à usage unique (<strong style="color:var(--text)">OTP</strong>) valable seulement 5 minutes</li>
           <li>Données hébergées sur des <strong style="color:var(--text)">serveurs certifiés</strong> respectant des normes de sécurité internationales</li>
           <li>Accès aux données strictement limité aux <strong style="color:var(--text)">utilisateurs authentifiés</strong></li>
-          <li>Codes de vérification expirant <strong style="color:var(--text)">automatiquement</strong> après 5 minutes</li>
+          <li>Codes de vérification expirant <strong style="color:var(--text)">automatiquement</strong> après 30 minutes</li>
           <li>Systèmes soumis à une <strong style="color:var(--text)">surveillance constante</strong> pour prévenir toute activité suspecte</li>
         </ul>
         <div class="pp-highlight"><strong>Règle fondamentale :</strong> EniBusiness Pro n'a jamais accès à vos messages privés. Vos échanges demeurent uniquement entre vous et vos contacts.</div>
