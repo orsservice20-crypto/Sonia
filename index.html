@@ -1539,23 +1539,43 @@ function listenContacts(){
       renderList();
       return;
     }
-    // Charger tous les profils en PARALLÈLE (beaucoup plus rapide)
+    // Charger tous les profils en PARALLÈLE
     const fetches=uids.map(uid=>
-      db.ref("users/"+uid).get().then(s=>s.exists()?s.val():null).catch(()=>null)
+      db.ref("users/"+uid).get().then(s=>{
+        if(!s.exists()) return null;
+        const v=s.val();
+        // S'assurer que l'UID utilisé est TOUJOURS celui de userContacts (la clé Firebase)
+        // et non celui éventuellement stocké dans le profil, pour éviter les désynchronisations
+        v.uid=uid;
+        return v;
+      }).catch(()=>null)
     );
     const results=await Promise.all(fetches);
-    // Dédupliquer par numéro de téléphone (garde le plus récent)
-    const seen=new Map();
+    // Dédupliquer : si deux UIDs ont le même numéro, garder celui de userContacts (le plus récent)
+    // On garde l'UID réel Firebase, pas une copie de profil
+    const seenPhone=new Map();
+    const seenUid=new Map();
     results.forEach(c=>{
-      if(!c)return;
-      const key=c.phone||c.uid;
-      const existing=seen.get(key);
-      // Garder celui avec le timestamp le plus récent (lastDevice) ou le premier
-      if(!existing||(c.lastDevice&&existing.lastDevice&&c.lastDevice>existing.lastDevice)){
-        seen.set(key,c);
+      if(!c||!c.uid) return;
+      if(seenUid.has(c.uid)) return; // même UID déjà présent
+      const phoneKey=c.phone||c.uid;
+      const existing=seenPhone.get(phoneKey);
+      if(existing){
+        // Même numéro sous deux UIDs différents → garder le plus récent
+        if((c.lastDevice||0)>(existing.lastDevice||0)){
+          seenPhone.set(phoneKey,c);
+          seenUid.delete(existing.uid);
+          seenUid.set(c.uid,c);
+          // Nettoyer l'ancien UID de userContacts pour éviter de le revoir
+          db.ref("userContacts/"+S.myUid+"/"+existing.uid).remove().catch(()=>{});
+        }
+        // sinon on garde l'existing, on ignore le doublon
+      } else {
+        seenPhone.set(phoneKey,c);
+        seenUid.set(c.uid,c);
       }
     });
-    S.contacts=Array.from(seen.values());
+    S.contacts=Array.from(seenUid.values());
     CACHE.save("contacts",S.contacts);
     renderList();
     // Écouter les changements de statut/présence en temps réel
@@ -1563,9 +1583,21 @@ function listenContacts(){
       db.ref("users/"+uid).on("value",usnap=>{
         if(!usnap.exists())return;
         const updated=usnap.val();
+        // Toujours forcer l'UID Firebase réel pour éviter les désynchronisations de profil
+        updated.uid=uid;
         const idx=S.contacts.findIndex(c=>c.uid===uid);
-        if(idx>=0) S.contacts[idx]=updated;
-        else S.contacts.push(updated);
+        if(idx>=0){
+          S.contacts[idx]=updated;
+        } else {
+          // Vérifier qu'on n'a pas déjà ce numéro sous un autre UID avant d'ajouter
+          const dupIdx=S.contacts.findIndex(c=>c.phone&&c.phone===updated.phone&&c.uid!==uid);
+          if(dupIdx>=0){
+            // Remplacer le doublon par la version à jour
+            S.contacts[dupIdx]=updated;
+          } else {
+            S.contacts.push(updated);
+          }
+        }
         CACHE.save("contacts",S.contacts);
         renderList();
         if(S.activeId===uid) refreshChatHeader(updated);
@@ -3210,13 +3242,16 @@ function doSend(){
   const ti=$("txt-in");if(!ti)return;
   const v=ti.value.trim();
   if(!v) return;
-  if(!S.activeId){toast("❌ Erreur: pas de destinataire","err");return;}
-  if(!S.myUid){toast("❌ Erreur: non connecté - rechargez","err");return;}
+  if(!S.activeId||!S.myUid){
+    // Situation anormale — tenter de récupérer sans afficher d'erreur
+    console.warn("doSend: activeId=",S.activeId,"myUid=",S.myUid);
+    return;
+  }
   if(!auth.currentUser){
-    // Firebase Auth a expiré — se reconnecter silencieusement
+    // Firebase Auth a expiré — se reconnecter puis renvoyer automatiquement
     auth.signInAnonymously().then(()=>{
-      toast("🔄 Reconnexion... Renvoyez le message","err");
-    }).catch(()=>toast("❌ Reconnexion échouée - rechargez l'app","err"));
+      if(ti) { ti.value=v; doSend(); }
+    }).catch(e=>{ console.error("Reconnexion auth:",e.message); });
     return;
   }
   ti.value="";
