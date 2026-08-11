@@ -46,7 +46,7 @@ const messaging=firebase.messaging();
 // ---- NOTIFICATIONS PUSH FCM ----
 // Clé VAPID publique (Web Push) — à remplacer par la vraie depuis Firebase Console
 // Firebase Console → Paramètres projet → Cloud Messaging → Certificats Web Push → Générer une paire de clés
-const VAPID_KEY = "REMPLACER_PAR_VOTRE_CLE_VAPID";
+const VAPID_KEY = "BNk3kqBcl3LtjTr91uCGovS1Z4EEYTvvOviNgaF5Yq6vQTDiMapWEDFMF66XYPp8B0g7VluRetomWvHbESLZYn0";
 
 async function initFCM(){
   try{
@@ -68,14 +68,20 @@ async function initFCM(){
       serviceWorkerRegistration: swReg
     });
 
-    if(token && S.myUid){
-      // Sauvegarder le token dans Firebase pour pouvoir envoyer des notifications à cet utilisateur
-      await db.ref("fcmTokens/" + S.myUid).set({
-        token,
-        device: navigator.userAgent.substring(0,100),
-        updatedAt: Date.now()
-      }).catch(()=>{});
-      console.log("FCM token enregistré");
+    if(S.myUid){
+      // Envoyer l'UID au Service Worker pour qu'il écoute les notifications Firebase
+      if(swReg && swReg.active){
+        swReg.active.postMessage({type:"SET_UID", uid:S.myUid});
+      }
+      // Aussi sauvegarder le token FCM si disponible
+      if(token){
+        await db.ref("fcmTokens/" + S.myUid).set({
+          token,
+          device: navigator.userAgent.substring(0,100),
+          updatedAt: Date.now()
+        }).catch(()=>{});
+      }
+      console.log("Notifications configurées pour", S.myUid);
     }
 
     // Notifications reçues quand l'app est AU PREMIER PLAN
@@ -106,6 +112,19 @@ async function initFCM(){
 }
 
 window.initFCM = initFCM;
+
+// Envoie une notification via Firebase - stocke dans fcmNotifs/{recipientUid}
+// Le Service Worker de l'autre appareil lit ce noeud et affiche la notification
+async function sendWebPushNotif(recipientUid, data){
+  if(!recipientUid || !S.myUid) return;
+  try{
+    await db.ref("fcmNotifs/"+recipientUid).push({
+      ...data,
+      ts: Date.now()
+    });
+  }catch(e){ console.warn("sendWebPushNotif:", e.message); }
+}
+window.sendWebPushNotif = sendWebPushNotif;
 // ---- SMS via Seven.io ----
 const SMS_KEY = "6IMieB6iuVzvA8Exbi9KBQChlqhFt1TGhxClLBlosuZ7zbimeowQk0BMXj8cJTbG";
 
@@ -657,7 +676,12 @@ async function verifyCode(){
     updateMyAv(); renderList(); showScreen("s-list");
     listenContacts(); listenIncomingCalls(); listenIncomingMessages();
     // Initialiser les notifications push FCM après connexion
-    if(window.initFCM) window.initFCM();
+    if(window.initFCM) window.initFCM().then(()=>{
+      // Notifier le SW de l'UID même si initFCM était déjà appelé
+      navigator.serviceWorker.ready.then(reg=>{
+        if(reg.active) reg.active.postMessage({type:"SET_UID", uid:S.myUid});
+      }).catch(()=>{});
+    });
     btn.textContent=t("confirmer");btn.disabled=false;
 
   }catch(e){
@@ -3281,24 +3305,16 @@ function pushMsg(m){
     (m.type==="photo"||m.type==="video"||m.type==="voice");
 
   const doWrite=(finalMsg)=>{
-    // Envoyer une notification push FCM au destinataire via sa clé stored dans fcmTokens
-    db.ref("fcmTokens/"+S.activeId).get().then(snap=>{
-      if(!snap.exists()) return;
-      const {token} = snap.val()||{};
-      if(!token) return;
-      // Appeler la Cloud Function (ou un endpoint) pour envoyer la notif FCM
-      // On stocke la notification dans notifQueue et une Cloud Function Firebase l'envoie
-      db.ref("notifQueue").push({
-        to: token,
-        senderUid: S.myUid,
-        senderName: S.profile.name || S.myPhone || "Quelqu'un",
-        recipientUid: S.activeId,
-        chatKey: finalMsg ? chatKey(S.myUid,S.activeId) : chatKey(S.myUid,S.activeId),
-        type: (finalMsg||m).type || "text",
-        body: (finalMsg||m).type==="text" ? ((finalMsg||m).text||"").substring(0,80) : "",
-        ts: Date.now()
-      }).catch(()=>{});
-    }).catch(()=>{});
+    // Envoyer notification push via le Service Worker FCM (Web Push natif)
+    // Fonctionne sans Cloud Functions ni Server Key via les Web Push Standards
+    sendWebPushNotif(S.activeId, {
+      senderUid: S.myUid,
+      senderName: S.profile.name || S.myPhone || "Quelqu'un",
+      recipientUid: S.activeId,
+      chatKey: chatKey(S.myUid,S.activeId),
+      type: (finalMsg||m).type || "text",
+      body: (finalMsg||m).type==="text" ? ((finalMsg||m).text||"").substring(0,80) : ""
+    });
 
     // Notifier inbox du destinataire
     db.ref("inbox/"+S.activeId+"/"+S.myUid).set({
