@@ -29,6 +29,7 @@ for(let i=0;i<8;i++){ try{ history.pushState({sonia:"app"},"",""); }catch(e){} }
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-storage-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
+<script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
 <script>
 window.addEventListener("error", function(e){
   console.error("ERREUR JS:", e.message, "ligne", e.lineno);
@@ -48,79 +49,86 @@ const messaging=firebase.messaging();
 // Firebase Console → Paramètres projet → Cloud Messaging → Certificats Web Push → Générer une paire de clés
 const VAPID_KEY = "BNk3kqBcl3LtjTr91uCGovS1Z4EEYTvvOviNgaF5Yq6vQTDiMapWEDFMF66XYPp8B0g7VluRetomWvHbESLZYn0";
 
+// ---- ONESIGNAL NOTIFICATIONS ----
 async function initFCM(){
   try{
-    // Demander la permission notifications
-    const perm = await Notification.requestPermission();
-    if(perm !== "granted"){ console.log("Notifications refusées"); return; }
+    await window.OneSignalDeferred.push(async function(OneSignal){
+      await OneSignal.init({
+        appId: "2293cf60-f4a5-40bd-ab4d-0631122f38e8",
+        allowLocalhostAsSecureOrigin: true,
+        notifyButton: { enable: false },
+        welcomeNotification: { disable: true }
+      });
 
-    // Enregistrer le service worker FCM
-    let swReg;
-    try{
-      swReg = await navigator.serviceWorker.register("/firebase-messaging-sw.js", {scope:"/"});
-    }catch(e){
-      swReg = await navigator.serviceWorker.ready;
-    }
-
-    // Obtenir le token FCM
-    const token = await messaging.getToken({
-      vapidKey: VAPID_KEY,
-      serviceWorkerRegistration: swReg
-    });
-
-    if(S.myUid){
-      // Envoyer l'UID au Service Worker pour qu'il écoute les notifications Firebase
-      if(swReg && swReg.active){
-        swReg.active.postMessage({type:"SET_UID", uid:S.myUid});
+      // Lier l'UID Firebase à OneSignal pour cibler cet utilisateur
+      if(S.myUid){
+        await OneSignal.login(S.myUid).catch(()=>{});
       }
-      // Aussi sauvegarder le token FCM si disponible
-      if(token){
-        await db.ref("fcmTokens/" + S.myUid).set({
-          token,
-          device: navigator.userAgent.substring(0,100),
+
+      // Demander la permission si pas encore accordée
+      const perm = await OneSignal.Notifications.permission;
+      if(!perm){
+        await OneSignal.Notifications.requestPermission();
+      }
+
+      // Sauvegarder le Player ID OneSignal dans Firebase
+      const playerId = await OneSignal.User.PushSubscription.id;
+      if(playerId && S.myUid){
+        await db.ref("oneSignalIds/"+S.myUid).set({
+          playerId,
           updatedAt: Date.now()
         }).catch(()=>{});
-      }
-      console.log("Notifications configurées pour", S.myUid);
-    }
-
-    // Notifications reçues quand l'app est AU PREMIER PLAN
-    messaging.onMessage(payload => {
-      const data = payload.data || {};
-      // Si on est déjà dans ce chat, ne pas afficher de notification
-      if(S.activeId && S.activeId === data.senderUid) return;
-      const title = data.senderName || "EniBusiness Pro";
-      const body  = data.type === "call"   ? "📞 Appel entrant"
-                  : data.type === "voice"  ? "🎤 Message vocal"
-                  : data.type === "photo"  ? "📷 Photo"
-                  : (data.body || "Nouveau message");
-      // Afficher une notification native même au premier plan
-      if(Notification.permission === "granted"){
-        new Notification(title, {
-          body,
-          icon: "/icon.png",
-          tag: "fg-" + Date.now()
-        });
-      } else {
-        toast("💬 " + title + ": " + body);
+        console.log("OneSignal configuré:", playerId);
       }
     });
-
   }catch(e){
-    console.warn("initFCM:", e.message);
+    console.warn("initFCM/OneSignal:", e.message);
   }
 }
 
 window.initFCM = initFCM;
 
-// Envoie une notification via Firebase - stocke dans fcmNotifs/{recipientUid}
-// Le Service Worker de l'autre appareil lit ce noeud et affiche la notification
+// Envoie une notification push via OneSignal REST API
+// Fonctionne hors application sur Android
 async function sendWebPushNotif(recipientUid, data){
   if(!recipientUid || !S.myUid) return;
   try{
-    await db.ref("fcmNotifs/"+recipientUid).push({
-      ...data,
-      ts: Date.now()
+    // Récupérer le Player ID OneSignal du destinataire
+    const snap = await db.ref("oneSignalIds/"+recipientUid).get();
+    if(!snap.exists()) return;
+    const {playerId} = snap.val()||{};
+    if(!playerId) return;
+
+    const title = data.senderName || "EniBusiness Pro";
+    const body  = data.type==="call"  ? "📞 Appel entrant de "+(data.senderName||"quelqu'un")
+                : data.type==="voice" ? "🎤 Message vocal"
+                : data.type==="photo" ? "📷 Photo"
+                : (data.body||"Nouveau message");
+
+    // Envoyer via OneSignal REST API
+    await fetch("https://onesignal.com/api/v1/notifications", {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "Authorization":"Basic os_v2_app_ekj46yhuuval3k2nayyrelzy5cjczcuxznrucxmmptas6apvsiolua2uyzv7dyd37ftepy3avk5gsu2ykzzb7ebfly4ozxdv2lbt7qa"
+      },
+      body:JSON.stringify({
+        app_id: "2293cf60-f4a5-40bd-ab4d-0631122f38e8",
+        include_subscription_ids: [playerId],
+        headings: {en: title, fr: title},
+        contents: {en: body, fr: body},
+        android_accent_color: "FF00D4AA",
+        small_icon: "ic_stat_onesignal_default",
+        large_icon: "/icon.png",
+        priority: 10,
+        data:{
+          senderUid: data.senderUid||"",
+          senderName: data.senderName||"",
+          recipientUid: recipientUid,
+          chatKey: data.chatKey||"",
+          type: data.type||"text"
+        }
+      })
     });
   }catch(e){ console.warn("sendWebPushNotif:", e.message); }
 }
@@ -4146,6 +4154,9 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.2}}
 @keyframes wb{0%,100%{transform:scaleY(.4)}50%{transform:scaleY(1)}}
 </style>
+<script>
+  window.OneSignalDeferred = window.OneSignalDeferred || [];
+</script>
 </head>
 <body>
 
