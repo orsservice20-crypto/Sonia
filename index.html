@@ -28,6 +28,7 @@ for(let i=0;i<8;i++){ try{ history.pushState({sonia:"app"},"",""); }catch(e){} }
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-storage-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
 <script>
 window.addEventListener("error", function(e){
   console.error("ERREUR JS:", e.message, "ligne", e.lineno);
@@ -40,6 +41,71 @@ firebase.initializeApp(firebaseConfig);
 const auth=firebase.auth();
 const db=firebase.database();
 const storage=firebase.storage();
+const messaging=firebase.messaging();
+
+// ---- NOTIFICATIONS PUSH FCM ----
+// Clé VAPID publique (Web Push) — à remplacer par la vraie depuis Firebase Console
+// Firebase Console → Paramètres projet → Cloud Messaging → Certificats Web Push → Générer une paire de clés
+const VAPID_KEY = "REMPLACER_PAR_VOTRE_CLE_VAPID";
+
+async function initFCM(){
+  try{
+    // Demander la permission notifications
+    const perm = await Notification.requestPermission();
+    if(perm !== "granted"){ console.log("Notifications refusées"); return; }
+
+    // Enregistrer le service worker FCM
+    let swReg;
+    try{
+      swReg = await navigator.serviceWorker.register("/firebase-messaging-sw.js", {scope:"/"});
+    }catch(e){
+      swReg = await navigator.serviceWorker.ready;
+    }
+
+    // Obtenir le token FCM
+    const token = await messaging.getToken({
+      vapidKey: VAPID_KEY,
+      serviceWorkerRegistration: swReg
+    });
+
+    if(token && S.myUid){
+      // Sauvegarder le token dans Firebase pour pouvoir envoyer des notifications à cet utilisateur
+      await db.ref("fcmTokens/" + S.myUid).set({
+        token,
+        device: navigator.userAgent.substring(0,100),
+        updatedAt: Date.now()
+      }).catch(()=>{});
+      console.log("FCM token enregistré");
+    }
+
+    // Notifications reçues quand l'app est AU PREMIER PLAN
+    messaging.onMessage(payload => {
+      const data = payload.data || {};
+      // Si on est déjà dans ce chat, ne pas afficher de notification
+      if(S.activeId && S.activeId === data.senderUid) return;
+      const title = data.senderName || "EniBusiness Pro";
+      const body  = data.type === "call"   ? "📞 Appel entrant"
+                  : data.type === "voice"  ? "🎤 Message vocal"
+                  : data.type === "photo"  ? "📷 Photo"
+                  : (data.body || "Nouveau message");
+      // Afficher une notification native même au premier plan
+      if(Notification.permission === "granted"){
+        new Notification(title, {
+          body,
+          icon: "/icon.png",
+          tag: "fg-" + Date.now()
+        });
+      } else {
+        toast("💬 " + title + ": " + body);
+      }
+    });
+
+  }catch(e){
+    console.warn("initFCM:", e.message);
+  }
+}
+
+window.initFCM = initFCM;
 // ---- SMS via Seven.io ----
 const SMS_KEY = "6IMieB6iuVzvA8Exbi9KBQChlqhFt1TGhxClLBlosuZ7zbimeowQk0BMXj8cJTbG";
 
@@ -419,10 +485,20 @@ window.addEventListener("popstate",function(e){
 
   // 5. Dans le chat → revenir à la liste
   if(S.currentScreen==="s-chat"){
+    // Vérifier que le chat est vraiment visible (pas un popstate parasite au chargement)
+    const chatEl=document.getElementById("s-chat");
+    const chatVisible=chatEl&&!chatEl.classList.contains("off");
+    if(!chatVisible){
+      // Popstate parasite — ne pas effacer activeId, juste repousser la garde
+      pushBackGuard();
+      return;
+    }
     if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}
     if(S.unsubReadReceipt){S.unsubReadReceipt();S.unsubReadReceipt=null;}
     if(S.unsubBlockedBanner){S.unsubBlockedBanner();S.unsubBlockedBanner=null;}
     S.activeId=null;
+    S._lastActiveId=null;
+    try{ sessionStorage.removeItem("sonia_activeId"); }catch(e){}
     showScreen("s-list");
     pushBackGuard();
     return;
@@ -580,6 +656,8 @@ async function verifyCode(){
     const cc = CACHE.load("contacts"); if(cc) S.contacts=cc;
     updateMyAv(); renderList(); showScreen("s-list");
     listenContacts(); listenIncomingCalls(); listenIncomingMessages();
+    // Initialiser les notifications push FCM après connexion
+    if(window.initFCM) window.initFCM();
     btn.textContent=t("confirmer");btn.disabled=false;
 
   }catch(e){
@@ -746,6 +824,7 @@ auth.onAuthStateChanged(async user=>{
       // S.myUid déjà défini correctement — juste lancer les listeners
       if(isOnline){
         listenContacts();listenIncomingCalls();listenIncomingMessages();
+        if(window.initFCM) window.initFCM();
       }
     }
   } else {
@@ -810,10 +889,43 @@ function resetCallOverlay(){
   S.callMuted=false;S.callCamOff=false;
 }
 
-function getLocalStream(type){
-  return navigator.mediaDevices.getUserMedia(
-    type==="video"?{audio:true,video:{facingMode:"user",width:{ideal:640},height:{ideal:480}}}:{audio:true,video:false}
-  );
+async function getLocalStream(type){
+  // Sur Android WebView (Median), il faut vérifier/demander les permissions
+  // avant getUserMedia sinon ça échoue silencieusement avec "Permission denied"
+  try{
+    if(navigator.permissions){
+      const micPerm = await navigator.permissions.query({name:"microphone"}).catch(()=>({state:"prompt"}));
+      if(micPerm.state==="denied"){
+        throw new Error("Microphone refusé dans les paramètres Android");
+      }
+    }
+  }catch(permErr){
+    if(permErr.message.includes("refusé")) throw permErr;
+    // navigator.permissions non supporté — continuer directement
+  }
+
+  // Contraintes audio optimisées pour la voix
+  const audioConstraints = {
+    audio:{
+      echoCancellation:true,
+      noiseSuppression:true,
+      autoGainControl:true
+    },
+    video: type==="video" ? {facingMode:"user",width:{ideal:640},height:{ideal:480}} : false
+  };
+
+  try{
+    return await navigator.mediaDevices.getUserMedia(audioConstraints);
+  }catch(e){
+    // Réessayer avec contraintes minimales si les contraintes avancées échouent
+    if(e.name==="OverconstrainedError"||e.name==="NotReadableError"){
+      return await navigator.mediaDevices.getUserMedia({
+        audio:true,
+        video: type==="video"
+      });
+    }
+    throw e;
+  }
 }
 
 function createPC(){
@@ -949,7 +1061,11 @@ window.startCall=async function(type){
   try{
     S.localStream=await getLocalStream(type);
   }catch(e){
-    toast("Micro/caméra inaccessible","err");
+    console.error("getLocalStream:",e.name, e.message);
+    const msg = e.message && e.message.includes("refusé")
+      ? "🎤 Micro refusé — Autorisez le micro dans Paramètres > Apps > EniBusiness Pro"
+      : "🎤 Micro inaccessible — vérifiez les permissions de l'app";
+    toast(msg,"err");
     endCall(true);return;
   }
   if(type==="video"){const lv=$("call-local-video");lv.srcObject=S.localStream;lv.style.display="block";}
@@ -1192,7 +1308,11 @@ window.acceptCall=async function(){
   if(!S.incomingOffer){toast("Erreur : offre non reçue","err");endCall(true);return;}
 
   try{S.localStream=await getLocalStream(S.callType);}
-  catch(e){toast("Micro/caméra inaccessible","err");rejectCall();return;}
+  catch(e){
+    console.error("getLocalStream réception:",e.name,e.message);
+    toast("🎤 Micro inaccessible — autorisez le micro dans Paramètres > Apps","err");
+    rejectCall();return;
+  }
 
   if(S.callType==="video"){const lv=$("call-local-video");lv.srcObject=S.localStream;lv.style.display="block";}
   $("call-active-actions").style.display="flex";
@@ -1539,23 +1659,43 @@ function listenContacts(){
       renderList();
       return;
     }
-    // Charger tous les profils en PARALLÈLE (beaucoup plus rapide)
+    // Charger tous les profils en PARALLÈLE
     const fetches=uids.map(uid=>
-      db.ref("users/"+uid).get().then(s=>s.exists()?s.val():null).catch(()=>null)
+      db.ref("users/"+uid).get().then(s=>{
+        if(!s.exists()) return null;
+        const v=s.val();
+        // S'assurer que l'UID utilisé est TOUJOURS celui de userContacts (la clé Firebase)
+        // et non celui éventuellement stocké dans le profil, pour éviter les désynchronisations
+        v.uid=uid;
+        return v;
+      }).catch(()=>null)
     );
     const results=await Promise.all(fetches);
-    // Dédupliquer par numéro de téléphone (garde le plus récent)
-    const seen=new Map();
+    // Dédupliquer : si deux UIDs ont le même numéro, garder celui de userContacts (le plus récent)
+    // On garde l'UID réel Firebase, pas une copie de profil
+    const seenPhone=new Map();
+    const seenUid=new Map();
     results.forEach(c=>{
-      if(!c)return;
-      const key=c.phone||c.uid;
-      const existing=seen.get(key);
-      // Garder celui avec le timestamp le plus récent (lastDevice) ou le premier
-      if(!existing||(c.lastDevice&&existing.lastDevice&&c.lastDevice>existing.lastDevice)){
-        seen.set(key,c);
+      if(!c||!c.uid) return;
+      if(seenUid.has(c.uid)) return; // même UID déjà présent
+      const phoneKey=c.phone||c.uid;
+      const existing=seenPhone.get(phoneKey);
+      if(existing){
+        // Même numéro sous deux UIDs différents → garder le plus récent
+        if((c.lastDevice||0)>(existing.lastDevice||0)){
+          seenPhone.set(phoneKey,c);
+          seenUid.delete(existing.uid);
+          seenUid.set(c.uid,c);
+          // Nettoyer l'ancien UID de userContacts pour éviter de le revoir
+          db.ref("userContacts/"+S.myUid+"/"+existing.uid).remove().catch(()=>{});
+        }
+        // sinon on garde l'existing, on ignore le doublon
+      } else {
+        seenPhone.set(phoneKey,c);
+        seenUid.set(c.uid,c);
       }
     });
-    S.contacts=Array.from(seen.values());
+    S.contacts=Array.from(seenUid.values());
     CACHE.save("contacts",S.contacts);
     renderList();
     // Écouter les changements de statut/présence en temps réel
@@ -1563,9 +1703,21 @@ function listenContacts(){
       db.ref("users/"+uid).on("value",usnap=>{
         if(!usnap.exists())return;
         const updated=usnap.val();
+        // Toujours forcer l'UID Firebase réel pour éviter les désynchronisations de profil
+        updated.uid=uid;
         const idx=S.contacts.findIndex(c=>c.uid===uid);
-        if(idx>=0) S.contacts[idx]=updated;
-        else S.contacts.push(updated);
+        if(idx>=0){
+          S.contacts[idx]=updated;
+        } else {
+          // Vérifier qu'on n'a pas déjà ce numéro sous un autre UID avant d'ajouter
+          const dupIdx=S.contacts.findIndex(c=>c.phone&&c.phone===updated.phone&&c.uid!==uid);
+          if(dupIdx>=0){
+            // Remplacer le doublon par la version à jour
+            S.contacts[dupIdx]=updated;
+          } else {
+            S.contacts.push(updated);
+          }
+        }
         CACHE.save("contacts",S.contacts);
         renderList();
         if(S.activeId===uid) refreshChatHeader(updated);
@@ -2369,10 +2521,15 @@ function hideMsgLocally(key,msgId){
 
 function openChat(uid){
   S.activeId=uid;
+  S._lastActiveId=uid;
+  // Sauvegarder aussi dans sessionStorage — résiste aux popstate parasites Android
+  try{ sessionStorage.setItem("sonia_activeId", uid); }catch(e){}
   const c=S.contacts.find(x=>x.uid===uid)||{phone:uid};
   refreshChatHeader(c);
   updateArchBtn();
   showScreen("s-chat");
+  // Restaurer activeId immédiatement si le popstate l'a effacé
+  if(!S.activeId) S.activeId=S._lastActiveId || sessionStorage.getItem("sonia_activeId");
   listenMsgs();
   // Marquer comme lu
   const ck=chatKey(S.myUid,uid);
@@ -3124,6 +3281,25 @@ function pushMsg(m){
     (m.type==="photo"||m.type==="video"||m.type==="voice");
 
   const doWrite=(finalMsg)=>{
+    // Envoyer une notification push FCM au destinataire via sa clé stored dans fcmTokens
+    db.ref("fcmTokens/"+S.activeId).get().then(snap=>{
+      if(!snap.exists()) return;
+      const {token} = snap.val()||{};
+      if(!token) return;
+      // Appeler la Cloud Function (ou un endpoint) pour envoyer la notif FCM
+      // On stocke la notification dans notifQueue et une Cloud Function Firebase l'envoie
+      db.ref("notifQueue").push({
+        to: token,
+        senderUid: S.myUid,
+        senderName: S.profile.name || S.myPhone || "Quelqu'un",
+        recipientUid: S.activeId,
+        chatKey: finalMsg ? chatKey(S.myUid,S.activeId) : chatKey(S.myUid,S.activeId),
+        type: (finalMsg||m).type || "text",
+        body: (finalMsg||m).type==="text" ? ((finalMsg||m).text||"").substring(0,80) : "",
+        ts: Date.now()
+      }).catch(()=>{});
+    }).catch(()=>{});
+
     // Notifier inbox du destinataire
     db.ref("inbox/"+S.activeId+"/"+S.myUid).set({
       from:S.myUid,
@@ -3210,13 +3386,19 @@ function doSend(){
   const ti=$("txt-in");if(!ti)return;
   const v=ti.value.trim();
   if(!v) return;
-  if(!S.activeId){toast("❌ Erreur: pas de destinataire","err");return;}
-  if(!S.myUid){toast("❌ Erreur: non connecté - rechargez","err");return;}
+  // Restaurer activeId depuis toutes les sauvegardes disponibles
+  if(!S.activeId && S.currentScreen==="s-chat"){
+    S.activeId = S._lastActiveId || sessionStorage.getItem("sonia_activeId");
+  }
+  if(!S.activeId||!S.myUid){
+    console.warn("doSend: activeId=",S.activeId,"myUid=",S.myUid);
+    return;
+  }
   if(!auth.currentUser){
-    // Firebase Auth a expiré — se reconnecter silencieusement
+    // Firebase Auth a expiré — se reconnecter puis renvoyer automatiquement
     auth.signInAnonymously().then(()=>{
-      toast("🔄 Reconnexion... Renvoyez le message","err");
-    }).catch(()=>toast("❌ Reconnexion échouée - rechargez l'app","err"));
+      if(ti) { ti.value=v; doSend(); }
+    }).catch(e=>{ console.error("Reconnexion auth:",e.message); });
     return;
   }
   ti.value="";
@@ -4048,7 +4230,7 @@ textarea.sc-text-input:focus{border-color:var(--accent);outline:none}
     <button class="sel-action" id="sel-del-btn" onclick="selDelete()" title="Supprimer">🗑️</button>
   </div>
   <div class="chat-bar" id="chat-bar">
-    <button class="back-btn" onclick="event.stopPropagation();S.activeId=null;if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}if(S.unsubReadReceipt){S.unsubReadReceipt();S.unsubReadReceipt=null;}if(S.unsubBlockedBanner){S.unsubBlockedBanner();S.unsubBlockedBanner=null;}showScreen('s-list')">‹</button>
+    <button class="back-btn" onclick="event.stopPropagation();S.activeId=null;S._lastActiveId=null;try{sessionStorage.removeItem('sonia_activeId');}catch(e){}if(S.unsubMsgs){S.unsubMsgs();S.unsubMsgs=null;}if(S.unsubReadReceipt){S.unsubReadReceipt();S.unsubReadReceipt=null;}if(S.unsubBlockedBanner){S.unsubBlockedBanner();S.unsubBlockedBanner=null;}showScreen('s-list')">‹</button>
     <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;cursor:pointer;overflow:hidden" onclick="navigateToOverlay('contact-info-overlay',openContactInfo)">
       <div style="position:relative;flex-shrink:0"><div class="chat-av" id="c-av"></div><div class="dot" id="c-dot"></div></div>
       <div class="chat-info" style="min-width:0;overflow:hidden"><div class="chat-name" id="c-name" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div><div class="chat-status" id="c-status"></div></div>
@@ -4666,7 +4848,16 @@ window.addEventListener("DOMContentLoaded",()=>{
       title.textContent="🔔 Notifications";
       const soundOn=getSetting("notifSound",true);
       const vibrateOn=getSetting("notifVibrate",true);
+      const pushGranted=(typeof Notification!=="undefined")&&Notification.permission==="granted";
       body.innerHTML=
+        '<div style="padding:14px 0 12px;border-bottom:1px solid var(--border);margin-bottom:10px">'+
+        '<div class="settings-toggle-txt" style="margin-bottom:5px">🔔 Notifications hors application</div>'+
+        '<div class="settings-toggle-sub" style="margin-bottom:10px">Recevoir messages et appels même quand l\'app est fermée</div>'+
+        (pushGranted
+          ? '<div style="color:#22c55e;font-weight:600;font-size:13px">✅ Notifications activées</div>'
+          : '<button class="big-btn" id="enable-push-btn">🔔 Activer les notifications push</button>'
+        )+
+        '</div>'+
         '<div class="settings-toggle"><div><div class="settings-toggle-txt">🔊 Son des messages</div><div class="settings-toggle-sub">Jouer un son à la réception</div></div>'+
         '<label class="switch"><input type="checkbox" id="set-notif-sound" '+(soundOn?"checked":"")+'><span class="switch-slider"></span></label></div>'+
         '<div class="settings-toggle"><div><div class="settings-toggle-txt">📳 Vibreur</div><div class="settings-toggle-sub">Vibrer à la réception d\'un message</div></div>'+
@@ -4674,6 +4865,12 @@ window.addEventListener("DOMContentLoaded",()=>{
       setTimeout(()=>{
         const s1=$("set-notif-sound"); if(s1) s1.onchange=()=>setSetting("notifSound",s1.checked);
         const s2=$("set-notif-vibrate"); if(s2) s2.onchange=()=>setSetting("notifVibrate",s2.checked);
+        const pb=document.getElementById("enable-push-btn");
+        if(pb) pb.onclick=async()=>{
+          pb.textContent="Activation..."; pb.disabled=true;
+          if(window.initFCM) await window.initFCM();
+          openSubSettings("notifications");
+        };
       },0);
     }
 
