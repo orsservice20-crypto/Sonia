@@ -49,9 +49,42 @@ const messaging=firebase.messaging();
 // Firebase Console → Paramètres projet → Cloud Messaging → Certificats Web Push → Générer une paire de clés
 const VAPID_KEY = "BNk3kqBcl3LtjTr91uCGovS1Z4EEYTvvOviNgaF5Yq6vQTDiMapWEDFMF66XYPp8B0g7VluRetomWvHbESLZYn0";
 
-// ---- ONESIGNAL NOTIFICATIONS ----
+// ---- NOTIFICATIONS PUSH (Median natif + OneSignal Web fallback) ----
 async function initFCM(){
   try{
+    // PRIORITÉ 1 : Median natif (Android WebView) — le plus fiable hors app
+    if(window.median && window.median.onesignal){
+      // Median intègre OneSignal nativement
+      window.median.onesignal.promptForPushNotifications();
+      window.median.onesignal.getDeviceState(function(state){
+        const playerId = state && (state.subscriptionId || state.userId);
+        if(playerId && S.myUid){
+          db.ref("oneSignalIds/"+S.myUid).set({
+            playerId,
+            updatedAt: Date.now()
+          }).catch(()=>{});
+          console.log("Median OneSignal ID:", playerId);
+        }
+      });
+      return;
+    }
+
+    // PRIORITÉ 2 : gonative bridge (ancienne version Median)
+    if(window.gonative && window.gonative.onesignal){
+      window.gonative.onesignal.promptForPushNotifications();
+      window.gonative.onesignal.getDeviceState(function(state){
+        const playerId = state && (state.subscriptionId || state.userId);
+        if(playerId && S.myUid){
+          db.ref("oneSignalIds/"+S.myUid).set({
+            playerId,
+            updatedAt: Date.now()
+          }).catch(()=>{});
+        }
+      });
+      return;
+    }
+
+    // PRIORITÉ 3 : Web Push classique (navigateur desktop/mobile)
     await window.OneSignalDeferred.push(async function(OneSignal){
       await OneSignal.init({
         appId: "2293cf60-f4a5-40bd-ab4d-0631122f38e8",
@@ -59,32 +92,31 @@ async function initFCM(){
         notifyButton: { enable: false },
         welcomeNotification: { disable: true }
       });
-
-      // Lier l'UID Firebase à OneSignal pour cibler cet utilisateur
-      if(S.myUid){
-        await OneSignal.login(S.myUid).catch(()=>{});
-      }
-
-      // Demander la permission si pas encore accordée
+      if(S.myUid) await OneSignal.login(S.myUid).catch(()=>{});
       const perm = await OneSignal.Notifications.permission;
-      if(!perm){
-        await OneSignal.Notifications.requestPermission();
-      }
-
-      // Sauvegarder le Player ID OneSignal dans Firebase
+      if(!perm) await OneSignal.Notifications.requestPermission();
       const playerId = await OneSignal.User.PushSubscription.id;
       if(playerId && S.myUid){
         await db.ref("oneSignalIds/"+S.myUid).set({
-          playerId,
-          updatedAt: Date.now()
+          playerId, updatedAt: Date.now()
         }).catch(()=>{});
-        console.log("OneSignal configuré:", playerId);
       }
     });
   }catch(e){
-    console.warn("initFCM/OneSignal:", e.message);
+    console.warn("initFCM:", e.message);
   }
 }
+
+// Callback appelé par Median quand l'ID OneSignal est disponible (au démarrage)
+window.median_onesignal_info = function(info){
+  const playerId = info && (info.subscriptionId || info.userId || info.playerId);
+  if(playerId && S.myUid){
+    db.ref("oneSignalIds/"+S.myUid).set({
+      playerId, updatedAt: Date.now()
+    }).catch(()=>{});
+    console.log("median_onesignal_info:", playerId);
+  }
+};
 
 window.initFCM = initFCM;
 
@@ -3285,16 +3317,40 @@ function refreshLastMsgFromServer(key){
 // Upload un dataURL (base64) sur Firebase Storage et retourne l'URL publique de téléchargement.
 // Utilisé pour les photos, vidéos et vocaux avant l'écriture dans Realtime DB.
 async function uploadMediaToStorage(dataUrl, folder, mimeType){
-  // Convertir base64 → Blob
-  const byteStr=atob(dataUrl.split(",")[1]);
-  const arr=new Uint8Array(byteStr.length);
-  for(let i=0;i<byteStr.length;i++) arr[i]=byteStr.charCodeAt(i);
-  const blob=new Blob([arr],{type:mimeType});
-  const ext=mimeType.includes("webm")?"webm":mimeType.includes("mp4")?"mp4":mimeType.includes("ogg")?"ogg":mimeType.includes("jpeg")?"jpg":mimeType.includes("png")?"png":"bin";
-  const filename=folder+"/"+(S.myUid||"anon")+"/"+Date.now()+"."+ext;
-  const ref=storage.ref(filename);
-  await ref.put(blob,{contentType:mimeType});
-  return await ref.getDownloadURL();
+  try{
+    // Nettoyer le mimeType (ex: "audio/webm;codecs=opus" → "audio/webm")
+    const cleanMime = mimeType.split(";")[0].trim();
+    // Convertir base64 → Blob
+    const parts = dataUrl.split(",");
+    if(parts.length < 2) throw new Error("dataUrl invalide");
+    const byteStr = atob(parts[1]);
+    const arr = new Uint8Array(byteStr.length);
+    for(let i=0;i<byteStr.length;i++) arr[i]=byteStr.charCodeAt(i);
+    const blob = new Blob([arr],{type:cleanMime});
+    // Extension basée sur le mime type propre
+    const ext = cleanMime.includes("webm")?"webm"
+              : cleanMime.includes("mp4")?"mp4"
+              : cleanMime.includes("ogg")?"ogg"
+              : cleanMime.includes("mp3")?"mp3"
+              : cleanMime.includes("jpeg")?"jpg"
+              : cleanMime.includes("png")?"png"
+              : cleanMime.includes("gif")?"gif"
+              : "bin";
+    const filename = folder+"/"+(S.myUid||"anon")+"/"+Date.now()+"."+ext;
+    const ref = storage.ref(filename);
+    // Uploader avec timeout de 60 secondes
+    const uploadTask = ref.put(blob,{contentType:cleanMime});
+    await new Promise((resolve, reject)=>{
+      const timeout = setTimeout(()=>reject(new Error("Upload timeout")), 60000);
+      uploadTask.then(()=>{clearTimeout(timeout);resolve();}).catch(e=>{clearTimeout(timeout);reject(e);});
+    });
+    const url = await ref.getDownloadURL();
+    console.log("Upload OK:", filename, "→", url.substring(0,60));
+    return url;
+  }catch(e){
+    console.error("uploadMediaToStorage:", e.message);
+    throw e;
+  }
 }
 
 function pushMsg(m){
@@ -5623,21 +5679,31 @@ window.addEventListener("DOMContentLoaded",()=>{
       img.src=ev.target.result;
     };r.readAsDataURL(f);input.value="";
   };
-  window.sendPhoto=function(){
+  window.sendPhoto=async function(){
     if(!S.pendingPhoto||!S.activeId)return;
     const p=S.pendingPhoto;
-    pushMsg({from:S.myUid,type:"photo",src:p.src,text:"",t:nowT(),del:false}).then(()=>{
+    // Restaurer activeId si perdu
+    if(!S.activeId) S.activeId = S._lastActiveId || sessionStorage.getItem("sonia_activeId");
+    if(!S.activeId){toast("Erreur: destinataire inconnu","err");return;}
+    const btn=document.querySelector("#photo-preview-bar .ph-prev-send");
+    if(btn){btn.disabled=true;btn.textContent="⏳";}
+    toast("Envoi en cours...");
+    try{
+      await pushMsg({from:S.myUid,type:"photo",src:p.src,mime:"image/jpeg",text:"",t:nowT(),del:false});
       S.pendingPhoto=null;
       document.getElementById("photo-preview-bar").style.display="none";
       document.getElementById("normal-row").style.display="flex";
       if(window.updateSendMicBtn)window.updateSendMicBtn();
-    }).catch(()=>{});
+    }catch(e){
+      toast("Échec envoi photo: "+e.message,"err");
+      if(btn){btn.disabled=false;btn.textContent="➤";}
+    }
   };
   window.handleVideoFile=function(input){
     const f=input.files[0];if(!f||!S.activeId)return;
     const sizeMo=f.size/1024/1024;
-    if(sizeMo>4){
-      toast("Vidéo trop lourde (max 4 Mo).","err");
+    if(sizeMo>50){
+      toast("Vidéo trop lourde (max 50 Mo).","err");
       input.value="";return;
     }
     S.pendingVideoFile=f;
@@ -5658,22 +5724,27 @@ window.addEventListener("DOMContentLoaded",()=>{
     if(window.updateSendMicBtn)window.updateSendMicBtn();
   }
 
-  window.sendVideo=function(){
+  window.sendVideo=async function(){
     if(!S.pendingVideoFile||!S.activeId){closeVideoPrev();return;}
     const f=S.pendingVideoFile;
     const btn=document.querySelector("#video-preview-bar button:last-child");
     if(btn){btn.disabled=true;btn.textContent="⏳";}
-    const r=new FileReader();
-    r.onload=ev=>{
-      pushMsg({from:S.myUid,type:"video",src:ev.target.result,text:"",t:nowT(),del:false})
-      .then(()=>closeVideoPrev())
-      .catch(e=>{
-        toast("Échec envoi vidéo : "+e.message,"err");
-        if(btn){btn.disabled=false;btn.textContent="➤";}
-      });
-    };
-    r.onerror=()=>{toast("Erreur lecture vidéo","err");if(btn){btn.disabled=false;btn.textContent="➤";}};
-    r.readAsDataURL(f);
+    toast("Envoi vidéo en cours...");
+    try{
+      // Uploader directement le fichier sur Storage sans convertir en base64
+      const mime=f.type||"video/mp4";
+      const cleanMime=mime.split(";")[0].trim();
+      const ext=cleanMime.includes("mp4")?"mp4":cleanMime.includes("webm")?"webm":cleanMime.includes("mov")?"mov":"mp4";
+      const filename="video_messages/"+(S.myUid||"anon")+"/"+Date.now()+"."+ext;
+      const ref=storage.ref(filename);
+      await ref.put(f,{contentType:cleanMime});
+      const url=await ref.getDownloadURL();
+      await pushMsg({from:S.myUid,type:"video",src:url,storageUrl:url,mime:cleanMime,text:"",t:nowT(),del:false});
+      closeVideoPrev();
+    }catch(e){
+      toast("Échec envoi vidéo: "+e.message,"err");
+      if(btn){btn.disabled=false;btn.textContent="➤";}
+    }
   };
 
   // ---- VOCAL ----
@@ -5705,21 +5776,40 @@ window.addEventListener("DOMContentLoaded",()=>{
     const mimeType=S.recMimeType||"audio/webm";
     const chunks=[...S.recChunks]; // copie avant nettoyage
 
-    recorder.onstop=()=>{
+    recorder.onstop=async()=>{
       const allChunks=[...chunks,...S.recChunks];
-      const blob=new Blob(allChunks,{type:mimeType});
-      const reader=new FileReader();
-      reader.onloadend=()=>{
-        if(!reader.result||reader.result.length<100){
-          toast("Enregistrement vide","err");
-          return;
-        }
-        pushMsg({from:S.myUid,type:"voice",src:reader.result,duration:finalDuration,mime:mimeType,text:"",t:nowT(),dateStr:nowDate(),del:false});
-      };
-      reader.readAsDataURL(blob);
-      // Nettoyer
+      const cleanMime=mimeType.split(";")[0].trim()||"audio/webm";
+      const blob=new Blob(allChunks,{type:cleanMime});
+      // Nettoyer immédiatement
       if(S.recStream){S.recStream.getTracks().forEach(tr=>tr.stop());S.recStream=null;}
       S.recorder=null;S.recChunks=[];S.recSecs=0;S.recPaused=false;
+
+      if(blob.size < 100){
+        toast("Enregistrement vide","err");
+        return;
+      }
+
+      // Restaurer activeId si perdu
+      const targetId = S.activeId || S._lastActiveId || sessionStorage.getItem("sonia_activeId");
+      if(!targetId||!S.myUid){
+        toast("Erreur: destinataire inconnu","err");
+        return;
+      }
+      S.activeId = targetId;
+
+      toast("Envoi vocal en cours...");
+      try{
+        // Uploader directement le blob sur Storage (pas de base64)
+        const ext=cleanMime.includes("webm")?"webm":cleanMime.includes("ogg")?"ogg":cleanMime.includes("mp4")?"mp4":"webm";
+        const filename="voice_messages/"+S.myUid+"/"+Date.now()+"."+ext;
+        const ref=storage.ref(filename);
+        await ref.put(blob,{contentType:cleanMime});
+        const url=await ref.getDownloadURL();
+        await pushMsg({from:S.myUid,type:"voice",src:url,storageUrl:url,duration:finalDuration,mime:cleanMime,text:"",t:nowT(),dateStr:nowDate(),del:false});
+      }catch(e){
+        console.error("sendVoice upload:",e.message);
+        toast("Échec envoi vocal: "+e.message,"err");
+      }
     };
 
     try{recorder.stop();}catch(e){stopRec();}
@@ -5755,22 +5845,37 @@ window.addEventListener("DOMContentLoaded",()=>{
     if(scType==="text"){const txt=document.getElementById("sc-text-in").value.trim();if(!txt){toast("Écrivez quelque chose","err");return;}scSrc=txt;}
     if(!scType||!scSrc){toast("Choisissez un contenu","err");return;}
 
-    // Vérifier la taille (Firebase limite ~10MB par valeur, on reste prudent)
-    if(scSrc.length > 6*1024*1024){
-      toast("Fichier trop volumineux (max ~4 Mo)","err");
-      return;
-    }
-
     const pubBtn=document.querySelector('#status-create-modal .big-btn[onclick="publishStatus()"]');
     if(pubBtn){pubBtn.textContent="Publication...";pubBtn.disabled=true;}
 
     try{
-      await db.ref("statuses/"+S.myUid).push({uid:S.myUid,name:S.profile.name||S.myPhone,emoji:S.profile.emoji,avType:S.profile.avType,img:S.profile.img||null,type:scType,src:scSrc,ts:Date.now(),viewers:{}});
+      let finalSrc = scSrc;
+
+      // Pour les photos et vidéos → uploader sur Storage d'abord
+      if((scType==="photo"||scType==="video") && scSrc.startsWith("data:")){
+        toast("Upload en cours...");
+        const mime = scSrc.split(";")[0].replace("data:","").trim();
+        const folder = scType==="video" ? "status_videos" : "status_photos";
+        finalSrc = await uploadMediaToStorage(scSrc, folder, mime);
+      }
+
+      await db.ref("statuses/"+S.myUid).push({
+        uid:S.myUid,
+        name:S.profile.name||S.myPhone,
+        emoji:S.profile.emoji,
+        avType:S.profile.avType,
+        img:S.profile.img||null,
+        type:scType,
+        src:finalSrc,
+        ts:Date.now(),
+        viewers:{}
+      });
       document.getElementById("status-create-modal").style.display="none";
       toast("Statut publié ✓");
       loadStatuses();
     }catch(e){
-      toast("Erreur : "+e.message,"err");
+      console.error("publishStatus:",e.message);
+      toast("Erreur publication: "+e.message,"err");
     }finally{
       if(pubBtn){pubBtn.textContent="Publier";pubBtn.disabled=false;}
     }
