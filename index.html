@@ -61,16 +61,22 @@ async function uploadViaRest(base64Data, storagePath, contentType){
 
   const bucket = firebaseConfig.storageBucket;
   const encodedPath = encodeURIComponent(storagePath);
-  const uploadUrl = "https://firebasestorage.googleapis.com/v0/b/"+bucket+"/o?name="+encodedPath+"&uploadType=media";
+  // Le token est passé en paramètre de requête (access_token) plutôt qu'en en-tête
+  // Authorization : un en-tête personnalisé déclenche un preflight CORS OPTIONS que
+  // certains WebView Android bloquent silencieusement ("Failed to fetch" immédiat).
+  // En paramètre d'URL, la requête POST reste "simple" et évite le preflight.
+  const uploadUrl = "https://firebasestorage.googleapis.com/v0/b/"+bucket+"/o?name="+encodedPath+"&uploadType=media&access_token="+encodeURIComponent(token);
 
-  const resp = await fetch(uploadUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": contentType || "application/octet-stream",
-      "Authorization": "Firebase "+token
-    },
-    body: byteArray
-  });
+  let resp;
+  try{
+    resp = await fetch(uploadUrl, {
+      method: "POST",
+      headers: { "Content-Type": contentType || "application/octet-stream" },
+      body: byteArray
+    });
+  }catch(networkErr){
+    throw new Error("Réseau indisponible pour l'upload (fetch a échoué avant toute réponse): "+networkErr.message);
+  }
 
   if(!resp.ok){
     const errText = await resp.text().catch(()=>"");
@@ -5932,7 +5938,7 @@ window.addEventListener("DOMContentLoaded",()=>{
 
         // Upload via API REST directe (contourne le SDK Storage qui se bloque
         // silencieusement dans ce WebView Android)
-        debugLog("② Upload REST (fetch) — démarrage...");
+        debugLog("② Upload REST (fetch) — démarrage... bucket="+firebaseConfig.storageBucket);
         const url=await withTimeout(uploadViaRest(base64, filename, cleanMime), 30000, "Upload REST");
         debugLog("② Upload REST OK — "+url);
 
