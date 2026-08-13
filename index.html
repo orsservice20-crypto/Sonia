@@ -5816,13 +5816,23 @@ window.addEventListener("DOMContentLoaded",()=>{
       S.activeId = targetId;
 
       toast("Envoi vocal en cours...");
+
+      // Garde-fou : certains WebView Android bloquent silencieusement une Promise du SDK
+      // Storage (ni résolution ni rejet) — sans ce timeout, "Envoi vocal en cours..."
+      // reste affiché indéfiniment sans jamais atteindre le catch ci-dessous.
+      const withTimeout=(promise,ms,label)=>Promise.race([
+        promise,
+        new Promise((_,rej)=>setTimeout(()=>rej(new Error(label+" (délai dépassé "+ms+"ms)")),ms))
+      ]);
+
       try{
         const ext=cleanMime.includes("webm")?"webm":cleanMime.includes("ogg")?"ogg":cleanMime.includes("mp4")?"mp4":"webm";
         const filename="voice_messages/"+S.myUid+"/"+Date.now()+"."+ext;
         const ref=storage.ref(filename);
+        console.log("[vocal] blob size:",blob.size,"mime:",cleanMime);
 
         // Convertir blob → base64 pour compatibilité Android WebView
-        const base64=await new Promise((res,rej)=>{
+        const base64=await withTimeout(new Promise((res,rej)=>{
           const reader=new FileReader();
           reader.onloadend=()=>{
             const b64=reader.result.split(",")[1];
@@ -5831,12 +5841,15 @@ window.addEventListener("DOMContentLoaded",()=>{
           };
           reader.onerror=()=>rej(new Error("Lecture blob échouée"));
           reader.readAsDataURL(blob);
-        });
+        }),15000,"Conversion base64");
+        console.log("[vocal] base64 prêt, longueur:",base64.length);
 
         // Uploader en base64 (méthode la plus compatible WebView Android)
-        await ref.putString(base64,"base64",{contentType:cleanMime});
-        const url=await ref.getDownloadURL();
-        await pushMsg({from:S.myUid,type:"voice",src:url,storageUrl:url,duration:finalDuration,mime:cleanMime,text:"",t:nowT(),dateStr:nowDate(),del:false});
+        await withTimeout(ref.putString(base64,"base64",{contentType:cleanMime}),30000,"Upload Storage");
+        console.log("[vocal] upload terminé");
+        const url=await withTimeout(ref.getDownloadURL(),15000,"Récupération URL");
+        console.log("[vocal] url obtenue:",url);
+        await withTimeout(pushMsg({from:S.myUid,type:"voice",src:url,storageUrl:url,duration:finalDuration,mime:cleanMime,text:"",t:nowT(),dateStr:nowDate(),del:false}),15000,"Écriture message");
         toast("✓ Vocal envoyé");
       }catch(e){
         console.error("sendVoice upload:",e.code||"",e.message);
