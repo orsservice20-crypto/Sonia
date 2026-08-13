@@ -3415,9 +3415,14 @@ function pushMsg(m){
           auth.signInAnonymously().then(()=>{
             toast("🔄 Session expirée. Renvoyez le message.","err");
           }).catch(()=>toast("❌ Session expirée - rechargez l'app","err"));
+        } else if(S.blockedCache && S.blockedCache[S.activeId]){
+          // Vraiment bloqué — masquer silencieusement dans ce cas précis
+          console.warn("Message non délivré (contact bloqué)");
         } else {
-          // Probablement bloqué — masquer silencieusement
-          console.warn("Message non délivré (probable blocage)");
+          // Refus des règles Firebase pour une autre raison (ex: validation du nœud
+          // message) — ne PAS masquer, sinon l'utilisateur croit avoir envoyé pour rien.
+          console.error("PERMISSION_DENIED non lié à un blocage:", msg);
+          toast("❌ Envoi refusé par le serveur: "+msg,"err");
         }
         return;
       }
@@ -5834,8 +5839,8 @@ window.addEventListener("DOMContentLoaded",()=>{
         await pushMsg({from:S.myUid,type:"voice",src:url,storageUrl:url,duration:finalDuration,mime:cleanMime,text:"",t:nowT(),dateStr:nowDate(),del:false});
         toast("✓ Vocal envoyé");
       }catch(e){
-        console.error("sendVoice upload:",e.message);
-        toast("Échec envoi vocal: "+e.message,"err");
+        console.error("sendVoice upload:",e.code||"",e.message);
+        toast("Échec envoi vocal: "+(e.code?e.code+" — ":"")+e.message,"err");
       }
     };
 
