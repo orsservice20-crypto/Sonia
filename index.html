@@ -585,6 +585,30 @@ window.addEventListener("popstate",function(e){
 
 function toast(msg,type){const t=document.createElement("div");t.className="toast"+(type==="err"?" toast-err":"");t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.classList.add("show"),10);setTimeout(()=>{t.classList.remove("show");setTimeout(()=>t.remove(),400);},3000);}
 
+// ---- PANNEAU DE DEBUG VISUEL (temporaire) ----
+// Affiche un journal d'étapes directement à l'écran, pour diagnostiquer sans USB/chrome://inspect.
+function debugLog(msg){
+  try{
+    let panel=document.getElementById("debug-panel");
+    if(!panel){
+      panel=document.createElement("div");
+      panel.id="debug-panel";
+      panel.style.cssText="position:fixed;left:8px;right:8px;bottom:8px;max-height:45vh;overflow-y:auto;background:rgba(0,0,0,0.92);color:#0f0;font-family:monospace;font-size:11px;padding:8px;border-radius:8px;z-index:999999;white-space:pre-wrap;word-break:break-all;box-shadow:0 0 10px rgba(0,0,0,0.5)";
+      const closeBtn=document.createElement("button");
+      closeBtn.textContent="✕ Fermer le debug";
+      closeBtn.style.cssText="display:block;width:100%;margin-bottom:6px;padding:6px;background:#333;color:#fff;border:none;border-radius:6px;font-size:11px";
+      closeBtn.onclick=()=>panel.remove();
+      panel.appendChild(closeBtn);
+      document.body.appendChild(panel);
+    }
+    const line=document.createElement("div");
+    const time=new Date().toLocaleTimeString();
+    line.textContent="["+time+"] "+msg;
+    panel.appendChild(line);
+    panel.scrollTop=panel.scrollHeight;
+  }catch(e){}
+}
+
 // ---- OTP BOXES (initialisées au chargement) ----
 const otpBoxes=[];
 window.addEventListener("DOMContentLoaded",()=>{
@@ -3356,9 +3380,11 @@ async function uploadMediaToStorage(dataUrl, folder, mimeType){
 function pushMsg(m){
   const key=chatKey(S.myUid,S.activeId);
   if(!m.ts) m.ts=Date.now();
+  debugLog("pushMsg() type="+m.type+" activeId="+S.activeId+" key="+key);
 
   // Empêcher l'envoi vers un contact que j'ai bloqué
   if(S.blockedCache && S.blockedCache[S.activeId]){
+    debugLog("❌ pushMsg: contact bloqué, envoi annulé");
     toast("Vous avez bloqué ce contact — débloquez-le pour lui écrire","err");
     return Promise.reject(new Error("contact bloqué"));
   }
@@ -3401,11 +3427,14 @@ function pushMsg(m){
     CACHE.save("lastTs_"+key,finalMsg.ts);
 
     const newMsgRef=msgRef.push();
+    debugLog("Écriture du message dans chats/"+key+"/messages/"+newMsgRef.key+" ...");
     return newMsgRef.set(finalMsg).then(()=>{
+      debugLog("✔ Message écrit en DB avec succès (id="+newMsgRef.key+")");
       lastRef.set({text:finalMsg.text||"",t:finalMsg.t,type:finalMsg.type,del:false,ts:finalMsg.ts,msgId:newMsgRef.key}).catch(()=>{});
     }).catch(e=>{
       const code=e&&e.code||"";
       const msg=e&&e.message||"";
+      debugLog("❌ newMsgRef.set() a échoué: code="+code+" msg="+msg);
       console.error("pushMsg Firebase error:", code, msg);
       // PERMISSION_DENIED peut vouloir dire : contact bloqué OU auth expirée
       if(code==="PERMISSION_DENIED"||/permission[_ ]denied/i.test(msg)){
@@ -3518,8 +3547,10 @@ function startRec(){
   const rd=$("rec-dot");if(rd)rd.classList.add("pulse");
   $("normal-row").style.display="none";
   $("rec-bar").style.display="flex";
+  debugLog("▶ startRec() — demande getUserMedia...");
 
   navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
+    debugLog("✔ getUserMedia OK — tracks="+stream.getAudioTracks().length);
     S.recStream=stream;
     S.recChunks=[];
     let mimeType="audio/webm";
@@ -3527,10 +3558,16 @@ function startRec(){
       mimeType=MediaRecorder.isTypeSupported("audio/mp4")?"audio/mp4":"";
     }
     S.recMimeType=mimeType||"audio/webm";
+    debugLog("mimeType choisi: "+S.recMimeType);
     S.recorder=mimeType?new MediaRecorder(stream,{mimeType}):new MediaRecorder(stream);
-    S.recorder.ondataavailable=e=>{if(e.data&&e.data.size>0)S.recChunks.push(e.data);};
+    S.recorder.ondataavailable=e=>{
+      if(e.data&&e.data.size>0){S.recChunks.push(e.data);debugLog("chunk reçu: "+e.data.size+" octets (total chunks="+S.recChunks.length+")");}
+    };
+    S.recorder.onerror=e=>debugLog("❌ recorder.onerror: "+(e.error?e.error.message:JSON.stringify(e)));
     S.recorder.start();
-  }).catch(()=>{
+    debugLog("✔ recorder.start() appelé — state="+S.recorder.state);
+  }).catch(err=>{
+    debugLog("❌ getUserMedia a échoué: "+err.name+" — "+err.message);
     toast("Microphone inaccessible","err");
     stopRec();
   });
@@ -5772,6 +5809,7 @@ window.addEventListener("DOMContentLoaded",()=>{
   window.sendVoice=function(){
     clearInterval(S.recTick);
     const finalDuration=S.recSecs;
+    debugLog("▶ sendVoice() appelé — durée="+finalDuration+"s, recorder.state="+(S.recorder?S.recorder.state:"null"));
 
     // Remettre l'UI normale immédiatement
     $("rec-bar").style.display="none";
@@ -5780,12 +5818,13 @@ window.addEventListener("DOMContentLoaded",()=>{
     if(btn){btn.textContent="🎙";btn.style.background="#111";btn.style.color="#fff";btn.style.transform="scale(1)";}
 
     if(!S.recorder || S.recorder.state==="inactive"){
-      // Rien à envoyer
+      debugLog("⚠ Abandon: recorder absent ou inactif");
       stopRec();
       return;
     }
     if(finalDuration < 1){
       toast("Message trop court");
+      debugLog("⚠ Abandon: durée < 1s");
       stopRec();
       return;
     }
@@ -5793,17 +5832,21 @@ window.addEventListener("DOMContentLoaded",()=>{
     const recorder=S.recorder;
     const mimeType=S.recMimeType||"audio/webm";
     const chunks=[...S.recChunks]; // copie avant nettoyage
+    debugLog("recMimeType="+mimeType+", chunks déjà présents="+chunks.length);
 
     recorder.onstop=async()=>{
+      debugLog("✔ recorder.onstop déclenché");
       const allChunks=[...chunks,...S.recChunks];
       const cleanMime=mimeType.split(";")[0].trim()||"audio/webm";
       const blob=new Blob(allChunks,{type:cleanMime});
+      debugLog("Blob créé: taille="+blob.size+" octets, type="+cleanMime+", nb chunks="+allChunks.length);
       // Nettoyer immédiatement
       if(S.recStream){S.recStream.getTracks().forEach(tr=>tr.stop());S.recStream=null;}
       S.recorder=null;S.recChunks=[];S.recSecs=0;S.recPaused=false;
 
       if(blob.size < 100){
         toast("Enregistrement vide","err");
+        debugLog("❌ Blob trop petit (<100 octets), abandon");
         return;
       }
 
@@ -5811,9 +5854,11 @@ window.addEventListener("DOMContentLoaded",()=>{
       const targetId = S.activeId || S._lastActiveId || sessionStorage.getItem("sonia_activeId");
       if(!targetId||!S.myUid){
         toast("Erreur: destinataire inconnu","err");
+        debugLog("❌ targetId="+targetId+" myUid="+S.myUid);
         return;
       }
       S.activeId = targetId;
+      debugLog("Destinataire="+targetId+", myUid="+S.myUid+", auth.currentUser="+(auth.currentUser?auth.currentUser.uid:"NULL"));
 
       toast("Envoi vocal en cours...");
 
@@ -5829,9 +5874,10 @@ window.addEventListener("DOMContentLoaded",()=>{
         const ext=cleanMime.includes("webm")?"webm":cleanMime.includes("ogg")?"ogg":cleanMime.includes("mp4")?"mp4":"webm";
         const filename="voice_messages/"+S.myUid+"/"+Date.now()+"."+ext;
         const ref=storage.ref(filename);
-        console.log("[vocal] blob size:",blob.size,"mime:",cleanMime);
+        debugLog("Chemin storage: "+filename);
 
         // Convertir blob → base64 pour compatibilité Android WebView
+        debugLog("① Conversion base64 — démarrage...");
         const base64=await withTimeout(new Promise((res,rej)=>{
           const reader=new FileReader();
           reader.onloadend=()=>{
@@ -5842,22 +5888,29 @@ window.addEventListener("DOMContentLoaded",()=>{
           reader.onerror=()=>rej(new Error("Lecture blob échouée"));
           reader.readAsDataURL(blob);
         }),15000,"Conversion base64");
-        console.log("[vocal] base64 prêt, longueur:",base64.length);
+        debugLog("① Conversion base64 OK — longueur="+base64.length);
 
         // Uploader en base64 (méthode la plus compatible WebView Android)
+        debugLog("② Upload Storage (putString) — démarrage...");
         await withTimeout(ref.putString(base64,"base64",{contentType:cleanMime}),30000,"Upload Storage");
-        console.log("[vocal] upload terminé");
+        debugLog("② Upload Storage OK");
+
+        debugLog("③ getDownloadURL — démarrage...");
         const url=await withTimeout(ref.getDownloadURL(),15000,"Récupération URL");
-        console.log("[vocal] url obtenue:",url);
+        debugLog("③ getDownloadURL OK — "+url);
+
+        debugLog("④ pushMsg (écriture Realtime DB) — démarrage...");
         await withTimeout(pushMsg({from:S.myUid,type:"voice",src:url,storageUrl:url,duration:finalDuration,mime:cleanMime,text:"",t:nowT(),dateStr:nowDate(),del:false}),15000,"Écriture message");
+        debugLog("④ pushMsg OK — TERMINÉ ✓");
         toast("✓ Vocal envoyé");
       }catch(e){
-        console.error("sendVoice upload:",e.code||"",e.message);
+        debugLog("❌ ERREUR: code="+(e.code||"aucun")+" message="+e.message);
         toast("Échec envoi vocal: "+(e.code?e.code+" — ":"")+e.message,"err");
       }
     };
 
-    try{recorder.stop();}catch(e){stopRec();}
+    debugLog("Appel de recorder.stop()...");
+    try{recorder.stop();}catch(e){debugLog("❌ recorder.stop() a levé: "+e.message);stopRec();}
   };
 
   // ---- STATUS CREATE ----
