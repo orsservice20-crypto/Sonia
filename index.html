@@ -44,6 +44,47 @@ const db=firebase.database();
 const storage=firebase.storage();
 const messaging=firebase.messaging();
 
+// ---- UPLOAD REST DIRECT (contournement du SDK Storage) ----
+// Certains WebView Android (Median/Cordova) bloquent silencieusement les Promises
+// internes du SDK Firebase Storage compat lors d'un putString/put (ni résolution,
+// ni rejet, ni erreur réseau visible). On contourne en appelant directement l'API
+// REST Firebase Storage via fetch, qui est beaucoup plus fiable dans ces WebView.
+async function uploadViaRest(base64Data, storagePath, contentType){
+  const token = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+  if(!token) throw new Error("Utilisateur non authentifié (pas de token)");
+
+  // Convertir base64 → bytes bruts pour l'envoyer en corps binaire (plus fiable
+  // que multipart dans les WebView limités)
+  const byteChars = atob(base64Data);
+  const byteArray = new Uint8Array(byteChars.length);
+  for(let i=0;i<byteChars.length;i++) byteArray[i]=byteChars.charCodeAt(i);
+
+  const bucket = firebaseConfig.storageBucket;
+  const encodedPath = encodeURIComponent(storagePath);
+  const uploadUrl = "https://firebasestorage.googleapis.com/v0/b/"+bucket+"/o?name="+encodedPath+"&uploadType=media";
+
+  const resp = await fetch(uploadUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": contentType || "application/octet-stream",
+      "Authorization": "Firebase "+token
+    },
+    body: byteArray
+  });
+
+  if(!resp.ok){
+    const errText = await resp.text().catch(()=>"");
+    throw new Error("REST upload HTTP "+resp.status+": "+errText.substring(0,200));
+  }
+
+  const json = await resp.json();
+  // Construire l'URL de téléchargement publique via le token retourné
+  const downloadToken = json.downloadTokens;
+  const encodedFullPath = encodeURIComponent(json.name);
+  const downloadUrl = "https://firebasestorage.googleapis.com/v0/b/"+bucket+"/o/"+encodedFullPath+"?alt=media"+(downloadToken?"&token="+downloadToken:"");
+  return downloadUrl;
+}
+
 // ---- NOTIFICATIONS PUSH FCM ----
 // Clé VAPID publique (Web Push) — à remplacer par la vraie depuis Firebase Console
 // Firebase Console → Paramètres projet → Cloud Messaging → Certificats Web Push → Générer une paire de clés
@@ -5873,7 +5914,6 @@ window.addEventListener("DOMContentLoaded",()=>{
       try{
         const ext=cleanMime.includes("webm")?"webm":cleanMime.includes("ogg")?"ogg":cleanMime.includes("mp4")?"mp4":"webm";
         const filename="voice_messages/"+S.myUid+"/"+Date.now()+"."+ext;
-        const ref=storage.ref(filename);
         debugLog("Chemin storage: "+filename);
 
         // Convertir blob → base64 pour compatibilité Android WebView
@@ -5890,14 +5930,11 @@ window.addEventListener("DOMContentLoaded",()=>{
         }),15000,"Conversion base64");
         debugLog("① Conversion base64 OK — longueur="+base64.length);
 
-        // Uploader en base64 (méthode la plus compatible WebView Android)
-        debugLog("② Upload Storage (putString) — démarrage...");
-        await withTimeout(ref.putString(base64,"base64",{contentType:cleanMime}),30000,"Upload Storage");
-        debugLog("② Upload Storage OK");
-
-        debugLog("③ getDownloadURL — démarrage...");
-        const url=await withTimeout(ref.getDownloadURL(),15000,"Récupération URL");
-        debugLog("③ getDownloadURL OK — "+url);
+        // Upload via API REST directe (contourne le SDK Storage qui se bloque
+        // silencieusement dans ce WebView Android)
+        debugLog("② Upload REST (fetch) — démarrage...");
+        const url=await withTimeout(uploadViaRest(base64, filename, cleanMime), 30000, "Upload REST");
+        debugLog("② Upload REST OK — "+url);
 
         debugLog("④ pushMsg (écriture Realtime DB) — démarrage...");
         await withTimeout(pushMsg({from:S.myUid,type:"voice",src:url,storageUrl:url,duration:finalDuration,mime:cleanMime,text:"",t:nowT(),dateStr:nowDate(),del:false}),15000,"Écriture message");
