@@ -646,6 +646,11 @@ function debugLog(msg){
       closeBtn.style.cssText="display:block;width:100%;margin-bottom:6px;padding:6px;background:#333;color:#fff;border:none;border-radius:6px;font-size:11px";
       closeBtn.onclick=()=>panel.remove();
       panel.appendChild(closeBtn);
+      const testBtn=document.createElement("button");
+      testBtn.textContent="🔬 Tester l'accès réseau (diagnostic)";
+      testBtn.style.cssText="display:block;width:100%;margin-bottom:6px;padding:6px;background:#0a5;color:#fff;border:none;border-radius:6px;font-size:11px";
+      testBtn.onclick=runNetworkDiagnostic;
+      panel.appendChild(testBtn);
       document.body.appendChild(panel);
     }
     const line=document.createElement("div");
@@ -654,6 +659,28 @@ function debugLog(msg){
     panel.appendChild(line);
     panel.scrollTop=panel.scrollHeight;
   }catch(e){}
+}
+
+// Teste plusieurs domaines/méthodes pour isoler précisément ce qui est bloqué
+// par le WebView (CORS, firewall Median, absence de réseau, etc.)
+async function runNetworkDiagnostic(){
+  debugLog("=== DIAGNOSTIC RÉSEAU ===");
+  const tests=[
+    {name:"GET firebaseio.com (Realtime DB, déjà fonctionnel)", url:"https://sonia-a2b62-default-rtdb.firebaseio.com/.json?shallow=true", opts:{method:"GET"}},
+    {name:"GET firebasestorage.googleapis.com (racine bucket)", url:"https://firebasestorage.googleapis.com/v0/b/"+firebaseConfig.storageBucket+"/o?maxResults=1", opts:{method:"GET"}},
+    {name:"GET google.com (test internet générique)", url:"https://www.google.com/generate_204", opts:{method:"GET",mode:"no-cors"}},
+    {name:"GET googleapis.com (identitytoolkit, auth)", url:"https://identitytoolkit.googleapis.com/", opts:{method:"GET"}},
+  ];
+  for(const t of tests){
+    try{
+      const start=Date.now();
+      const resp=await fetch(t.url, t.opts);
+      debugLog("✔ "+t.name+" — status="+resp.status+" ("+(Date.now()-start)+"ms)");
+    }catch(e){
+      debugLog("❌ "+t.name+" — ÉCHEC: "+e.message);
+    }
+  }
+  debugLog("=== FIN DIAGNOSTIC ===");
 }
 
 // ---- OTP BOXES (initialisées au chargement) ----
