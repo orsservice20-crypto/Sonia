@@ -59,26 +59,36 @@ async function uploadViaRest(base64Data, storagePath, contentType){
   for(let i=0;i<byteChars.length;i++) byteArray[i]=byteChars.charCodeAt(i);
 
   const bucket = firebaseConfig.storageBucket;
+  // L'API REST v0 de Firebase Storage attend parfois l'ancien format de bucket
+  // (<project-id>.appspot.com) même quand la config utilise le nouveau format
+  // (<project-id>.firebasestorage.app), qui renvoie un 404 sur cet endpoint.
+  const legacyBucket = bucket.endsWith(".firebasestorage.app")
+    ? bucket.replace(".firebasestorage.app",".appspot.com")
+    : bucket;
   const encodedPath = encodeURIComponent(storagePath);
-  const uploadUrl = "https://firebasestorage.googleapis.com/v0/b/"+bucket+"/o?name="+encodedPath+"&uploadType=media&access_token="+encodeURIComponent(token);
+  const buildUrl=(b)=>"https://firebasestorage.googleapis.com/v0/b/"+b+"/o?name="+encodedPath+"&uploadType=media&access_token="+encodeURIComponent(token);
 
-  let resp;
+  let resp, usedBucket=bucket;
   try{
-    // Pas de header Content-Type custom ici -> requête CORS "simple", pas de preflight
-    resp = await fetch(uploadUrl, { method: "POST", body: byteArray });
+    resp = await fetch(buildUrl(bucket), { method: "POST", body: byteArray });
+    if(resp.status===404 && legacyBucket!==bucket){
+      // Nouveau format refusé -> réessai avec l'ancien format de bucket
+      usedBucket=legacyBucket;
+      resp = await fetch(buildUrl(legacyBucket), { method: "POST", body: byteArray });
+    }
   }catch(networkErr){
     throw new Error("Réseau indisponible pour l'upload (fetch a échoué avant toute réponse): "+networkErr.message);
   }
 
   if(!resp.ok){
     const errText = await resp.text().catch(()=>"");
-    throw new Error("REST upload HTTP "+resp.status+": "+errText.substring(0,200));
+    throw new Error("REST upload HTTP "+resp.status+" (bucket testé: "+usedBucket+"): "+errText.substring(0,200));
   }
 
   const json = await resp.json();
   const downloadToken = json.downloadTokens;
   const encodedFullPath = encodeURIComponent(json.name);
-  const downloadUrl = "https://firebasestorage.googleapis.com/v0/b/"+bucket+"/o/"+encodedFullPath+"?alt=media"+(downloadToken?"&token="+downloadToken:"");
+  const downloadUrl = "https://firebasestorage.googleapis.com/v0/b/"+usedBucket+"/o/"+encodedFullPath+"?alt=media"+(downloadToken?"&token="+downloadToken:"");
   return downloadUrl;
 }
 
