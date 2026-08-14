@@ -44,54 +44,6 @@ const db=firebase.database();
 const storage=firebase.storage();
 const messaging=firebase.messaging();
 
-// ---- UPLOAD REST DIRECT (contournement du SDK Storage) ----
-// Certains WebView Android (Median/Cordova) bloquent les requêtes CORS "non simples"
-// (celles qui déclenchent un preflight OPTIONS, ex: Content-Type personnalisé ou
-// en-tête Authorization). On envoie donc une requête POST "simple" au sens CORS :
-// pas de Content-Type custom, token uniquement en paramètre d'URL. Le type MIME
-// réel est appliqué après coup via un PATCH de métadonnées (requête GET-like simple).
-async function uploadViaRest(base64Data, storagePath, contentType){
-  const token = auth.currentUser ? await auth.currentUser.getIdToken() : null;
-  if(!token) throw new Error("Utilisateur non authentifié (pas de token)");
-
-  const byteChars = atob(base64Data);
-  const byteArray = new Uint8Array(byteChars.length);
-  for(let i=0;i<byteChars.length;i++) byteArray[i]=byteChars.charCodeAt(i);
-
-  const bucket = firebaseConfig.storageBucket;
-  // L'API REST v0 de Firebase Storage attend parfois l'ancien format de bucket
-  // (<project-id>.appspot.com) même quand la config utilise le nouveau format
-  // (<project-id>.firebasestorage.app), qui renvoie un 404 sur cet endpoint.
-  const legacyBucket = bucket.endsWith(".firebasestorage.app")
-    ? bucket.replace(".firebasestorage.app",".appspot.com")
-    : bucket;
-  const encodedPath = encodeURIComponent(storagePath);
-  const buildUrl=(b)=>"https://firebasestorage.googleapis.com/v0/b/"+b+"/o?name="+encodedPath+"&uploadType=media&access_token="+encodeURIComponent(token);
-
-  let resp, usedBucket=bucket;
-  try{
-    resp = await fetch(buildUrl(bucket), { method: "POST", body: byteArray });
-    if(resp.status===404 && legacyBucket!==bucket){
-      // Nouveau format refusé -> réessai avec l'ancien format de bucket
-      usedBucket=legacyBucket;
-      resp = await fetch(buildUrl(legacyBucket), { method: "POST", body: byteArray });
-    }
-  }catch(networkErr){
-    throw new Error("Réseau indisponible pour l'upload (fetch a échoué avant toute réponse): "+networkErr.message);
-  }
-
-  if(!resp.ok){
-    const errText = await resp.text().catch(()=>"");
-    throw new Error("REST upload HTTP "+resp.status+" (bucket testé: "+usedBucket+"): "+errText.substring(0,200));
-  }
-
-  const json = await resp.json();
-  const downloadToken = json.downloadTokens;
-  const encodedFullPath = encodeURIComponent(json.name);
-  const downloadUrl = "https://firebasestorage.googleapis.com/v0/b/"+usedBucket+"/o/"+encodedFullPath+"?alt=media"+(downloadToken?"&token="+downloadToken:"");
-  return downloadUrl;
-}
-
 // ---- NOTIFICATIONS PUSH FCM ----
 // Clé VAPID publique (Web Push) — à remplacer par la vraie depuis Firebase Console
 // Firebase Console → Paramètres projet → Cloud Messaging → Certificats Web Push → Générer une paire de clés
@@ -632,57 +584,6 @@ window.addEventListener("popstate",function(e){
 });
 
 function toast(msg,type){const t=document.createElement("div");t.className="toast"+(type==="err"?" toast-err":"");t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.classList.add("show"),10);setTimeout(()=>{t.classList.remove("show");setTimeout(()=>t.remove(),400);},3000);}
-
-// ---- PANNEAU DE DEBUG VISUEL (temporaire) ----
-// Affiche un journal d'étapes directement à l'écran, pour diagnostiquer sans USB/chrome://inspect.
-function debugLog(msg){
-  try{
-    let panel=document.getElementById("debug-panel");
-    if(!panel){
-      panel=document.createElement("div");
-      panel.id="debug-panel";
-      panel.style.cssText="position:fixed;left:8px;right:8px;bottom:8px;max-height:45vh;overflow-y:auto;background:rgba(0,0,0,0.92);color:#0f0;font-family:monospace;font-size:11px;padding:8px;border-radius:8px;z-index:999999;white-space:pre-wrap;word-break:break-all;box-shadow:0 0 10px rgba(0,0,0,0.5)";
-      const closeBtn=document.createElement("button");
-      closeBtn.textContent="✕ Fermer le debug";
-      closeBtn.style.cssText="display:block;width:100%;margin-bottom:6px;padding:6px;background:#333;color:#fff;border:none;border-radius:6px;font-size:11px";
-      closeBtn.onclick=()=>panel.remove();
-      panel.appendChild(closeBtn);
-      const testBtn=document.createElement("button");
-      testBtn.textContent="🔬 Tester l'accès réseau (diagnostic)";
-      testBtn.style.cssText="display:block;width:100%;margin-bottom:6px;padding:6px;background:#0a5;color:#fff;border:none;border-radius:6px;font-size:11px";
-      testBtn.onclick=runNetworkDiagnostic;
-      panel.appendChild(testBtn);
-      document.body.appendChild(panel);
-    }
-    const line=document.createElement("div");
-    const time=new Date().toLocaleTimeString();
-    line.textContent="["+time+"] "+msg;
-    panel.appendChild(line);
-    panel.scrollTop=panel.scrollHeight;
-  }catch(e){}
-}
-
-// Teste plusieurs domaines/méthodes pour isoler précisément ce qui est bloqué
-// par le WebView (CORS, firewall Median, absence de réseau, etc.)
-async function runNetworkDiagnostic(){
-  debugLog("=== DIAGNOSTIC RÉSEAU ===");
-  const tests=[
-    {name:"GET firebaseio.com (Realtime DB, déjà fonctionnel)", url:"https://sonia-a2b62-default-rtdb.firebaseio.com/.json?shallow=true", opts:{method:"GET"}},
-    {name:"GET firebasestorage.googleapis.com (racine bucket)", url:"https://firebasestorage.googleapis.com/v0/b/"+firebaseConfig.storageBucket+"/o?maxResults=1", opts:{method:"GET"}},
-    {name:"GET google.com (test internet générique)", url:"https://www.google.com/generate_204", opts:{method:"GET",mode:"no-cors"}},
-    {name:"GET googleapis.com (identitytoolkit, auth)", url:"https://identitytoolkit.googleapis.com/", opts:{method:"GET"}},
-  ];
-  for(const t of tests){
-    try{
-      const start=Date.now();
-      const resp=await fetch(t.url, t.opts);
-      debugLog("✔ "+t.name+" — status="+resp.status+" ("+(Date.now()-start)+"ms)");
-    }catch(e){
-      debugLog("❌ "+t.name+" — ÉCHEC: "+e.message);
-    }
-  }
-  debugLog("=== FIN DIAGNOSTIC ===");
-}
 
 // ---- OTP BOXES (initialisées au chargement) ----
 const otpBoxes=[];
@@ -3455,11 +3356,9 @@ async function uploadMediaToStorage(dataUrl, folder, mimeType){
 function pushMsg(m){
   const key=chatKey(S.myUid,S.activeId);
   if(!m.ts) m.ts=Date.now();
-  debugLog("pushMsg() type="+m.type+" activeId="+S.activeId+" key="+key);
 
   // Empêcher l'envoi vers un contact que j'ai bloqué
   if(S.blockedCache && S.blockedCache[S.activeId]){
-    debugLog("❌ pushMsg: contact bloqué, envoi annulé");
     toast("Vous avez bloqué ce contact — débloquez-le pour lui écrire","err");
     return Promise.reject(new Error("contact bloqué"));
   }
@@ -3502,14 +3401,11 @@ function pushMsg(m){
     CACHE.save("lastTs_"+key,finalMsg.ts);
 
     const newMsgRef=msgRef.push();
-    debugLog("Écriture du message dans chats/"+key+"/messages/"+newMsgRef.key+" ...");
     return newMsgRef.set(finalMsg).then(()=>{
-      debugLog("✔ Message écrit en DB avec succès (id="+newMsgRef.key+")");
       lastRef.set({text:finalMsg.text||"",t:finalMsg.t,type:finalMsg.type,del:false,ts:finalMsg.ts,msgId:newMsgRef.key}).catch(()=>{});
     }).catch(e=>{
       const code=e&&e.code||"";
       const msg=e&&e.message||"";
-      debugLog("❌ newMsgRef.set() a échoué: code="+code+" msg="+msg);
       console.error("pushMsg Firebase error:", code, msg);
       // PERMISSION_DENIED peut vouloir dire : contact bloqué OU auth expirée
       if(code==="PERMISSION_DENIED"||/permission[_ ]denied/i.test(msg)){
@@ -3519,14 +3415,9 @@ function pushMsg(m){
           auth.signInAnonymously().then(()=>{
             toast("🔄 Session expirée. Renvoyez le message.","err");
           }).catch(()=>toast("❌ Session expirée - rechargez l'app","err"));
-        } else if(S.blockedCache && S.blockedCache[S.activeId]){
-          // Vraiment bloqué — masquer silencieusement dans ce cas précis
-          console.warn("Message non délivré (contact bloqué)");
         } else {
-          // Refus des règles Firebase pour une autre raison (ex: validation du nœud
-          // message) — ne PAS masquer, sinon l'utilisateur croit avoir envoyé pour rien.
-          console.error("PERMISSION_DENIED non lié à un blocage:", msg);
-          toast("❌ Envoi refusé par le serveur: "+msg,"err");
+          // Probablement bloqué — masquer silencieusement
+          console.warn("Message non délivré (probable blocage)");
         }
         return;
       }
@@ -3622,10 +3513,8 @@ function startRec(){
   const rd=$("rec-dot");if(rd)rd.classList.add("pulse");
   $("normal-row").style.display="none";
   $("rec-bar").style.display="flex";
-  debugLog("▶ startRec() — demande getUserMedia...");
 
   navigator.mediaDevices.getUserMedia({audio:true}).then(stream=>{
-    debugLog("✔ getUserMedia OK — tracks="+stream.getAudioTracks().length);
     S.recStream=stream;
     S.recChunks=[];
     let mimeType="audio/webm";
@@ -3633,16 +3522,10 @@ function startRec(){
       mimeType=MediaRecorder.isTypeSupported("audio/mp4")?"audio/mp4":"";
     }
     S.recMimeType=mimeType||"audio/webm";
-    debugLog("mimeType choisi: "+S.recMimeType);
     S.recorder=mimeType?new MediaRecorder(stream,{mimeType}):new MediaRecorder(stream);
-    S.recorder.ondataavailable=e=>{
-      if(e.data&&e.data.size>0){S.recChunks.push(e.data);debugLog("chunk reçu: "+e.data.size+" octets (total chunks="+S.recChunks.length+")");}
-    };
-    S.recorder.onerror=e=>debugLog("❌ recorder.onerror: "+(e.error?e.error.message:JSON.stringify(e)));
+    S.recorder.ondataavailable=e=>{if(e.data&&e.data.size>0)S.recChunks.push(e.data);};
     S.recorder.start();
-    debugLog("✔ recorder.start() appelé — state="+S.recorder.state);
-  }).catch(err=>{
-    debugLog("❌ getUserMedia a échoué: "+err.name+" — "+err.message);
+  }).catch(()=>{
     toast("Microphone inaccessible","err");
     stopRec();
   });
@@ -5881,10 +5764,9 @@ window.addEventListener("DOMContentLoaded",()=>{
   window.pauseRec=function(){ /* non utilisé dans nouvelle UI */ };
   window.resumeRec=function(){ /* non utilisé dans nouvelle UI */ };
 
-  window.sendVoice=function(){
+  window.sendVoice=async function(){
     clearInterval(S.recTick);
     const finalDuration=S.recSecs;
-    debugLog("▶ sendVoice() appelé — durée="+finalDuration+"s, recorder.state="+(S.recorder?S.recorder.state:"null"));
 
     // Remettre l'UI normale immédiatement
     $("rec-bar").style.display="none";
@@ -5893,112 +5775,91 @@ window.addEventListener("DOMContentLoaded",()=>{
     if(btn){btn.textContent="🎙";btn.style.background="#111";btn.style.color="#fff";btn.style.transform="scale(1)";}
 
     if(!S.recorder || S.recorder.state==="inactive"){
-      debugLog("⚠ Abandon: recorder absent ou inactif");
-      stopRec();
-      return;
+      stopRec(); return;
     }
     if(finalDuration < 1){
       toast("Message trop court");
-      debugLog("⚠ Abandon: durée < 1s");
-      stopRec();
-      return;
+      stopRec(); return;
     }
 
-    const recorder=S.recorder;
-    const mimeType=S.recMimeType||"audio/webm";
-    const chunks=[...S.recChunks]; // copie avant nettoyage
-    debugLog("recMimeType="+mimeType+", chunks déjà présents="+chunks.length);
+    // Restaurer activeId si perdu
+    const targetId = S.activeId || S._lastActiveId || sessionStorage.getItem("sonia_activeId");
+    if(!targetId || !S.myUid){
+      toast("Erreur: destinataire inconnu","err");
+      stopRec(); return;
+    }
+    S.activeId = targetId;
 
-    recorder.onstop=async()=>{
-      debugLog("✔ recorder.onstop déclenché");
-      const allChunks=[...chunks,...S.recChunks];
-      const cleanMime=mimeType.split(";")[0].trim()||"audio/webm";
-      const blob=new Blob(allChunks,{type:cleanMime});
-      debugLog("Blob créé: taille="+blob.size+" octets, type="+cleanMime+", nb chunks="+allChunks.length);
-      // Nettoyer immédiatement
-      if(S.recStream){S.recStream.getTracks().forEach(tr=>tr.stop());S.recStream=null;}
-      S.recorder=null;S.recChunks=[];S.recSecs=0;S.recPaused=false;
+    // Capturer les références avant de toucher à S
+    const recorder = S.recorder;
+    const mimeType = S.recMimeType || "audio/webm";
+    const chunks = [...S.recChunks];
+    const stream = S.recStream;
 
-      if(blob.size < 100){
-        toast("Enregistrement vide","err");
-        debugLog("❌ Blob trop petit (<100 octets), abandon");
-        return;
-      }
+    // Vider S immédiatement pour éviter double-envoi
+    S.recorder = null;
+    S.recChunks = [];
+    S.recSecs = 0;
+    S.recPaused = false;
+    S.recStream = null;
+    S.recTick = null;
 
-      // Restaurer activeId si perdu
-      const targetId = S.activeId || S._lastActiveId || sessionStorage.getItem("sonia_activeId");
-      if(!targetId||!S.myUid){
-        toast("Erreur: destinataire inconnu","err");
-        debugLog("❌ targetId="+targetId+" myUid="+S.myUid);
-        return;
-      }
-      S.activeId = targetId;
-      debugLog("Destinataire="+targetId+", myUid="+S.myUid+", auth.currentUser="+(auth.currentUser?auth.currentUser.uid:"NULL"));
+    toast("Envoi vocal en cours...");
 
-      toast("Envoi vocal en cours...");
-
-      // Garde-fou : certains WebView Android bloquent silencieusement une Promise du SDK
-      // Storage (ni résolution ni rejet) — sans ce timeout, "Envoi vocal en cours..."
-      // reste affiché indéfiniment sans jamais atteindre le catch ci-dessous.
-      const withTimeout=(promise,ms,label)=>Promise.race([
-        promise,
-        new Promise((_,rej)=>setTimeout(()=>rej(new Error(label+" (délai dépassé "+ms+"ms)")),ms))
-      ]);
-
-      try{
-        const ext=cleanMime.includes("webm")?"webm":cleanMime.includes("ogg")?"ogg":cleanMime.includes("mp4")?"mp4":"webm";
-        const filename="voice_messages/"+S.myUid+"/"+Date.now()+"."+ext;
-        debugLog("Chemin storage: "+filename);
-
-        // Convertir blob → base64 pour compatibilité Android WebView
-        debugLog("① Conversion base64 — démarrage...");
-        const base64=await withTimeout(new Promise((res,rej)=>{
-          const reader=new FileReader();
-          reader.onloadend=()=>{
-            const b64=reader.result.split(",")[1];
-            if(!b64) rej(new Error("Conversion base64 échouée"));
-            else res(b64);
-          };
-          reader.onerror=()=>rej(new Error("Lecture blob échouée"));
-          reader.readAsDataURL(blob);
-        }),15000,"Conversion base64");
-        debugLog("① Conversion base64 OK — longueur="+base64.length);
-
-        // Upload via API REST directe (contourne le SDK Storage qui se bloque
-        // silencieusement dans ce WebView Android)
-        debugLog("② Upload REST (fetch) — démarrage... bucket="+firebaseConfig.storageBucket);
-        let url=null;
-        let usedFallback=false;
-        try{
-          url=await withTimeout(uploadViaRest(base64, filename, cleanMime), 20000, "Upload REST");
-          debugLog("② Upload REST OK — "+url);
-        }catch(uploadErr){
-          debugLog("⚠ Upload REST a échoué ("+uploadErr.message+") — bascule sur stockage direct en base64 dans la base de données");
-          usedFallback=true;
+    // Attendre onstop via Promise
+    const blobPromise = new Promise((resolve, reject)=>{
+      recorder.onstop = ()=>{
+        // Arrêter le stream micro
+        if(stream) stream.getTracks().forEach(t=>{ try{t.stop();}catch(e){} });
+        const allChunks = [...chunks];
+        const cleanMime = mimeType.split(";")[0].trim() || "audio/webm";
+        const blob = new Blob(allChunks, {type: cleanMime});
+        if(blob.size < 100){
+          reject(new Error("Enregistrement vide ("+blob.size+" bytes)"));
+        } else {
+          resolve({blob, cleanMime});
         }
+      };
+      recorder.onerror = (e)=>{
+        reject(new Error("Erreur recorder: "+(e.error||e)));
+      };
+    });
 
-        debugLog("④ pushMsg (écriture Realtime DB) — démarrage... fallback="+usedFallback);
-        if(usedFallback){
-          // Domaine firebasestorage.googleapis.com inaccessible depuis ce WebView :
-          // on stocke l'audio directement en base64 dans Realtime Database (même
-          // domaine que le reste du chat, donc toujours accessible).
-          if(base64.length > 900000){
-            throw new Error("Message vocal trop long pour le mode secours (max ~10s). Raccourcis-le ou corrige l'accès réseau Storage.");
-          }
-          await withTimeout(pushMsg({from:S.myUid,type:"voice",src:"data:"+cleanMime+";base64,"+base64,duration:finalDuration,mime:cleanMime,text:"",t:nowT(),dateStr:nowDate(),del:false}),15000,"Écriture message (fallback)");
-        }else{
-          await withTimeout(pushMsg({from:S.myUid,type:"voice",src:url,storageUrl:url,duration:finalDuration,mime:cleanMime,text:"",t:nowT(),dateStr:nowDate(),del:false}),15000,"Écriture message");
-        }
-        debugLog("④ pushMsg OK — TERMINÉ ✓"+(usedFallback?" (via mode secours base64)":""));
-        toast(usedFallback?"✓ Vocal envoyé (mode secours)":"✓ Vocal envoyé");
-      }catch(e){
-        debugLog("❌ ERREUR: code="+(e.code||"aucun")+" message="+e.message);
-        toast("Échec envoi vocal: "+(e.code?e.code+" — ":"")+e.message,"err");
-      }
-    };
+    // Stopper le recorder
+    try{ recorder.stop(); }catch(e){
+      toast("Erreur arrêt enregistrement: "+e.message,"err"); return;
+    }
 
-    debugLog("Appel de recorder.stop()...");
-    try{recorder.stop();}catch(e){debugLog("❌ recorder.stop() a levé: "+e.message);stopRec();}
+    try{
+      const {blob, cleanMime} = await blobPromise;
+      const ext = cleanMime.includes("webm")?"webm":cleanMime.includes("ogg")?"ogg":cleanMime.includes("mp4")?"m4a":"webm";
+      const filename = "voice_messages/"+S.myUid+"/"+Date.now()+"."+ext;
+      const ref = storage.ref(filename);
+
+      // Convertir blob → base64 pour compatibilité Android WebView
+      const base64 = await new Promise((res,rej)=>{
+        const reader = new FileReader();
+        reader.onloadend = ()=>{
+          const b64 = reader.result ? reader.result.split(",")[1] : null;
+          if(!b64) rej(new Error("Conversion base64 vide"));
+          else res(b64);
+        };
+        reader.onerror = ()=>rej(new Error("FileReader erreur"));
+        reader.readAsDataURL(blob);
+      });
+
+      await ref.putString(base64, "base64", {contentType: cleanMime});
+      const url = await ref.getDownloadURL();
+      await pushMsg({
+        from: S.myUid, type:"voice", src:url, storageUrl:url,
+        duration: finalDuration, mime: cleanMime,
+        text:"", t:nowT(), dateStr:nowDate(), del:false
+      });
+      toast("✓ Vocal envoyé");
+    }catch(e){
+      console.error("sendVoice:", e.message);
+      toast("❌ "+e.message, "err");
+    }
   };
 
   // ---- STATUS CREATE ----
